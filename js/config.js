@@ -40,6 +40,13 @@ window.APP_CONFIG = {
   // (pas de colonne « fournisseur » : un article peut venir de plusieurs fournisseurs, voir le menu Achats)
   colonnesArticles: ["Id_article", "Modele", "Quantite", "Prix", "Caractéristiques", "DATEe", "Nom_article"],
 
+  // Titres affichés dans l'application (les noms des colonnes SharePoint ne changent pas)
+  libellesColonnes: {
+    Nom_article: "Catégorie",
+    Quantite: "Quantité en stock",
+    Prix: "Prix de vente"
+  },
+
   // Liste des clients (proposés lors d'une vente ; les nouveaux clients y sont ajoutés)
   clientsList: "Tbl_Client",
   clientsField: "Nom_client",

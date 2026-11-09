@@ -225,7 +225,13 @@
     const cs = catSeuilOf(F(a, "categorie"));
     return cs != null ? cs : cfg.seuilAlerteDefaut;
   };
-  const colLabel = name => (state.columns.find(c => c.name === name) || {}).displayName || name;
+  /* Libellé affiché d'une colonne (renommage possible via cfg.libellesColonnes) */
+  function colTitle(c) {
+    if (!c) return "";
+    const L = cfg.libellesColonnes || {};
+    return L[c.name] || L[c.displayName] || c.displayName || c.name;
+  }
+  const colLabel = name => colTitle(state.columns.find(c => c.name === name)) || name;
   function stockStatus(a) {
     if (!hasStock()) return { cls: "", label: "—" };
     const s = artStock(a);
@@ -917,7 +923,11 @@
     const layout = [];
     for (const c of shownCols) layout.push(c);
     const val = (a, c) => (c.virtual ? artCA(a) : a[c.name]);
-    if (!f.sort || !layout.some(c => c.name === f.sort)) { f.sort = layout.length ? layout[0].name : ""; f.dir = 1; }
+    // tri par défaut : date d'ajout (colonne DATEe) la plus récente en premier
+    if (!f.sort || !layout.some(c => c.name === f.sort)) {
+      const dc = layout.find(c => c.name === (findCol("DATEe") || {}).name) || layout.find(c => c.type === "dateTime");
+      if (dc) { f.sort = dc.name; f.dir = -1; } else { f.sort = layout.length ? layout[0].name : ""; f.dir = 1; }
+    }
 
     const apply = () => {
       const q = norm(f.q);
@@ -934,7 +944,8 @@
         if (x == null || x === "") return 1;
         if (y == null || y === "") return -1;
         const r = (typeof x === "number" && typeof y === "number") ? x - y : String(x).localeCompare(String(y), "fr", { numeric: true });
-        return r * f.dir;
+        // à égalité, l'article ajouté en dernier (identifiant le plus grand) passe en premier
+        return r * f.dir || ((+b.id || 0) - (+a.id || 0));
       });
     };
 
@@ -952,10 +963,10 @@
       </div>`;
 
     const tdHTML = (a, c) => {
-      if (c.virtual) return `<td class="num ca" data-label="${esc(c.displayName)}">${money(artCA(a))}</td>`;
+      if (c.virtual) return `<td class="num ca" data-label="${esc(colTitle(c))}">${money(artCA(a))}</td>`;
       // le nom de l'article ouvre la vente ; les autres cellules se modifient sur place
-      if (c.name === state.map.designation) return `<td class="sellable primary-cell" data-sell="${esc(a.id)}" data-label="${esc(c.displayName)}" title="Cliquer pour vendre cet article">${cellHTML(a, c)}</td>`;
-      return `<td class="editable ${isNumCol(c) ? "num" : ""}" data-col="${esc(c.name)}" data-label="${esc(c.displayName)}" title="Cliquer pour modifier">${cellHTML(a, c)}</td>`;
+      if (c.name === state.map.designation) return `<td class="sellable primary-cell" data-sell="${esc(a.id)}" data-label="${esc(colTitle(c))}" title="Cliquer pour vendre cet article">${cellHTML(a, c)}</td>`;
+      return `<td class="editable ${isNumCol(c) ? "num" : ""}" data-col="${esc(c.name)}" data-label="${esc(colTitle(c))}" title="Cliquer pour modifier">${cellHTML(a, c)}</td>`;
     };
     const rowInner = a => layout.map(c => tdHTML(a, c)).join("") +
       `<td class="actions"><button class="btn sm icon ghost sell-btn" data-sell="${esc(a.id)}" title="Vendre" aria-label="Vendre">${ICON.cart}</button><button class="btn sm icon ghost rcv-btn" data-rcv="${esc(a.id)}" title="Réceptionner un achat (entrée en stock)" aria-label="Réceptionner un achat">📦</button><button class="btn sm icon ghost" data-edit="${esc(a.id)}" title="Modifier (formulaire complet)" aria-label="Modifier dans un formulaire">${ICON.edit}</button><button class="btn sm icon ghost danger" data-del="${esc(a.id)}" title="Supprimer" aria-label="Supprimer">${ICON.trash}</button></td>`;
@@ -997,7 +1008,7 @@
       const list = apply();
       curList = list; shown = Math.min(PAGE, list.length);
       $("#art-table").innerHTML = list.length ? `<div class="table-scroll"><table class="table responsive compact">
-        <thead><tr>${layout.map(c => `<th class="sortable ${isNumCol(c) ? "num" : ""}" data-sort="${esc(c.name)}" draggable="true" title="Cliquer pour trier · glisser pour déplacer la colonne"><span class="grip" aria-hidden="true">⋮⋮</span>${esc(c.displayName)}${f.sort === c.name ? (f.dir > 0 ? " ▲" : " ▼") : ""}</th>`).join("")}<th>${store.get(COL_ORDER_KEY, null) ? `<button class="btn sm ghost" id="col-reset" title="Rétablir l'ordre d'origine des colonnes">↺</button>` : ""}</th></tr></thead>
+        <thead><tr>${layout.map(c => `<th class="sortable ${isNumCol(c) ? "num" : ""}" data-sort="${esc(c.name)}" draggable="true" title="Cliquer pour trier · glisser pour déplacer la colonne"><span class="grip" aria-hidden="true">⋮⋮</span>${esc(colTitle(c))}${f.sort === c.name ? (f.dir > 0 ? " ▲" : " ▼") : ""}</th>`).join("")}<th>${store.get(COL_ORDER_KEY, null) ? `<button class="btn sm ghost" id="col-reset" title="Rétablir l'ordre d'origine des colonnes">↺</button>` : ""}</th></tr></thead>
         <tbody>${list.slice(0, shown).map(a => `<tr data-id="${esc(a.id)}">${rowInner(a)}</tr>`).join("")}</tbody></table>
         ${shown < list.length ? `<button class="more-row" id="art-more" type="button">Afficher plus d'articles…</button>` : ""}</div>
         <div class="table-foot" id="art-foot">${footHTML(list)}</div>`
@@ -1093,7 +1104,7 @@
         if (v === String(a[col.name] == null ? "" : a[col.name])) return restoreRow(a);
         if (v === "") v = null;
       }
-      if (col.required && (v === null || v === "")) { toast(`« ${col.displayName} » est obligatoire.`, "bad"); return restoreRow(a); }
+      if (col.required && (v === null || v === "")) { toast(`« ${colTitle(col)} » est obligatoire.`, "bad"); return restoreRow(a); }
       if (col.name === state.map.stock && v !== null && v < 0) { toast("La quantité ne peut pas être négative.", "bad"); return restoreRow(a); }
       td.classList.add("saving");
       try {
@@ -1172,7 +1183,7 @@
       if (th) { if (f.sort === th.dataset.sort) f.dir = -f.dir; else { f.sort = th.dataset.sort; f.dir = 1; } return drawTable(); }
       if (e.target.closest("#art-new")) return articleForm(null);
       if (e.target.closest("#art-export")) {
-        return downloadCSV("articles.csv", [layout.map(c => c.displayName), ...apply().map(a => layout.map(c => val(a, c)))]);
+        return downloadCSV("articles.csv", [layout.map(c => colTitle(c)), ...apply().map(a => layout.map(c => val(a, c)))]);
       }
       const ed = e.target.closest("[data-edit]");
       if (ed) return articleForm(state.articles.find(a => a.id === ed.dataset.edit));
@@ -1227,7 +1238,7 @@
     });
     const body = `<form id="art-form" class="form-grid" novalidate>
       ${cols.map(c => `<label class="field ${c.type === "note" || c.name === state.map.designation ? "full" : ""}" for="f_${esc(c.name)}">
-        <span>${esc(c.displayName)}${c.required ? ' <span class="req">*</span>' : ""}</span>${fieldInput(c, article ? (c.type === "lookup" ? article[c.name + "LookupId"] : article[c.name]) : "")}</label>`).join("")}
+        <span>${esc(colTitle(c))}${c.required ? ' <span class="req">*</span>' : ""}</span>${fieldInput(c, article ? (c.type === "lookup" ? article[c.name + "LookupId"] : article[c.name]) : "")}</label>`).join("")}
       <button type="submit" hidden></button>
     </form>`;
     const m = openModal({
@@ -1245,7 +1256,7 @@
           // colonne Recherche : on écrit <Nom>LookupId ; relation numérique : on écrit la valeur elle-même
           const key = c.relationField ? c.name : c.name + "LookupId";
           const raw = inp.value;
-          if (c.required && !raw) { inp.focus(); return toast(`Le champ « ${c.displayName} » est obligatoire.`, "bad"); }
+          if (c.required && !raw) { inp.focus(); return toast(`Le champ « ${colTitle(c)} » est obligatoire.`, "bad"); }
           const old = article ? String(article[c.name + "LookupId"] || "") : "";
           if (raw === old) continue;
           fields[key] = raw === "" ? null : (/^\d+$/.test(raw) ? parseInt(raw, 10) : raw);
@@ -1255,7 +1266,7 @@
         else if (c.type === "number" || c.type === "currency") val = inp.value === "" ? null : parseFloat(inp.value);
         else if (c.type === "dateTime") val = inp.value ? new Date(inp.value + "T12:00:00").toISOString() : null;
         else val = inp.value.trim();
-        if (c.required && (val === null || val === "")) { inp.focus(); return toast(`Le champ « ${c.displayName} » est obligatoire.`, "bad"); }
+        if (c.required && (val === null || val === "")) { inp.focus(); return toast(`Le champ « ${colTitle(c)} » est obligatoire.`, "bad"); }
         if (article) { // n'envoyer que les champs modifiés
           const old = article[c.name];
           const same = (old == null || old === "") && (val == null || val === "") || old === val;
@@ -1273,6 +1284,8 @@
           }
           toast("Article mis à jour.", "ok");
         } else {
+          const dc = findCol("DATEe"); // date d'ajout renseignée automatiquement si laissée vide
+          if (dc && !fields[dc.name]) fields[dc.name] = new Date().toISOString();
           const a = await DS.createArticle(fields);
           state.articles.push(a);
           toast("Article ajouté.", "ok");
