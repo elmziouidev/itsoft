@@ -143,7 +143,7 @@
     const kindLabel = F(a, "categorie") || { mobile: "Smartphone", tablet: "Tablette", phone: "Téléphone", laptop: "Ordinateur" }[kind] || "Article";
     const tip = [kindLabel, b.label && !norm(kindLabel).includes(norm(b.label)) ? b.label : ""].filter(Boolean).join(" · ") + (url ? " — cliquer pour agrandir" : "");
     return `<span class="thumb ${big ? "big" : ""} ${b.unknown ? "neutral" : ""} ${url ? "" : "no-photo"}" style="--h:${b.hue}" ${url ? `data-thumb="${esc(a.id)}"` : ""} title="${esc(tip)}">
-      ${DEVICE_SVG[kind]}${b.letter ? `<span class="thumb-letter">${esc(b.letter)}</span>` : ""}
+      ${DEVICE_SVG[kind]}
       ${url ? `<img src="${esc(url)}" alt="" decoding="async" referrerpolicy="no-referrer" style="opacity:0" onload="this.style.opacity=1" onerror="this.remove()">` : ""}</span>`;
   }
   function showPhoto(a) {
@@ -944,7 +944,6 @@
           <div class="search">${ICON.search}<input class="input" id="art-q" type="search" placeholder="Rechercher…" value="${esc(f.q)}"></div>
           ${cats.length || catCanAdd ? `<select class="input" id="art-cat" style="width:auto;flex:0 1 190px"><option value="">Toutes catégories</option>${catCanAdd ? `<option value="__new__">＋ Nouvelle catégorie…</option>` : ""}${cats.map(c => `<option ${f.cat === c ? "selected" : ""}>${esc(c)}</option>`).join("")}</select>` : ""}
           ${hasStock() ? `<select class="input" id="art-stock" style="width:auto;flex:0 1 160px"><option value="">Tout le stock</option><option value="low" ${f.stock === "low" ? "selected" : ""}>Stock faible</option><option value="out" ${f.stock === "out" ? "selected" : ""}>En rupture</option></select>` : ""}
-          ${state.map.categorie ? `<a class="btn" href="#/categories" title="Ajouter, renommer ou supprimer des catégories">${ICON.edit}<span class="hide-sm">Catégories</span></a>` : ""}
           ${state.map.photo && cfg.afficherPhotos ? `<a class="btn" href="#/photos" title="Rechercher des photos par catégorie">${ICON.search}<span class="hide-sm">Photos</span></a>` : ""}
           <button class="btn" id="art-export" title="Exporter en CSV">${ICON.download}<span class="hide-sm">Exporter</span></button>
           <button class="btn primary" id="art-new">${ICON.plus} Nouvel article</button>
@@ -2207,7 +2206,7 @@
   function seuilsSectionHTML() {
     if (!hasStock() || !state.map.categorie) return "";
     const head = `<div class="card-head"><h2>Seuils d'alerte de stock par catégorie</h2>
-      <span class="muted" style="font-size:13px">Stock faible si quantité ≤ seuil · vide = seuil par défaut (${int(cfg.seuilAlerteDefaut)})</span></div>`;
+      <span class="muted" style="font-size:13px">Stock faible si quantité ≤ seuil · vide = seuil par défaut (${int(cfg.seuilAlerteDefaut)}) · <a href="#/categories">Renommer, fusionner ou supprimer des catégories</a></span></div>`;
     if (!Array.isArray(state.categories))
       return `<div class="card">${head}<div class="card-pad"><div class="alert warn">${ICON.warn}<div class="grow">La liste des catégories « ${esc(cfg.categoriesList || "")} » est introuvable.</div></div></div></div>`;
     if (!DS.hasCatSeuil()) {
