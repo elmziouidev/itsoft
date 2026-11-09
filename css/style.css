@@ -167,6 +167,10 @@ label.field .req { color: var(--danger); }
 .chart .line-buys { stroke: var(--warning); stroke-width: 2; stroke-dasharray: 6 4; }
 .chart .pt circle.c-buys { stroke: var(--warning); }
 .chart .pt:hover circle.c-buys { fill: var(--warning); }
+.chart .line-profit { stroke: var(--success); stroke-width: 2.5; }
+.chart .pt circle.c-profit { stroke: var(--success); }
+.chart .pt:hover circle.c-profit { fill: var(--success); }
+.chart-legend i.lg-profit { background: var(--success); }
 .chart-legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12.5px; color: var(--muted); }
 .chart-legend span { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
 .chart-legend i { display: inline-block; width: 16px; height: 3px; border-radius: 2px; background: var(--primary); }

@@ -458,13 +458,13 @@
     const months = [];
     for (let i = 11; i >= 0; i--) {
       const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
-      months.push({ key: d.getFullYear() + "-" + d.getMonth(), d, v: 0, n: 0, rep: 0, a: 0, na: 0 });
+      months.push({ key: d.getFullYear() + "-" + d.getMonth(), d, v: 0, n: 0, rep: 0, a: 0, na: 0, p: 0, pu: 0 });
     }
     const byMonth = Object.fromEntries(months.map(m => [m.key, m]));
     const mOf = x => { const d = new Date(x); return byMonth[d.getFullYear() + "-" + d.getMonth()]; };
-    for (const s of sales) { const m = mOf(s.date); if (m) { m.v += s.total; m.n++; if (s.repair) m.rep += s.total; } }
+    for (const s of sales) { const m = mOf(s.date); if (m) { m.v += s.total; m.n++; if (s.repair) m.rep += s.total; if (s.profit != null) m.p += s.profit; else m.pu++; } }
     for (const p of state.achats || []) { const m = mOf(p.DateAchat); if (m) { m.a += +p.Montant || 0; m.na++; } }
-    const caYear = months.reduce((t, m) => t + m.v, 0), achYear = months.reduce((t, m) => t + m.a, 0);
+    const caYear = months.reduce((t, m) => t + m.v, 0), achYear = months.reduce((t, m) => t + m.a, 0), profYear = months.reduce((t, m) => t + m.p, 0);
     // Bénéfice du mois : ventes (prix − coût d'achat) + réparations (prix − pièces)
     const repMonth = sMonth.filter(s => s.repair);
     const caRepMonth = repMonth.reduce((t, s) => t + s.total, 0);
@@ -495,8 +495,8 @@
         </div>
         <div class="grid-2">
           <div class="card">
-            <div class="card-head"><h2>Ventes et achats par mois</h2>
-              <span class="chart-legend"><span><i class="lg-sales"></i>Ventes + réparations ${money(caYear)}</span><span><i class="lg-buys"></i>Achats ${money(achYear)}</span></span></div>
+            <div class="card-head"><h2>CA, bénéfice et achats par mois</h2>
+              <span class="chart-legend"><span><i class="lg-sales"></i>CA ${money(caYear)}</span><span><i class="lg-profit"></i>Bénéfice ${money(profYear)}</span><span><i class="lg-buys"></i>Achats ${money(achYear)}</span></span></div>
             <div class="chart">${lineChart(months)}</div>
           </div>
           <div class="card">
@@ -547,32 +547,36 @@
   }
 
   /* Courbe du CA mensuel (SVG) */
-  /* Courbes mensuelles : ventes (articles + réparations) et achats */
+  /* Courbes mensuelles : CA (articles + réparations), bénéfice et achats */
   function lineChart(months) {
     const W = 640, H = 240, pl = 14, pr = 14, pt = 26, pb = 28;
-    const max = Math.max(1, ...months.map(m => Math.max(m.v, m.a)));
+    const max = Math.max(1, ...months.map(m => Math.max(m.v, m.a, m.p)));
+    const min = Math.min(0, ...months.map(m => m.p)); // un bénéfice peut être négatif
     const step = (W - pl - pr) / (months.length - 1);
-    const y = v => H - pb - (v / max) * (H - pt - pb);
+    const y = v => H - pb - ((v - min) / (max - min)) * (H - pt - pb);
     const pts = key => months.map((m, i) => [pl + i * step, y(m[key])]);
     const pathOf = p => p.map((q, i) => (i ? "L" : "M") + q[0].toFixed(1) + " " + q[1].toFixed(1)).join(" ");
-    const ps = pts("v"), pa = pts("a");
-    const area = pathOf(ps) + ` L${ps[ps.length - 1][0].toFixed(1)} ${H - pb} L${ps[0][0].toFixed(1)} ${H - pb} Z`;
+    const ps = pts("v"), pa = pts("a"), pp = pts("p");
+    const base = y(0).toFixed(1);
+    const area = pathOf(ps) + ` L${ps[ps.length - 1][0].toFixed(1)} ${base} L${ps[0][0].toFixed(1)} ${base} Z`;
     const grid = [0.25, 0.5, 0.75, 1].map(f => { const gy = H - pb - f * (H - pt - pb); return `<line class="grid" x1="${pl}" x2="${W - pr}" y1="${gy}" y2="${gy}"/>`; }).join("");
     const last = months.length - 1;
     const cols = months.map((m, i) => {
       const x = ps[i][0];
       const lbl = MOIS[m.d.getMonth()] + " " + m.d.getFullYear();
-      const tip = `${lbl}\nVentes : ${money(m.v)} (${m.n} opération(s)${m.rep ? ", dont réparations " + money(m.rep) : ""})\nAchats : ${money(m.a)} (${m.na})`;
+      const tip = `${lbl}\nCA : ${money(m.v)} (${m.n} opération(s)${m.rep ? ", dont réparations " + money(m.rep) : ""})\nBénéfice : ${money(m.p)}${m.pu ? " (" + m.pu + " vente(s) sans prix d'achat non comptée(s))" : ""}\nAchats : ${money(m.a)} (${m.na})`;
       return `<g class="pt"><title>${esc(tip)}</title>
         <rect x="${x - step / 2}" y="${pt - 10}" width="${step}" height="${H - pt - pb + 10}" fill="transparent"/>
         <circle class="c-buys" cx="${x}" cy="${pa[i][1]}" r="${i === last ? 4.5 : 3}"/>
+        <circle class="c-profit" cx="${x}" cy="${pp[i][1]}" r="${i === last ? 4.5 : 3}"/>
         <circle class="c-sales" cx="${x}" cy="${ps[i][1]}" r="${i === last ? 5 : 3.5}"/>
         <text x="${x}" y="${H - 9}" text-anchor="middle">${MOIS[m.d.getMonth()]}${m.d.getMonth() === 0 || i === 0 ? " " + String(m.d.getFullYear()).slice(2) : ""}</text>
         ${i === last && m.v ? `<text class="val" x="${x}" y="${ps[i][1] - 10}" text-anchor="end">${nfNum.format(Math.round(m.v))}</text>` : ""}</g>`;
     }).join("");
-    return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Ventes et achats mensuels sur 12 mois">
+    return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="CA, bénéfice et achats mensuels sur 12 mois">
       ${grid}<line class="axis" x1="${pl}" x2="${W - pr}" y1="${H - pb}" y2="${H - pb}"/>
-      <path class="area" d="${area}"/><path class="line line-buys" d="${pathOf(pa)}"/><path class="line" d="${pathOf(ps)}"/>${cols}
+      ${min < 0 ? `<line class="axis" x1="${pl}" x2="${W - pr}" y1="${base}" y2="${base}"/>` : ""}
+      <path class="area" d="${area}"/><path class="line line-buys" d="${pathOf(pa)}"/><path class="line line-profit" d="${pathOf(pp)}"/><path class="line" d="${pathOf(ps)}"/>${cols}
       <text x="${pl}" y="12">max ${money(max)}</text></svg>`;
   }
 
