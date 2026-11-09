@@ -39,6 +39,7 @@
     cart: '<svg viewBox="0 0 24 24"><circle cx="9" cy="20" r="1.5"/><circle cx="18" cy="20" r="1.5"/><path d="M2 3h3l2.7 12.4a1 1 0 0 0 1 .8h9.6a1 1 0 0 0 1-.8L21 7H6"/></svg>',
     warn: '<svg viewBox="0 0 24 24"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0zM12 9v4M12 17h.01"/></svg>',
     info: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>',
+    cartPlus: '<svg viewBox="0 0 24 24"><circle cx="9" cy="20" r="1.5"/><circle cx="18" cy="20" r="1.5"/><path d="M2 3h3l2.7 12.4a1 1 0 0 0 1 .8h9.6a1 1 0 0 0 1-.8L21 7H6"/><path d="M13.5 8.5v5M11 11h5"/></svg>',
     logout: '<svg viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5M21 12H9"/></svg>'
   };
 
@@ -50,7 +51,7 @@
     ventes: [],
     ventesReady: false,
     map: {},
-    cart: [],
+    cart: (() => { try { return (JSON.parse(localStorage.getItem("itsoft-panier")) || []).map(l => ({ id: String(l.id), qty: +l.qty || 1, price: +l.price || 0 })); } catch (_) { return []; } })(),
     filters: { articles: { q: "", cat: "", stock: "" }, caisse: { q: "", cat: "" }, ventes: { q: "", from: "", to: "" } }
   };
 
@@ -450,6 +451,7 @@
     // réinitialise les gestionnaires d'événements laissés par la vue précédente
     for (const h of ["onclick", "onchange", "oninput", "onkeydown", "ondragstart", "ondragover", "ondrop", "ondragend"]) view[h] = null;
     VIEWS[k].render(view);
+    renderCartBar();
     if (window.performance && performance.mark && !performance.getEntriesByName("itsoft-premier-affichage").length) performance.mark("itsoft-premier-affichage");
   }
 
@@ -621,25 +623,60 @@
       Math.random().toString(36).slice(2, 4).toUpperCase();
   }
 
-  /* Vente avec panier : un ou plusieurs articles, un client, un seul ticket */
+  /* ============ Panier : rempli depuis la page Articles, validé en une seule vente ============ */
+  const CART_KEY = "itsoft-panier";
+  const cartSave = () => { try { localStorage.setItem(CART_KEY, JSON.stringify(state.cart)); } catch (_) {} };
+  const cartQty = id => { const l = state.cart.find(x => x.id === String(id)); return l ? l.qty : 0; };
+  function cartLines() { // lignes du panier avec leur article (les articles supprimés sont retirés)
+    state.cart = state.cart.filter(l => artById(l.id));
+    return state.cart.map(l => ({ l, a: artById(l.id) }));
+  }
+  function cartAdd(a, silent) {
+    const id = String(a.id);
+    const ex = state.cart.find(l => l.id === id);
+    const max = hasStock() ? artStock(a) : Infinity;
+    if ((ex ? ex.qty : 0) + 1 > max) { toast(max <= 0 ? `« ${artName(a)} » est en rupture de stock.` : `Stock disponible pour « ${artName(a)} » : ${int(max)}.`, "bad"); return false; }
+    if (ex) ex.qty++; else state.cart.push({ id, qty: 1, price: artPrice(a) });
+    cartSave(); renderCartBar();
+    if (currentView() === "articles" && state.refreshArticle) state.refreshArticle(a, true);
+    if (!silent) toast(`« ${artName(a)} » ajouté au panier (${cartQty(id)}).`, "ok");
+    return true;
+  }
+  function cartClear() {
+    const ids = state.cart.map(l => l.id);
+    state.cart = []; cartSave(); renderCartBar();
+    if (currentView() === "articles" && state.refreshArticle) ids.forEach(id => { const a = artById(id); if (a) state.refreshArticle(a, true); });
+  }
+  /* Barre flottante : visible dès que le panier contient un article */
+  function renderCartBar() {
+    let bar = document.getElementById("cart-bar");
+    if (!bar) {
+      bar = document.createElement("div"); bar.id = "cart-bar"; bar.className = "cart-bar"; document.body.appendChild(bar);
+      bar.addEventListener("click", async e => {
+        if (e.target.closest("[data-cart-open]")) return sellDialog(null);
+        if (e.target.closest("[data-cart-clear]") && await confirmBox("Vider le panier", "Retirer tous les articles du panier ?", "Vider", true)) cartClear();
+      });
+    }
+    const ls = cartLines();
+    const nb = ls.reduce((t, x) => t + x.l.qty, 0), tot = ls.reduce((t, x) => t + x.l.qty * x.l.price, 0);
+    bar.hidden = !ls.length || !state.loaded;
+    bar.innerHTML = `<span class="cart-bar-ico">${ICON.cart}<span class="cart-badge">${int(nb)}</span></span>
+      <span class="cart-bar-txt"><strong>Panier</strong><span>${int(ls.length)} article(s) · ${money(tot)}</span></span>
+      <button class="btn sm ghost" data-cart-clear title="Vider le panier">Vider</button>
+      <button class="btn primary" data-cart-open>Valider la vente</button>`;
+  }
+
+  /* Fenêtre de validation du panier : quantités, prix, client, paiement */
   function sellDialog(first) {
     if (!state.ventesReady) return toast(`La liste « ${cfg.ventesList} » est introuvable : impossible d'enregistrer une vente.`, "bad");
-    if (first && hasStock() && artStock(first) <= 0) return toast(`« ${artName(first)} » est en rupture de stock.`, "bad");
+    if (first && !state.cart.some(l => l.id === String(first.id)) && !cartAdd(first, true)) return;
     const clients = state.clients || [];
     const canAddClient = Array.isArray(state.clients);
     const defClient = cfg.clientParDefaut || "Client comptoir";
-    const lines = first ? [{ a: first, qty: 1, price: artPrice(first) }] : [];
-    // articles proposés : ceux en stock
-    const avail = () => state.articles.filter(x => !hasStock() || artStock(x) > 0);
-    const optLabel = x => `${artName(x)} — ${F(x, "categorie") || ""}${hasStock() ? ` (stock ${int(artStock(x))})` : ""}`;
     const m = openModal({
-      title: "Vendre", size: "cart",
+      title: "Panier", size: "cart",
       body: `
         <div class="cart-lines" id="cart-lines"></div>
-        <div class="cart-add">
-          ${ICON.plus}<input class="input" id="cart-search" list="dl-cart-arts" placeholder="Ajouter un article au panier (nom, catégorie)…" autocomplete="off">
-          <datalist id="dl-cart-arts"></datalist>
-        </div>
         <form id="sell-form" class="form-grid" style="margin-top:14px" novalidate>
           <label class="field full">Client
             <input class="input" id="sell-client" list="dl-clients" placeholder="Rechercher ou saisir un client (vide = ${esc(defClient)})" autocomplete="off">
@@ -652,98 +689,82 @@
           <div class="full totals" id="sell-total"></div>
           <button type="submit" hidden></button>
         </form>`,
-      foot: `<button class="btn" data-close>Annuler</button><button class="btn primary lg" id="sell-ok">${ICON.cart} Vendre</button>`
+      foot: `<button class="btn" data-close>Continuer mes achats</button><button class="btn primary lg" id="sell-ok">${ICON.cart} Vendre</button>`
     });
-    const clientI = $("#sell-client", m), searchI = $("#cart-search", m);
+    const clientI = $("#sell-client", m);
     const isNewClient = () => {
       const v = clientI.value.trim();
       return canAddClient && v && !clients.some(c => norm(c.name) === norm(v)) && norm(v) !== norm(defClient);
     };
-    const fillOptions = () => {
-      const inCart = new Set(lines.map(l => l.a.id));
-      $("#dl-cart-arts", m).innerHTML = avail().filter(x => !inCart.has(x.id)).map(x => `<option value="${esc(optLabel(x))}"></option>`).join("");
-    };
     const totals = () => {
-      const total = lines.reduce((t, l) => t + l.qty * l.price, 0);
+      const ls = cartLines();
+      const total = ls.reduce((t, x) => t + x.l.qty * x.l.price, 0);
       let cost = 0, known = true;
-      for (const l of lines) { const lp = lastPurchase(l.a); if (lp) cost += (+lp.PrixAchat || 0) * l.qty; else known = false; }
-      const nb = lines.reduce((t, l) => t + l.qty, 0);
-      $("#sell-total", m).innerHTML = `<span class="muted">${int(lines.length)} article(s) · ${int(nb)} pièce(s)</span><span></span>
-        ${known && lines.length ? `<span class="muted">Bénéfice estimé</span><span class="num" style="color:var(--success)">${money(total - cost)}</span>` : ""}
+      for (const x of ls) { const lp = lastPurchase(x.a); if (lp) cost += (+lp.PrixAchat || 0) * x.l.qty; else known = false; }
+      const nb = ls.reduce((t, x) => t + x.l.qty, 0);
+      $("#sell-total", m).innerHTML = `<span class="muted">${int(ls.length)} article(s) · ${int(nb)} pièce(s)</span><span></span>
+        ${known && ls.length ? `<span class="muted">Bénéfice estimé</span><span class="num" style="color:var(--success)">${money(total - cost)}</span>` : ""}
         <span class="grand">Total</span><span class="num grand">${money(total)}</span>`;
-      $("#sell-ok", m).disabled = !lines.length;
+      $("#sell-ok", m).disabled = !ls.length;
       $("#sell-new", m).hidden = !isNewClient();
     };
     const drawLines = () => {
-      $("#cart-lines", m).innerHTML = lines.length ? lines.map((l, i) => {
-        const max = hasStock() ? artStock(l.a) : "";
+      const ls = cartLines();
+      $("#cart-lines", m).innerHTML = ls.length ? ls.map(({ l, a }, i) => {
+        const max = hasStock() ? artStock(a) : "";
         return `<div class="cart-row" data-i="${i}">
-          ${thumbHTML(l.a)}
-          <div class="cart-name"><strong>${esc(artName(l.a))}</strong><span class="muted">${esc(F(l.a, "categorie") || "")}${hasStock() ? ` · stock ${int(max)}` : ""}</span></div>
+          ${thumbHTML(a)}
+          <div class="cart-name"><strong>${esc(artName(a))}</strong><span class="muted">${esc(F(a, "categorie") || "")}${hasStock() ? ` · stock ${int(max)}` : ""}</span></div>
           <span class="qty"><button type="button" data-d="-1" aria-label="Diminuer">−</button><input type="number" min="1" ${max !== "" ? `max="${max}"` : ""} value="${l.qty}" data-qty inputmode="numeric" aria-label="Quantité"><button type="button" data-d="1" aria-label="Augmenter">+</button></span>
           <span class="cart-price"><input class="input" type="number" step="any" min="0" value="${l.price}" data-price inputmode="decimal" aria-label="Prix unitaire"></span>
           <strong class="num cart-sub">${money(l.qty * l.price)}</strong>
           <button type="button" class="btn sm icon ghost danger" data-rm title="Retirer du panier" aria-label="Retirer">${ICON.close}</button>
         </div>`;
-      }).join("") : `<div class="empty" style="padding:18px">Le panier est vide : ajoutez un article ci-dessous.</div>`;
-      fillOptions(); totals();
+      }).join("") : `<div class="empty" style="padding:22px">Le panier est vide.<br><span style="font-size:13px">Ajoutez des articles depuis la page Articles avec le bouton ${ICON.cart}.</span>
+          <div style="margin-top:12px"><a class="btn" href="#/articles" data-close>Aller aux articles</a></div></div>`;
+      totals();
     };
-    const addArticle = x => {
-      const ex = lines.find(l => l.a.id === x.id);
-      if (ex) {
-        if (hasStock() && ex.qty + 1 > artStock(x)) return toast(`Stock disponible pour « ${artName(x)} » : ${int(artStock(x))}.`, "bad");
-        ex.qty++;
-      } else lines.push({ a: x, qty: 1, price: artPrice(x) });
-      drawLines();
-    };
+    const changed = id => { cartSave(); renderCartBar(); const a = artById(id); if (a && currentView() === "articles" && state.refreshArticle) state.refreshArticle(a, true); };
     drawLines();
 
-    searchI.addEventListener("change", () => {
-      const v = searchI.value.trim();
-      if (!v) return;
-      const x = avail().find(y => optLabel(y) === v) || avail().find(y => norm(artName(y)) === norm(v));
-      if (!x) return toast("Article introuvable ou en rupture de stock.", "bad");
-      searchI.value = "";
-      addArticle(x);
-      searchI.focus();
-    });
     $("#cart-lines", m).addEventListener("click", e => {
       const row = e.target.closest(".cart-row"); if (!row) return;
-      const l = lines[+row.dataset.i];
-      if (e.target.closest("[data-rm]")) { lines.splice(+row.dataset.i, 1); return drawLines(); }
+      const { l, a } = cartLines()[+row.dataset.i];
+      if (e.target.closest("[data-rm]")) { state.cart = state.cart.filter(x => x !== l); changed(l.id); return drawLines(); }
       const d = e.target.closest("[data-d]");
       if (d) {
         let q = l.qty + +d.dataset.d;
-        if (hasStock() && q > artStock(l.a)) { toast(`Stock disponible : ${int(artStock(l.a))}.`, "bad"); q = artStock(l.a); }
-        l.qty = Math.max(1, q); drawLines();
+        if (hasStock() && q > artStock(a)) { toast(`Stock disponible : ${int(artStock(a))}.`, "bad"); q = artStock(a); }
+        l.qty = Math.max(1, q); changed(l.id); drawLines();
       }
     });
     $("#cart-lines", m).addEventListener("change", e => {
       const row = e.target.closest(".cart-row"); if (!row) return;
-      const l = lines[+row.dataset.i];
+      const { l, a } = cartLines()[+row.dataset.i];
       if (e.target.matches("[data-qty]")) {
         let q = Math.max(1, parseInt(e.target.value, 10) || 1);
-        if (hasStock() && q > artStock(l.a)) { toast(`Stock disponible : ${int(artStock(l.a))}.`, "bad"); q = artStock(l.a); }
+        if (hasStock() && q > artStock(a)) { toast(`Stock disponible : ${int(artStock(a))}.`, "bad"); q = artStock(a); }
         l.qty = q;
       }
       if (e.target.matches("[data-price]")) l.price = Math.max(0, parseFloat(String(e.target.value).replace(",", ".")) || 0);
-      drawLines();
+      changed(l.id); drawLines();
     });
     clientI.addEventListener("input", totals);
-    setTimeout(() => (lines.length ? clientI : searchI).focus(), 60);
+    setTimeout(() => clientI.focus(), 60);
 
     const submit = async () => {
-      if (!lines.length) return toast("Le panier est vide.", "bad");
+      const ls = cartLines();
+      if (!ls.length) return toast("Le panier est vide.", "bad");
       const btn = $("#sell-ok", m);
       busy(btn, true, "Enregistrement…");
       try {
         // 1. vérification du stock réel de chaque article AVANT d'enregistrer quoi que ce soit
         const fresh = {};
-        for (const l of lines) {
-          const f = await DS.getArticle(l.a.id);
+        for (const { l, a } of ls) {
+          const f = await DS.getArticle(a.id);
           const s = +f[state.map.stock] || 0;
-          if (hasStock() && s < l.qty) throw new Error(`Stock insuffisant pour « ${artName(l.a)} » : ${int(s)} disponible(s). Rien n'a été enregistré.`);
-          fresh[l.a.id] = s;
+          if (hasStock() && s < l.qty) throw new Error(`Stock insuffisant pour « ${artName(a)} » : ${int(s)} disponible(s). Rien n'a été enregistré.`);
+          fresh[a.id] = s;
         }
         // 2. client
         const typed = clientI.value.trim();
@@ -755,20 +776,21 @@
         }
         // 3. une ligne par article, toutes sous le même numéro de vente
         const d = new Date(), num = saleNumber(d), pay = $("#sell-pay", m).value;
-        for (const l of lines) {
-          const ref = F(l.a, "reference"), lp = lastPurchase(l.a);
+        for (const { l, a } of ls) {
+          const ref = F(a, "reference"), lp = lastPurchase(a);
           const v = await DS.createVenteLine({
-            Title: num, ArticleId: parseInt(l.a.id, 10), Article: String(artName(l.a)), Reference: ref == null ? "" : String(ref),
+            Title: num, ArticleId: parseInt(a.id, 10), Article: String(artName(a)), Reference: ref == null ? "" : String(ref),
             Quantite: l.qty, PrixUnitaire: l.price, Montant: Math.round(l.qty * l.price * 100) / 100,
             Client: clientName, ModePaiement: pay, Vendeur: Auth.userName(), DateVente: d.toISOString(),
             TypeOperation: "Vente", Cout: lp ? Math.round((+lp.PrixAchat || 0) * l.qty * 100) / 100 : null
           });
           state.ventes.push(v);
-          if (hasStock()) Object.assign(l.a, await DS.updateArticle(l.a.id, { [state.map.stock]: fresh[l.a.id] - l.qty }));
+          if (hasStock()) Object.assign(a, await DS.updateArticle(a.id, { [state.map.stock]: fresh[a.id] - l.qty }));
         }
         closeModal();
-        toast(`Vente ${num} enregistrée (${lines.length} article(s)).`, "ok");
-        if (currentView() === "articles" && state.refreshArticle) lines.forEach(l => state.refreshArticle(l.a)); else render();
+        cartClear();
+        toast(`Vente ${num} enregistrée (${ls.length} article(s)).`, "ok");
+        if (currentView() === "articles" && state.refreshArticle) ls.forEach(x => state.refreshArticle(x.a)); else render();
         showSale(num);
       } catch (e) {
         busy(btn, false);
@@ -1036,7 +1058,7 @@
       return `<td class="editable ${isNumCol(c) ? "num" : ""}" data-col="${esc(c.name)}" data-label="${esc(colTitle(c))}" title="Cliquer pour modifier">${cellHTML(a, c)}</td>`;
     };
     const rowInner = a => layout.map(c => tdHTML(a, c)).join("") +
-      `<td class="actions"><button class="btn sm icon ghost sell-btn" data-sell="${esc(a.id)}" title="Vendre" aria-label="Vendre">${ICON.cart}</button><button class="btn sm icon ghost rcv-btn" data-rcv="${esc(a.id)}" title="Réceptionner un achat (entrée en stock)" aria-label="Réceptionner un achat">📦</button><button class="btn sm icon ghost" data-edit="${esc(a.id)}" title="Modifier (formulaire complet)" aria-label="Modifier dans un formulaire">${ICON.edit}</button><button class="btn sm icon ghost danger" data-del="${esc(a.id)}" title="Supprimer" aria-label="Supprimer">${ICON.trash}</button></td>`;
+      `<td class="actions"><button class="btn sm icon ghost sell-btn ${cartQty(a.id) ? "in-cart" : ""}" data-addcart="${esc(a.id)}" title="Ajouter au panier" aria-label="Ajouter au panier">${ICON.cartPlus}${cartQty(a.id) ? `<span class="cart-badge">${cartQty(a.id)}</span>` : ""}</button><button class="btn sm icon ghost rcv-btn" data-rcv="${esc(a.id)}" title="Réceptionner un achat (entrée en stock)" aria-label="Réceptionner un achat">📦</button><button class="btn sm icon ghost" data-edit="${esc(a.id)}" title="Modifier (formulaire complet)" aria-label="Modifier dans un formulaire">${ICON.edit}</button><button class="btn sm icon ghost danger" data-del="${esc(a.id)}" title="Supprimer" aria-label="Supprimer">${ICON.trash}</button></td>`;
     const footHTML = list => `<span>${int(list.length)} article(s) sur ${int(state.articles.length)}</span>` +
       (hasStock() ? `<span>Quantité totale : <strong>${int(list.reduce((t, a) => t + artStock(a), 0))}</strong></span>` : "") +
       (hasCA() ? `<span>Valeur du stock : <strong>${money(list.reduce((t, a) => t + artCA(a), 0))}</strong></span>` : "") +
@@ -1090,7 +1112,7 @@
       tr.innerHTML = rowInner(a);
       if (flashCol) tr.querySelectorAll(`td[data-col="${CSS.escape(flashCol)}"], td.ca`).forEach(td => td.classList.add("flash"));
     };
-    state.refreshArticle = a => { restoreRow(a, state.map.stock); refreshFoot(); };
+    state.refreshArticle = (a, noFlash) => { restoreRow(a, noFlash ? null : state.map.stock); refreshFoot(); };
 
     /* ---- Édition directe dans le tableau ---- */
     let editing = null;
@@ -1239,6 +1261,8 @@
       if (e.target.closest("#art-more")) return appendMore();
       const th0 = e.target.closest("[data-thumb]");
       if (th0) { const a = state.articles.find(x => x.id === th0.dataset.thumb); if (a) return showPhoto(a); }
+      const addc = e.target.closest("[data-addcart]");
+      if (addc) { const a = state.articles.find(x => x.id === addc.dataset.addcart); if (a) return cartAdd(a); }
       const sell = e.target.closest("[data-sell]");
       if (sell) { const a = state.articles.find(x => x.id === sell.dataset.sell); if (a) return sellDialog(a); }
       const rcv = e.target.closest("[data-rcv]");
