@@ -73,6 +73,37 @@ a { color: var(--primary); }
 }
 .nav a:hover { background: var(--surface-2); color: var(--text); }
 .nav a.active { background: var(--primary-soft); color: var(--primary); }
+
+/* Pastilles colorées du menu : une couleur par rubrique */
+.nav-ico { display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; border-radius: 8px; flex-shrink: 0;
+  background: var(--ico-bg); color: var(--ico-fg); transition: transform .12s; }
+.nav-ico svg { width: 18px; height: 18px; stroke-width: 2; }
+.nav a:hover .nav-ico { transform: scale(1.06); }
+.nav a.active { color: var(--text); font-weight: 600; }
+.nav a.active .nav-ico { box-shadow: 0 0 0 2px var(--surface), 0 0 0 3.5px var(--ico-fg); }
+.nv-dash { --ico-bg: #EEEDFE; --ico-fg: #3C3489; }
+.nv-art  { --ico-bg: #E6F1FB; --ico-fg: #0C447C; }
+.nv-ach  { --ico-bg: #FAEEDA; --ico-fg: #633806; }
+.nv-ven  { --ico-bg: #EAF3DE; --ico-fg: #27500A; }
+.nv-par  { --ico-bg: #F1EFE8; --ico-fg: #444441; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .nv-dash { --ico-bg: #3C3489; --ico-fg: #CECBF6; }
+  :root:not([data-theme="light"]) .nv-art  { --ico-bg: #0C447C; --ico-fg: #B5D4F4; }
+  :root:not([data-theme="light"]) .nv-ach  { --ico-bg: #633806; --ico-fg: #FAC775; }
+  :root:not([data-theme="light"]) .nv-ven  { --ico-bg: #27500A; --ico-fg: #C0DD97; }
+  :root:not([data-theme="light"]) .nv-par  { --ico-bg: #444441; --ico-fg: #D3D1C7; }
+}
+:root[data-theme="dark"] .nv-dash { --ico-bg: #3C3489; --ico-fg: #CECBF6; }
+:root[data-theme="dark"] .nv-art  { --ico-bg: #0C447C; --ico-fg: #B5D4F4; }
+:root[data-theme="dark"] .nv-ach  { --ico-bg: #633806; --ico-fg: #FAC775; }
+:root[data-theme="dark"] .nv-ven  { --ico-bg: #27500A; --ico-fg: #C0DD97; }
+:root[data-theme="dark"] .nv-par  { --ico-bg: #444441; --ico-fg: #D3D1C7; }
+@media (max-width: 860px) {
+  .nav-ico { width: 28px; height: 26px; border-radius: 8px; }
+  .nav-ico svg { width: 17px; height: 17px; }
+  .nav a.active { background: transparent; }
+  .nav a.active .nav-ico { box-shadow: 0 0 0 2px var(--ico-fg); }
+}
 .sidebar-foot { margin-top: auto; padding: 12px 8px 0; border-top: 1px solid var(--border); font-size: 13px; }
 .user { display: flex; align-items: center; gap: 10px; }
 .avatar { width: 32px; height: 32px; border-radius: 50%; background: var(--primary-soft); color: var(--primary); display: grid; place-items: center; font-weight: 700; font-size: 13px; flex-shrink: 0; }
