@@ -22,17 +22,29 @@ window.APP_CONFIG = {
   articlesList: "Tbl_article",   // liste existante des articles
   ventesList: "Tbl_vente",       // liste des ventes (créée par l'application si absente)
 
-  // Correspondance des colonnes de Tbl_article (nom INTERNE SharePoint).
-  // Laissez "" pour une détection automatique ; vous pouvez aussi
-  // les ajuster depuis l'écran « Paramètres » de l'application.
+  // Rôle des colonnes de Tbl_article (nom affiché OU nom interne SharePoint).
+  // Laissez "" pour une détection automatique ; ajustable aussi depuis « Paramètres ».
   champs: {
-    designation: "",
-    reference: "",
-    categorie: "",
+    designation: "Modele",
+    reference: "Id_article",
+    categorie: "Nom_article",
+    fournisseur: "fournisseur",
     marque: "",
-    prix: "",
-    stock: "",
+    prix: "Prix",
+    stock: "Quantite",
     seuil: ""
+  },
+
+  // Colonnes affichées (dans cet ordre) dans le menu « Articles »
+  colonnesArticles: ["Id_article", "Modele", "fournisseur", "Quantite", "Prix", "Caractéristiques", "DATEe", "Nom_article"],
+
+  // Relation Tbl_article → Tbl_categorie.
+  // Utilisée seulement si « Nom_article » est une colonne Nombre contenant l'identifiant
+  // de la catégorie ; si c'est une colonne « Recherche » SharePoint, elle est résolue automatiquement.
+  //   cle     : colonne de Tbl_categorie contenant l'identifiant ("ID" = identifiant SharePoint)
+  //   libelle : colonne de Tbl_categorie à afficher ("" = détection automatique)
+  relations: {
+    Nom_article: { liste: "Tbl_categorie", cle: "ID", libelle: "" }
   },
 
   // Paramètres commerciaux
@@ -40,6 +52,6 @@ window.APP_CONFIG = {
   devise: "MAD",
   tva: 20,                 // en %, mettre 0 pour désactiver
   prixIncluentTVA: false,  // true si les prix de Tbl_article sont TTC
-  seuilAlerteDefaut: 5,    // stock faible si aucune colonne « seuil »
+  seuilAlerteDefaut: 1,    // stock « faible » si quantité ≤ cette valeur (0 = rupture)
   modesPaiement: ["Espèces", "Carte bancaire", "Virement", "Chèque"]
 };

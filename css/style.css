@@ -166,6 +166,8 @@ table.table { width: 100%; border-collapse: collapse; }
 .table tbody tr:last-child td { border-bottom: 0; }
 .table .actions { white-space: nowrap; text-align: right; }
 .table tr.clickable { cursor: pointer; }
+.table th.sortable { cursor: pointer; user-select: none; }
+.table th.sortable:hover { color: var(--text); }
 .empty { padding: 40px 20px; text-align: center; color: var(--muted); }
 .list-simple { list-style: none; margin: 0; padding: 0; }
 .list-simple li { display: flex; justify-content: space-between; gap: 10px; padding: 10px 20px; border-bottom: 1px solid var(--border); }
@@ -280,7 +282,8 @@ table.table { width: 100%; border-collapse: collapse; }
   /* Tableaux → cartes */
   .table.responsive thead { display: none; }
   .table.responsive, .table.responsive tbody, .table.responsive tr, .table.responsive td { display: block; width: 100%; }
-  .table.responsive tr { padding: 10px 16px; border-bottom: 1px solid var(--border); }
+  .table.responsive tr { display: flex; flex-direction: column; padding: 10px 16px; border-bottom: 1px solid var(--border); }
+  .table.responsive td.primary-cell { order: -1; }
   .table.responsive tbody tr:last-child { border-bottom: 0; }
   .table.responsive td { display: flex; justify-content: space-between; gap: 12px; padding: 4px 0; border: 0; text-align: right; overflow-wrap: anywhere; }
   .table.responsive td::before { content: attr(data-label); color: var(--muted); font-size: 13px; text-align: left; font-weight: 500; }

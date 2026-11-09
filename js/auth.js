@@ -2,6 +2,8 @@
 (function () {
   const cfg = window.APP_CONFIG;
   const SCOPES = ["Sites.ReadWrite.All"];
+  // ?demo=1 dans l'adresse force le mode démo (tests sans SharePoint)
+  window.FORCE_DEMO = /[?&]demo=1(&|$)/.test(window.location.search);
 
   function redirectUri() {
     // URL de la page sans index.html, ni paramètres, ni ancre
@@ -10,7 +12,7 @@
   }
 
   const Auth = {
-    enabled: !!cfg.clientId,
+    enabled: !!cfg.clientId && !window.FORCE_DEMO,
     msal: null,
     account: null,
     SCOPES,

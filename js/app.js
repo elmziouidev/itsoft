@@ -48,16 +48,27 @@
   /* ============ Correspondance des colonnes ============ */
   const NUM = ["number", "currency"];
   const TXT = ["text", "note", "choice"];
+  const CAT = ["text", "note", "choice", "lookup"];
   const RULES = [
     ["seuil", ["seuil", "seuilalerte", "stockmin", "stockminimum", "qtemin", "minimum", "alerte"], NUM],
     ["stock", ["stock", "qtestock", "quantitestock", "quantite", "qte", "qty", "quantity", "enstock"], NUM],
     ["prix", ["prixvente", "prixdevente", "prixunitaire", "prixttc", "prixht", "prix", "pu", "price", "tarif"], NUM],
-    ["reference", ["reference", "ref", "codearticle", "code", "sku"], TXT],
-    ["categorie", ["categorie", "famille", "category", "rayon", "type"], TXT],
-    ["marque", ["marque", "brand", "fabricant"], TXT],
-    ["designation", ["designation", "libelle", "nomarticle", "nom", "article", "produit", "title"], TXT]
+    ["reference", ["reference", "ref", "codearticle", "idarticle", "code", "sku"], TXT.concat(NUM)],
+    ["categorie", ["categorie", "famille", "category", "rayon", "nomarticle", "type"], CAT],
+    ["fournisseur", ["fournisseur", "supplier"], CAT],
+    ["marque", ["marque", "brand", "fabricant"], CAT],
+    ["designation", ["modele", "designation", "libelle", "nom", "produit", "title"], TXT]
   ];
-  const FIELD_LABELS = { designation: "Désignation", reference: "Référence", categorie: "Catégorie", marque: "Marque", prix: "Prix de vente", stock: "Stock", seuil: "Seuil d'alerte" };
+  const FIELD_LABELS = { designation: "Désignation / Modèle", reference: "Référence", categorie: "Catégorie", fournisseur: "Fournisseur", marque: "Marque", prix: "Prix de vente", stock: "Stock (quantité)", seuil: "Seuil d'alerte" };
+
+  /* Retrouve une colonne par nom interne OU nom affiché */
+  function findCol(key) {
+    if (!key) return null;
+    const k = norm(key);
+    return state.columns.find(c => c.name === key) ||
+      state.columns.find(c => norm(c.displayName) === k) ||
+      state.columns.find(c => norm(c.name) === k) || null;
+  }
 
   function detectMapping(columns) {
     const used = new Set(), map = {};
@@ -84,12 +95,17 @@
     const override = store.get("ventesit-mapping", {});
     const names = new Set(state.columns.map(c => c.name));
     const map = {};
+    const taken = new Set();
     for (const k of Object.keys(FIELD_LABELS)) {
-      const o = override[k], c = cfg.champs && cfg.champs[k];
+      const o = override[k], c = findCol(cfg.champs && cfg.champs[k]);
       if (o === "-") map[k] = "";
       else if (o && names.has(o)) map[k] = o;
-      else if (c && names.has(c)) map[k] = c;
-      else map[k] = auto[k] || "";
+      else if (c) map[k] = c.name;
+      else map[k] = "";
+      if (map[k]) taken.add(map[k]);
+    }
+    for (const k of Object.keys(FIELD_LABELS)) {
+      if (!map[k] && override[k] !== "-" && auto[k] && !taken.has(auto[k])) { map[k] = auto[k]; taken.add(auto[k]); }
     }
     state.map = map;
   }
@@ -110,6 +126,8 @@
   }
   function categories() {
     if (!state.map.categorie) return [];
+    const col = findCol(state.map.categorie);
+    if (col && col.type === "lookup" && col.options && col.options.length) return col.options.map(o => o.label);
     return [...new Set(state.articles.map(a => F(a, "categorie")).filter(Boolean))].sort((x, y) => String(x).localeCompare(String(y), "fr"));
   }
 
@@ -354,7 +372,7 @@
         const out = hasStock() && artStock(a) <= 0;
         return `<button class="product" data-add="${esc(a.id)}" ${out ? "disabled" : ""}>
           <span class="product-name">${esc(artName(a))}</span>
-          <span class="product-ref">${esc(F(a, "reference") || "")}${F(a, "marque") ? " · " + esc(F(a, "marque")) : ""}</span>
+          <span class="product-ref">${esc(F(a, "reference") != null ? F(a, "reference") : "")}${(F(a, "marque") || F(a, "fournisseur")) ? " · " + esc(F(a, "marque") || F(a, "fournisseur")) : ""}</span>
           <span class="product-foot"><span class="product-price">${money(artPrice(a))}</span>${hasStock() ? `<span class="badge ${st.cls}">${int(artStock(a))}</span>` : ""}</span>
         </button>`;
       }).join("") : `<div class="empty" style="grid-column:1/-1">Aucun article trouvé.</div>`;
@@ -556,19 +574,54 @@
   }
 
   /* ============ Vue : articles ============ */
+  const nfNum = new Intl.NumberFormat("fr-FR", { maximumFractionDigits: 2 });
+  const isNumCol = c => NUM.includes(c.type);
+
+  /* Colonnes affichées dans la liste : celles de cfg.colonnesArticles, sinon les colonnes « métier » */
+  function articleColumns() {
+    const wanted = (cfg.colonnesArticles || []).map(findCol).filter(Boolean);
+    if (wanted.length) return wanted.filter((c, i) => wanted.indexOf(c) === i);
+    return ["reference", "designation", "categorie", "fournisseur", "marque", "prix", "stock"]
+      .map(k => findCol(state.map[k])).filter(Boolean);
+  }
+
+  function cellHTML(a, c) {
+    const v = a[c.name];
+    const empty = '<span class="muted">—</span>';
+    if (c.name === state.map.prix) return money(v);
+    if (c.name === state.map.stock) { const st = stockStatus(a); return `<span class="badge ${st.cls}">${int(v)} · ${st.label}</span>`; }
+    if (v == null || v === "") return empty;
+    switch (c.type) {
+      case "number": case "currency": return nfNum.format(+v);
+      case "dateTime": return fmtDate(v);
+      case "boolean": return v ? "Oui" : "Non";
+      case "lookup": return `<span class="badge info">${esc(v)}</span>`;
+      default: return esc(v);
+    }
+  }
+
   function viewArticles(el) {
     const f = state.filters.articles;
     const cats = categories();
-    const shown = ["designation", "reference", "categorie", "marque", "prix", "stock"].filter(k => state.map[k]);
+    const shownCols = articleColumns();
+    if (!f.sort || !shownCols.some(c => c.name === f.sort)) { f.sort = shownCols.length ? shownCols[0].name : ""; f.dir = 1; }
     const apply = () => {
       const q = norm(f.q);
+      const sc = shownCols.find(c => c.name === f.sort);
       return state.articles.filter(a => {
         if (f.cat && F(a, "categorie") !== f.cat) return false;
         if (f.stock === "low" && !(hasStock() && artStock(a) <= artSeuil(a))) return false;
         if (f.stock === "out" && !(hasStock() && artStock(a) <= 0)) return false;
         if (q && !norm(state.columns.map(c => a[c.name]).join(" ")).includes(q)) return false;
         return true;
-      }).sort((a, b) => String(artName(a)).localeCompare(String(artName(b)), "fr"));
+      }).sort((a, b) => {
+        if (!sc) return 0;
+        const x = a[sc.name], y = b[sc.name];
+        if (x == null || x === "") return 1;
+        if (y == null || y === "") return -1;
+        const r = (typeof x === "number" && typeof y === "number") ? x - y : String(x).localeCompare(String(y), "fr", { numeric: true });
+        return r * f.dir;
+      });
     };
     el.innerHTML = `
       <div class="card">
@@ -585,14 +638,12 @@
     const drawTable = () => {
       const list = apply();
       $("#art-table").innerHTML = list.length ? `<div class="table-wrap"><table class="table responsive">
-        <thead><tr>${shown.map(k => `<th class="${k === "prix" || k === "stock" ? "num" : ""}">${esc(colLabel(state.map[k]))}</th>`).join("")}<th></th></tr></thead>
+        <thead><tr>${shownCols.map(c => `<th class="sortable ${isNumCol(c) ? "num" : ""}" data-sort="${esc(c.name)}" title="Trier">${esc(c.displayName)}${f.sort === c.name ? (f.dir > 0 ? " ▲" : " ▼") : ""}</th>`).join("")}<th></th></tr></thead>
         <tbody>${list.map(a => `<tr>
-          ${shown.map(k => {
-            const lab = esc(colLabel(state.map[k]));
-            if (k === "designation") return `<td class="primary-cell" data-label="${lab}">${esc(artName(a))}</td>`;
-            if (k === "prix") return `<td class="num" data-label="${lab}">${money(artPrice(a))}</td>`;
-            if (k === "stock") { const st = stockStatus(a); return `<td class="num" data-label="${lab}"><span class="badge ${st.cls}">${int(artStock(a))} · ${st.label}</span></td>`; }
-            return `<td data-label="${lab}">${esc(F(a, k)) || '<span class="muted">—</span>'}</td>`;
+          ${shownCols.map(c => {
+            const lab = esc(c.displayName);
+            const primary = c.name === state.map.designation;
+            return `<td class="${primary ? "primary-cell" : ""} ${isNumCol(c) ? "num" : ""}" data-label="${lab}">${cellHTML(a, c)}</td>`;
           }).join("")}
           <td class="actions"><button class="btn sm" data-edit="${esc(a.id)}">${ICON.edit} Modifier</button> <button class="btn sm icon danger" data-del="${esc(a.id)}" aria-label="Supprimer">${ICON.trash}</button></td>
         </tr>`).join("")}</tbody></table></div>
@@ -607,6 +658,8 @@
       if (e.target.id === "art-stock") { f.stock = e.target.value; drawTable(); }
     };
     el.onclick = async e => {
+      const th = e.target.closest("[data-sort]");
+      if (th) { if (f.sort === th.dataset.sort) f.dir = -f.dir; else { f.sort = th.dataset.sort; f.dir = 1; } return viewArticles(el); }
       if (e.target.closest("#art-new")) return articleForm(null);
       if (e.target.closest("#art-export")) {
         const cols = state.columns;
@@ -644,6 +697,11 @@
       }
       case "choice":
         return `<select class="input" id="${id}" name="${esc(col.name)}" ${req}><option value=""></option>${col.choices.map(c => `<option ${c === v ? "selected" : ""}>${esc(c)}</option>`).join("")}${v && !col.choices.includes(v) ? `<option selected>${esc(v)}</option>` : ""}</select>`;
+      case "lookup": {
+        const cur = value && typeof value === "object" ? value.id : value;
+        const opts = col.options || [];
+        return `<select class="input" id="${id}" name="${esc(col.name)}" ${req}><option value=""></option>${opts.map(o => `<option value="${esc(o.id)}" ${o.id === cur ? "selected" : ""}>${esc(o.label)}</option>`).join("")}${cur && !opts.some(o => o.id === cur) ? `<option value="${esc(cur)}" selected>${esc(cur)}</option>` : ""}</select>`;
+      }
       case "note":
         return `<textarea class="input" id="${id}" name="${esc(col.name)}" rows="3" ${req}>${esc(v)}</textarea>`;
       default:
@@ -652,14 +710,15 @@
   }
 
   function articleForm(article) {
-    const order = ["designation", "reference", "categorie", "marque", "prix", "stock", "seuil"].map(k => state.map[k]).filter(Boolean);
-    const cols = [...state.columns].sort((a, b) => {
+    const order = articleColumns().map(c => c.name)
+      .concat(["designation", "reference", "categorie", "fournisseur", "marque", "prix", "stock", "seuil"].map(k => state.map[k]).filter(Boolean));
+    const cols = state.columns.filter(c => !(c.type === "lookup" && c.lookup && c.lookup.multi)).sort((a, b) => {
       const ia = order.indexOf(a.name), ib = order.indexOf(b.name);
       return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
     });
     const body = `<form id="art-form" class="form-grid" novalidate>
       ${cols.map(c => `<label class="field ${c.type === "note" || c.name === state.map.designation ? "full" : ""}" for="f_${esc(c.name)}">
-        <span>${esc(c.displayName)}${c.required ? ' <span class="req">*</span>' : ""}</span>${fieldInput(c, article ? article[c.name] : "")}</label>`).join("")}
+        <span>${esc(c.displayName)}${c.required ? ' <span class="req">*</span>' : ""}</span>${fieldInput(c, article ? (c.type === "lookup" ? article[c.name + "LookupId"] : article[c.name]) : "")}</label>`).join("")}
       <button type="submit" hidden></button>
     </form>`;
     const m = openModal({
@@ -673,6 +732,16 @@
         const inp = form.elements[c.name];
         if (!inp) continue;
         let val;
+        if (c.type === "lookup") {
+          // colonne Recherche : on écrit <Nom>LookupId ; relation numérique : on écrit la valeur elle-même
+          const key = c.relationField ? c.name : c.name + "LookupId";
+          const raw = inp.value;
+          if (c.required && !raw) { inp.focus(); return toast(`Le champ « ${c.displayName} » est obligatoire.`, "bad"); }
+          const old = article ? String(article[c.name + "LookupId"] || "") : "";
+          if (raw === old) continue;
+          fields[key] = raw === "" ? null : (/^\d+$/.test(raw) ? parseInt(raw, 10) : raw);
+          continue;
+        }
         if (c.type === "boolean") val = inp.checked;
         else if (c.type === "number" || c.type === "currency") val = inp.value === "" ? null : parseFloat(inp.value);
         else if (c.type === "dateTime") val = inp.value ? new Date(inp.value + "T12:00:00").toISOString() : null;
@@ -690,8 +759,8 @@
       try {
         if (article) {
           if (Object.keys(fields).length) {
-            await DS.updateArticle(article.id, fields);
-            Object.assign(article, fields);
+            const upd = await DS.updateArticle(article.id, fields);
+            Object.assign(article, upd);
           }
           toast("Article mis à jour.", "ok");
         } else {
