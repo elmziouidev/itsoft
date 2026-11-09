@@ -348,11 +348,11 @@
   function escClose(e) { if (e.key === "Escape") closeModal(); }
   function closeModal() { $("#modal-root").innerHTML = ""; document.removeEventListener("keydown", escClose); }
 
-  function confirmBox(title, message, okLabel = "Confirmer", danger = true) {
+  function confirmBox(title, message, okLabel = "Confirmer", danger = true, cancelLabel = "Annuler") {
     return new Promise(resolve => {
       const m = openModal({
         title, size: "sm", body: `<p style="margin:0">${message}</p>`,
-        foot: `<button class="btn" data-close>Annuler</button><button class="btn ${danger ? "danger solid" : "primary"}" data-ok>${esc(okLabel)}</button>`
+        foot: `<button class="btn" data-close>${esc(cancelLabel)}</button><button class="btn ${danger ? "danger solid" : "primary"}" data-ok>${esc(okLabel)}</button>`
       });
       let done = false;
       m.querySelector("[data-ok]").addEventListener("click", () => { done = true; closeModal(); resolve(true); });
@@ -952,39 +952,47 @@
     </div>`;
   }
 
+  const saleByNum = num => groupSales(state.ventes.filter(v => (v.Title || "#" + v.id) === num))[0];
+  function printSale(s) {
+    $("#print-area").innerHTML = receiptHTML(s);
+    window.print();
+  }
+  /* Annule une vente ou réparation : lignes supprimées et articles remis en stock */
+  async function cancelSale(s) {
+    const what = s.repair ? "la réparation" : "la vente";
+    const ok = await confirmBox(s.repair ? "Annuler la réparation" : "Annuler la vente",
+      `${what[0].toUpperCase() + what.slice(1)} <strong>${esc(s.num)}</strong> (${money(s.total)}) sera supprimée de SharePoint et ${hasStock() ? "les quantités seront remises en stock" : "le stock ne sera pas modifié"}. Continuer ?`,
+      s.repair ? "Annuler la réparation" : "Annuler la vente", true, s.repair ? "Garder la réparation" : "Garder la vente");
+    if (!ok) return false;
+    try {
+      for (const l of s.lines) {
+        await DS.deleteVenteLine(l.id);
+        state.ventes = state.ventes.filter(v => v.id !== l.id);
+        if (hasStock() && +l.ArticleId) {
+          try {
+            const a = await DS.getArticle(String(l.ArticleId));
+            const ns = (+a[state.map.stock] || 0) + (+l.Quantite || 0);
+            const upd = await DS.updateArticle(a.id, { [state.map.stock]: ns });
+            const local = artById(a.id);
+            if (local) Object.assign(local, upd);
+          } catch (_) { /* article supprimé entre-temps */ }
+        }
+      }
+      toast(s.repair ? "Réparation annulée." : "Vente annulée.", "ok");
+    } catch (e) { toast(e.message, "bad"); }
+    render();
+    return true;
+  }
   function showSale(num) {
-    const s = groupSales(state.ventes.filter(v => (v.Title || "#" + v.id) === num))[0];
+    const s = saleByNum(num);
     if (!s) return;
     const m = openModal({
       title: (s.repair ? "Réparation " : "Vente ") + s.num,
       body: receiptHTML(s),
-      foot: `<button class="btn danger" data-cancel>${ICON.trash} Annuler la vente</button><span class="spacer"></span><button class="btn" data-close>Fermer</button><button class="btn primary" data-print>${ICON.print} Imprimer</button>`
+      foot: `<button class="btn danger" data-cancel>${ICON.trash} ${s.repair ? "Annuler la réparation" : "Annuler la vente"}</button><span class="spacer"></span><button class="btn" data-close>Fermer</button><button class="btn primary" data-print>${ICON.print} Imprimer</button>`
     });
-    m.querySelector("[data-print]").addEventListener("click", () => {
-      $("#print-area").innerHTML = receiptHTML(s);
-      window.print();
-    });
-    m.querySelector("[data-cancel]").addEventListener("click", async () => {
-      const ok = await confirmBox("Annuler la vente", `La vente <strong>${esc(s.num)}</strong> sera supprimée de SharePoint et ${hasStock() ? "les quantités seront remises en stock" : "le stock ne sera pas modifié"}. Continuer ?`, "Annuler la vente");
-      if (!ok) return;
-      try {
-        for (const l of s.lines) {
-          await DS.deleteVenteLine(l.id);
-          state.ventes = state.ventes.filter(v => v.id !== l.id);
-          if (hasStock() && l.ArticleId) {
-            try {
-              const a = await DS.getArticle(String(l.ArticleId));
-              const ns = (+a[state.map.stock] || 0) + (+l.Quantite || 0);
-              await DS.updateArticle(a.id, { [state.map.stock]: ns });
-              const local = state.articles.find(x => x.id === a.id);
-              if (local) local[state.map.stock] = ns;
-            } catch (_) { /* article supprimé entre-temps */ }
-          }
-        }
-        toast("Vente annulée.", "ok");
-      } catch (e) { toast(e.message, "bad"); }
-      render();
-    });
+    m.querySelector("[data-print]").addEventListener("click", () => printSale(s));
+    m.querySelector("[data-cancel]").addEventListener("click", async () => { closeModal(); await cancelSale(s); });
   }
 
   /* ============ Vue : articles ============ */
@@ -2191,7 +2199,7 @@
   function drawHistory(body, f) {
     if (!state.achatsReady) {
       body.innerHTML = `<div class="card card-pad"><div class="alert info">${ICON.info}<div class="grow">Aucun achat enregistré pour l'instant.
-        Pour enregistrer un achat, ouvrez <a href="#/articles">Articles</a> et cliquez sur le bouton <strong>📦 Réceptionner</strong> de l'article reçu.
+        Pour enregistrer un achat, ouvrez <a href="#/articles">Articles</a> et ajoutez les articles reçus au bon de réception avec le bouton <strong>📦</strong>, puis validez-le.
         La liste <code>${esc(cfg.achatsList)}</code> sera créée automatiquement au premier achat.</div></div></div>`;
       return;
     }
@@ -2216,17 +2224,35 @@
         return true;
       }).sort((a, b) => new Date(b.DateAchat) - new Date(a.DateAchat));
     };
+    /* Un bon = toutes les lignes d'achat portant le même numéro */
+    const bons = list => {
+      const m = new Map();
+      for (const p of list) {
+        const k = p.Title || "#" + p.id;
+        if (!m.has(k)) m.set(k, { num: k, date: p.DateAchat, sup: p.Fournisseur || "", user: p.Utilisateur || "", lines: [], total: 0, qty: 0 });
+        const b = m.get(k); b.lines.push(p); b.total += +p.Montant || 0; b.qty += +p.Quantite || 0;
+      }
+      return [...m.values()].sort((a, b) => new Date(b.date) - new Date(a.date));
+    };
+    const bonHTML = b => `<div class="receipt"><h2>${esc(cfg.nomEntreprise)} — Bon de réception</h2>
+      <div class="meta"><span class="muted">N°</span><strong>${esc(b.num)}</strong><span class="muted">Date</span><span>${fmtDate(b.date)}</span>
+        <span class="muted">Fournisseur</span><span>${esc(b.sup) || "—"}</span><span class="muted">Réceptionné par</span><span>${esc(b.user) || "—"}</span></div>
+      <table><thead><tr><th>Article</th><th class="num">Qté</th><th class="num">Prix d'achat</th><th class="num">Montant</th></tr></thead><tbody>
+      ${b.lines.map(p => `<tr><td>${esc(p.Article || "")}</td><td class="num">${int(p.Quantite)}</td><td class="num">${money(p.PrixAchat)}</td><td class="num">${money(p.Montant)}</td></tr>`).join("")}
+      </tbody></table><div class="totals"><strong class="grand">Total</strong><strong class="num grand">${money(b.total)}</strong></div></div>`;
+    let current = [];
     const draw = () => {
-      const list = apply();
-      const tot = list.reduce((t, p) => t + (+p.Montant || 0), 0);
-      $("#ah-table").innerHTML = list.length ? `<div class="table-scroll"><table class="table responsive compact">
-        <thead><tr><th>Date</th><th>Article</th><th>Fournisseur</th><th class="num">Qté</th><th class="num">Prix d'achat</th><th class="num">Montant</th><th>Par</th><th></th></tr></thead>
-        <tbody>${list.map(p => `<tr data-ach="${esc(p.id)}"><td data-label="Date">${fmtDate(p.DateAchat)}</td><td class="primary-cell" data-label="Article">${esc(p.Article || "")}</td>
-          <td data-label="Fournisseur">${esc(p.Fournisseur || "")}</td><td class="num" data-label="Qté">${int(p.Quantite)}</td>
-          <td class="num" data-label="Prix d'achat">${money(p.PrixAchat)}</td><td class="num" data-label="Montant"><strong>${money(p.Montant)}</strong></td>
-          <td data-label="Par" class="muted">${esc(p.Utilisateur || "")}</td>
-          <td class="actions"><button class="btn sm icon ghost danger" data-cancel title="Annuler cet achat" aria-label="Annuler">${ICON.trash}</button></td></tr>`).join("")}</tbody></table></div>
-        <div class="table-foot"><span>${int(list.length)} achat(s)</span><span>Quantité : <strong>${int(list.reduce((t, p) => t + (+p.Quantite || 0), 0))}</strong></span><span>Total : <strong>${money(tot)}</strong></span></div>`
+      current = bons(apply());
+      const tot = current.reduce((t, b) => t + b.total, 0);
+      $("#ah-table").innerHTML = current.length ? `<div class="table-scroll"><table class="table responsive compact">
+        <thead><tr><th>Date</th><th>Fournisseur</th><th>Articles reçus</th><th class="num">Pièces</th><th class="num">Montant</th><th>Par</th><th></th></tr></thead>
+        <tbody>${current.map((b, i) => `<tr data-bon="${i}"><td data-label="Date">${fmtDate(b.date)}</td>
+          <td data-label="Fournisseur">${esc(b.sup) || '<span class="muted">—</span>'}</td>
+          <td class="primary-cell" data-label="Articles"><span class="ellipsis" style="display:block;max-width:340px" title="${esc(b.lines.map(p => int(p.Quantite) + " × " + (p.Article || "") + " à " + money(p.PrixAchat)).join("\n"))}">${esc(b.lines.map(p => (+p.Quantite > 1 ? int(p.Quantite) + " × " : "") + (p.Article || "")).join(", "))}</span></td>
+          <td class="num" data-label="Pièces">${int(b.qty)}</td><td class="num" data-label="Montant"><strong>${money(b.total)}</strong></td>
+          <td data-label="Par" class="muted">${esc(b.user)}</td>
+          <td class="actions"><button class="btn sm row-act" data-print-bon title="Imprimer le bon de réception">${ICON.print}<span>Imprimer</span></button><button class="btn sm row-act danger" data-cancel-bon title="Annuler cette réception">${ICON.trash}<span>Annuler</span></button></td></tr>`).join("")}</tbody></table></div>
+        <div class="table-foot"><span>${int(current.length)} réception(s)</span><span>Pièces : <strong>${int(current.reduce((t, b) => t + b.qty, 0))}</strong></span><span>Total : <strong>${money(tot)}</strong></span></div>`
         : `<div class="empty">Aucun achat pour ces critères.</div>`;
     };
     draw();
@@ -2238,22 +2264,27 @@
     };
     body._click = async e => {
       if (e.target.closest("#ah-export")) {
-        return downloadCSV("achats.csv", [["Date", "Article", "Fournisseur", "Quantité", "Prix d'achat", "Montant", "Utilisateur"],
-          ...apply().map(p => [fmtDate(p.DateAchat), p.Article, p.Fournisseur, p.Quantite, p.PrixAchat, p.Montant, p.Utilisateur])]);
+        return downloadCSV("achats.csv", [["N° bon", "Date", "Article", "Fournisseur", "Quantité", "Prix d'achat", "Montant", "Utilisateur"],
+          ...apply().map(p => [p.Title, fmtDate(p.DateAchat), p.Article, p.Fournisseur, p.Quantite, p.PrixAchat, p.Montant, p.Utilisateur])]);
       }
-      const b = e.target.closest("[data-cancel]");
+      const tr = e.target.closest("tr[data-bon]");
+      if (!tr) return;
+      const b = current[+tr.dataset.bon];
       if (!b) return;
-      const p = state.achats.find(x => x.id === b.closest("tr").dataset.ach);
-      if (!p || !(await confirmBox("Annuler l'achat", `L'achat de <strong>${int(p.Quantite)} × ${esc(p.Article)}</strong> sera supprimé${hasStock() ? " et la quantité retirée du stock" : ""}. Continuer ?`, "Annuler l'achat"))) return;
+      if (e.target.closest("[data-print-bon]")) { $("#print-area").innerHTML = bonHTML(b); window.print(); return; }
+      if (!e.target.closest("[data-cancel-bon]")) return;
+      if (!(await confirmBox("Annuler la réception", `La réception <strong>${esc(b.num)}</strong> de <strong>${esc(b.sup)}</strong> (${int(b.lines.length)} article(s), ${money(b.total)}) sera supprimée${hasStock() ? " et les quantités retirées du stock" : ""}. Continuer ?`, "Annuler la réception", true, "Garder la réception"))) return;
       try {
-        await DS.deleteAchatLine(p.id);
-        state.achats = state.achats.filter(x => x !== p);
-        const a = state.articles.find(x => String(x.id) === String(p.ArticleId));
-        if (a && hasStock()) {
-          const fresh = await DS.getArticle(a.id);
-          Object.assign(a, await DS.updateArticle(a.id, { [state.map.stock]: Math.max(0, (+fresh[state.map.stock] || 0) - (+p.Quantite || 0)) }));
+        for (const p of b.lines) {
+          await DS.deleteAchatLine(p.id);
+          state.achats = state.achats.filter(x => x !== p);
+          const a = artById(p.ArticleId);
+          if (a && hasStock()) {
+            const fresh = await DS.getArticle(a.id);
+            Object.assign(a, await DS.updateArticle(a.id, { [state.map.stock]: Math.max(0, (+fresh[state.map.stock] || 0) - (+p.Quantite || 0)) }));
+          }
         }
-        toast("Achat annulé.", "ok"); draw();
+        toast("Réception annulée.", "ok"); draw();
       } catch (err) { toast(err.message, "bad"); }
     };
   }
@@ -2364,14 +2395,15 @@
         <span><span class="muted">Total :</span> <strong>${money(sum(list))}</strong></span>
         <span><span class="muted">Bénéfice :</span> <strong style="color:var(--success)">${money(profit)}</strong>${unknown ? ` <span class="muted" title="Ventes d'articles dont le prix d'achat est inconnu">(${int(unknown)} sans prix d'achat)</span>` : ""}</span>`;
       $("#v-table").innerHTML = list.length ? `<div class="table-wrap"><table class="table responsive compact">
-        <thead><tr><th>Date</th><th>Type</th><th>Détail</th><th>Client</th><th class="num">Total</th><th class="num">Bénéfice</th></tr></thead>
+        <thead><tr><th>Date</th><th>Type</th><th>Détail</th><th>Client</th><th class="num">Total</th><th class="num">Bénéfice</th><th></th></tr></thead>
         <tbody>${list.slice(0, 500).map(s => `<tr class="clickable" data-sale="${esc(s.num)}">
           <td data-label="Date">${fmtDateTime(s.date)}</td>
           <td data-label="Type">${s.repair ? '<span class="badge info">Réparation</span>' : '<span class="badge">Vente</span>'}</td>
           <td class="primary-cell" data-label="Détail"><span class="ellipsis" style="display:block;max-width:320px">${esc(s.lines.map(l => (l.Quantite > 1 ? l.Quantite + " × " : "") + (l.Article || "")).join(", "))}</span></td>
           <td data-label="Client">${esc(s.client) || '<span class="muted">—</span>'}</td>
           <td class="num" data-label="Total"><strong>${money(s.total)}</strong></td>
-          <td class="num" data-label="Bénéfice">${s.profit != null ? `<span style="color:${s.profit < 0 ? "var(--danger)" : "var(--success)"}">${money(s.profit)}</span>` : '<span class="muted" title="Prix d\'achat inconnu">—</span>'}</td></tr>`).join("")}
+          <td class="num" data-label="Bénéfice">${s.profit != null ? `<span style="color:${s.profit < 0 ? "var(--danger)" : "var(--success)"}">${money(s.profit)}</span>` : '<span class="muted" title="Prix d\'achat inconnu">—</span>'}</td>
+          <td class="actions"><button class="btn sm row-act" data-print-sale="${esc(s.num)}" title="Imprimer le ticket">${ICON.print}<span>Imprimer</span></button><button class="btn sm row-act danger" data-cancel-sale="${esc(s.num)}" title="${s.repair ? "Annuler la réparation" : "Annuler la vente"}">${ICON.trash}<span>Annuler</span></button></td></tr>`).join("")}
         </tbody></table></div>${list.length > 500 ? `<div class="muted" style="padding:10px 16px">Affichage limité aux 500 opérations les plus récentes — affinez les filtres.</div>` : ""}`
         : `<div class="empty">Aucune vente pour ces critères.</div>`;
     };
@@ -2385,6 +2417,10 @@
     el.onclick = e => {
       if (e.target.closest("#v-repair")) return repairDialog();
       if (e.target.closest("#v-sale")) return sellDialog(null);
+      const pb = e.target.closest("[data-print-sale]");
+      if (pb) { const s = saleByNum(pb.dataset.printSale); if (s) printSale(s); return; }
+      const cb = e.target.closest("[data-cancel-sale]");
+      if (cb) { const s = saleByNum(cb.dataset.cancelSale); if (s) cancelSale(s); return; }
       const tr = e.target.closest("[data-sale]");
       if (tr) return showSale(tr.dataset.sale);
       if (e.target.closest("#v-export")) {

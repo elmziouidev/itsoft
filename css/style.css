@@ -293,6 +293,13 @@ table.table { width: 100%; border-collapse: collapse; }
 .seuil-input:focus { border-color: var(--primary); }
 #seuil-table tr.changed td { background: var(--warning-soft); }
 
+/* Boutons Imprimer / Annuler des listes Ventes et Achats */
+.btn.sm.row-act { gap: 5px; padding: 4px 9px; font-size: 12.5px; margin-left: 4px; }
+.btn.sm.row-act svg { width: 15px; height: 15px; }
+.btn.sm.row-act.danger:hover { background: var(--danger-soft); }
+@media (max-width: 1100px) { .btn.sm.row-act span { display: none; } .btn.sm.row-act { padding: 4px 7px; } }
+@media (max-width: 640px) { .btn.sm.row-act span { display: inline; } }
+
 /* Bouton « ajouter au panier » des lignes d'articles */
 .sell-btn { position: relative; }
 .sell-btn.in-cart { background: var(--primary-soft); color: var(--primary); }
