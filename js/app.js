@@ -2183,7 +2183,6 @@
           <button class="tab ${f.tab === "cmd" ? "on" : ""}" data-tab="cmd" role="tab">À commander</button>
           <span class="spacer"></span>
           <a class="btn" href="#/fournisseurs">${ICON.edit}<span class="hide-sm">Fournisseurs</span></a>
-          <button class="btn primary" data-open-bon>📦 Bon de réception</button>
         </div>
         <div id="ach-body"></div>
       </div>`;
@@ -2379,8 +2378,7 @@
             <label class="row" style="gap:6px"><span class="muted" style="font-size:13px">Du</span><input class="input" id="v-from" type="date" value="${esc(f.from)}" style="width:auto"></label>
             <label class="row" style="gap:6px"><span class="muted" style="font-size:13px">au</span><input class="input" id="v-to" type="date" value="${esc(f.to)}" style="width:auto"></label>
             <button class="btn" id="v-export">${ICON.download}<span class="hide-sm">Exporter</span></button>
-            <button class="btn" id="v-repair">${ICON.plus} Réparation</button>
-            <button class="btn primary" id="v-sale">${ICON.cart} Nouvelle vente</button>
+            <button class="btn primary" id="v-repair">${ICON.plus} Réparation</button>
           </div>
           <div id="v-sum" class="sum-bar"></div>
           <div id="v-table"></div>
