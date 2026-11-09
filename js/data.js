@@ -186,49 +186,70 @@
         this.siteId = site.id;
         this.siteName = site.displayName;
       }
-      this._lists = null;
+      // une seule requête pour connaître toutes les listes du site
+      this._lists = await this.getAll(`/sites/${this.siteId}/lists?$select=id,name,displayName`);
       if (!this.articlesListId) {
         this.articlesListId = await this.findList(cfg.articlesList);
         if (!this.articlesListId) throw new Error(`La liste « ${cfg.articlesList} » est introuvable sur le site ${cfg.sitePath}.`);
       }
       if (!this.ventesListId) this.ventesListId = await this.findList(cfg.ventesList);
 
-      const base = `/sites/${this.siteId}/lists/${this.articlesListId}`;
-      const [cols, items] = await Promise.all([
-        this.getAll(`${base}/columns`),
-        this.getAll(`${base}/items?$expand=fields&$top=500`)
+      const soft = (p, def, what) => p.catch(e => { console.warn(what + " indisponibles", e); return def; });
+      // toutes les listes sont chargées en parallèle
+      const [art, ventes, categories, clients, fournisseurs, achats] = await Promise.all([
+        this.loadArticles(),
+        this.loadVentes(),
+        soft(this.loadCategories(), null, "Catégories"),
+        soft(this.loadClients(), null, "Clients"),
+        soft(this.loadFournisseurs(), null, "Fournisseurs"),
+        soft(this.loadAchats(), [], "Achats")
       ]);
+      return { columns: art.columns, articles: art.articles, ventes, categories, clients, fournisseurs, achats,
+        achatsReady: !!this.achatsListId, ventesReady: !!this.ventesListId, siteName: this.siteName };
+    },
+
+    async loadArticles() {
+      const base = `/sites/${this.siteId}/lists/${this.articlesListId}`;
+      const cols = await this.getAll(`${base}/columns`);
       const columns = cols.map(normalizeColumn).filter(isUsable);
       // colonnes numériques reliées à une autre liste (ex. Nom_article → Tbl_categorie)
       for (const c of columns) {
         const rel = c.type === "number" && relationFor(c);
         if (rel) { c.relation = rel; c.relationField = true; c.rawType = c.type; c.type = "lookup"; }
       }
-      await Promise.all(columns.filter(c => c.type === "lookup" && !(c.lookup && c.lookup.multi)).map(c => this.loadOptions(c)));
+      // on ne télécharge que les colonnes utiles (beaucoup plus léger que tous les champs système)
+      const hasLookup = columns.some(c => c.type === "lookup" && !c.relationField);
+      const sel = hasLookup ? "" : `($select=${["Title"].concat(columns.map(c => c.name)).filter((v, i, a) => a.indexOf(v) === i).join(",")})`;
+      const [items] = await Promise.all([
+        this.getAll(`${base}/items?$expand=fields${sel}&$top=500`),
+        Promise.all(columns.filter(c => c.type === "lookup" && !(c.lookup && c.lookup.multi)).map(c => this.loadOptions(c)))
+      ]);
       this.columns = columns;
-      const articles = items.map(it => resolveLookups({ ...it.fields, id: String(it.id) }, columns));
-
-      let ventes = [];
-      if (this.ventesListId) {
-        // les colonnes de la liste des ventes peuvent avoir des noms internes différents (ex. field_1 … field_10
-        // si la liste a été créée depuis un CSV) : on les retrouve par leur nom affiché
-        const vcols = await this.getAll(`/sites/${this.siteId}/lists/${this.ventesListId}/columns`);
-        this.vmap = { Title: "Title" };
-        for (const L of VENTE_FIELDS) {
-          const c = vcols.find(x => x.name === L) || vcols.find(x => norm(x.displayName) === norm(L));
-          this.vmap[L] = c ? c.name : L;
-        }
-        const v = await this.getAll(`/sites/${this.siteId}/lists/${this.ventesListId}/items?$expand=fields&$top=500`);
-        ventes = v.map(it => this.fromVente(it));
-      }
-      let categories = null, clients = null, fournisseurs = null, achats = [];
-      try { categories = await this.loadCategories(); } catch (e) { console.warn("Catégories indisponibles", e); }
-      try { clients = await this.loadClients(); } catch (e) { console.warn("Clients indisponibles", e); }
-      try { fournisseurs = await this.loadFournisseurs(); } catch (e) { console.warn("Fournisseurs indisponibles", e); }
-      try { achats = await this.loadAchats(); } catch (e) { console.warn("Achats indisponibles", e); }
-      return { columns, articles, ventes, categories, clients, fournisseurs, achats, achatsReady: !!this.achatsListId,
-        ventesReady: !!this.ventesListId, siteName: this.siteName };
+      return { columns, articles: items.map(it => resolveLookups({ ...it.fields, id: String(it.id) }, columns)) };
     },
+
+    async loadVentes() {
+      if (!this.ventesListId) return [];
+      // colonnes retrouvées par leur nom affiché (ex. field_1 … field_10 si la liste vient d'un CSV)
+      const [vcols, v] = await Promise.all([
+        this.getAll(`/sites/${this.siteId}/lists/${this.ventesListId}/columns?$select=name,displayName`),
+        this.getAll(`/sites/${this.siteId}/lists/${this.ventesListId}/items?$expand=fields&$top=500`)
+      ]);
+      this.vmap = { Title: "Title" };
+      for (const L of VENTE_FIELDS) {
+        const c = vcols.find(x => x.name === L) || vcols.find(x => norm(x.displayName) === norm(L));
+        this.vmap[L] = c ? c.name : L;
+      }
+      return v.map(it => this.fromVente(it));
+    },
+
+    /* Mémorise / restaure les identifiants techniques (affichage instantané depuis le cache) */
+    exportMeta() {
+      const k = ["siteId", "siteName", "articlesListId", "ventesListId", "achatsListId", "categoriesListId", "clientsListId",
+        "fournisseursListId", "vmap", "amap", "catSeuilField", "columns"];
+      return Object.fromEntries(k.map(x => [x, this[x]]));
+    },
+    importMeta(m) { if (m) for (const k of Object.keys(m)) if (m[k] !== undefined && m[k] !== null) this[k] = m[k]; },
 
     /* ---- Outils : colonnes retrouvées par nom affiché ---- */
     async fieldMap(listId, names) {

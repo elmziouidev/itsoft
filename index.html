@@ -3,11 +3,20 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>Gestion des ventes IT</title>
-  <meta name="description" content="Gestion des ventes d'articles informatiques — données SharePoint">
+  <title>ITSoft · Gestion des ventes</title>
+  <meta name="description" content="Gestion des ventes et des achats d'articles informatiques — données SharePoint">
   <meta name="theme-color" content="#1f4fd1">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="ITSoft">
+  <meta name="format-detection" content="telephone=no">
+  <!-- connexions anticipées vers les serveurs utilisés au démarrage -->
+  <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+  <link rel="preconnect" href="https://login.microsoftonline.com" crossorigin>
+  <link rel="preconnect" href="https://graph.microsoft.com" crossorigin>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%231f4fd1'/%3E%3Cpath d='M8 10h16v10H8z' fill='none' stroke='white' stroke-width='2.4'/%3E%3Cpath d='M12 24h8' stroke='white' stroke-width='2.4' stroke-linecap='round'/%3E%3C/svg%3E">
-  <link rel="stylesheet" href="css/style.css">
+  <!-- le « ?v= » change à chaque version : les navigateurs chargent alors les nouveaux fichiers -->
+  <link rel="stylesheet" href="css/style.css?v=2026.11.09-5">
 </head>
 <body>
   <div id="app" class="app">
@@ -19,7 +28,7 @@
         <span class="brand-name" id="brand-name">Ventes IT</span>
       </div>
       <nav class="nav" id="nav">
-        <a href="#/tableau" data-view="tableau"><svg viewBox="0 0 24 24"><path d="M3 13h8V3H3zM13 21h8V11h-8zM3 21h8v-6H3zM13 3v6h8V3z"/></svg><span>Tableau de bord</span></a>
+        <a href="#/tableau" data-view="tableau"><svg viewBox="0 0 24 24"><path d="M3 13h8V3H3zM13 21h8V11h-8zM3 21h8v-6H3zM13 3v6h8V3z"/></svg><span class="lbl-long">Tableau de bord</span><span class="lbl-short">Accueil</span></a>
         <a href="#/articles" data-view="articles"><svg viewBox="0 0 24 24"><path d="M21 8 12 3 3 8v8l9 5 9-5z"/><path d="m3 8 9 5 9-5M12 13v8"/></svg><span>Articles</span></a>
         <a href="#/achats" data-view="achats"><svg viewBox="0 0 24 24"><path d="M3 7h13v10H3z"/><path d="M16 10h3l2 3v4h-5"/><circle cx="7" cy="18" r="1.8"/><circle cx="17.5" cy="18" r="1.8"/></svg><span>Achats</span></a>
         <a href="#/ventes" data-view="ventes"><svg viewBox="0 0 24 24"><path d="M6 2h9l5 5v15H6z"/><path d="M14 2v6h6M9 13h8M9 17h8"/></svg><span>Ventes</span></a>
@@ -52,9 +61,9 @@
   <div id="print-area" class="print-area"></div>
 
   <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.27.0/lib/msal-browser.min.js"></script>
-  <script src="js/config.js"></script>
-  <script src="js/auth.js"></script>
-  <script src="js/data.js"></script>
-  <script src="js/app.js"></script>
+  <script src="js/config.js?v=2026.11.09-5"></script>
+  <script src="js/auth.js?v=2026.11.09-5"></script>
+  <script src="js/data.js?v=2026.11.09-5"></script>
+  <script src="js/app.js?v=2026.11.09-5"></script>
 </body>
 </html>

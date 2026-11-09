@@ -15,6 +15,14 @@
   const fmtDate = d => d ? new Date(d).toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit", year: "numeric" }) : "";
   const fmtDateTime = d => d ? new Date(d).toLocaleString("fr-FR", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" }) : "";
   const norm = s => String(s || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/[^a-z0-9]/g, "");
+  /* Texte de recherche normalisé d'un article (mis en cache : la normalisation est coûteuse) */
+  const _normCache = new Map();
+  function searchKey(a) {
+    const raw = state.columns.map(c => a[c.name]).join(" ");
+    let k = _normCache.get(raw);
+    if (k === undefined) { if (_normCache.size > 5000) _normCache.clear(); k = norm(raw); _normCache.set(raw, k); }
+    return k;
+  }
   const dayKey = d => { const x = new Date(d); return x.getFullYear() + "-" + String(x.getMonth() + 1).padStart(2, "0") + "-" + String(x.getDate()).padStart(2, "0"); };
   const store = {
     get(k, def) { try { const v = localStorage.getItem(k); return v == null ? def : JSON.parse(v); } catch (_) { return def; } },
@@ -315,9 +323,39 @@
   }
 
   /* ============ Chargement ============ */
+  /* ---- Cache local : affichage instantané des dernières données, puis synchronisation ---- */
+  const CACHE_VER = 1;
+  const cacheKey = () => "itsoft-cache-v" + CACHE_VER + "-" + ((Auth.account && Auth.account.username) || "local");
+  function saveCache(res) {
+    if (DS.mode !== "sharepoint" || !DS.exportMeta) return;
+    try { localStorage.setItem(cacheKey(), JSON.stringify({ t: Date.now(), res, meta: DS.exportMeta() })); }
+    catch (_) { try { localStorage.removeItem(cacheKey()); } catch (__) {} }
+  }
+  function readCache() {
+    if (DS.mode !== "sharepoint") return null;
+    try {
+      const c = JSON.parse(localStorage.getItem(cacheKey()));
+      return c && c.res && Date.now() - c.t < 7 * 864e5 ? c : null;
+    } catch (_) { return null; }
+  }
+  function setSyncing(on) {
+    const b = $("#btn-refresh");
+    if (b) { b.classList.toggle("spinning", on); b.title = on ? "Synchronisation avec SharePoint…" : "Actualiser les données"; }
+  }
+  /* Attend qu'aucune fenêtre ni cellule ne soit en cours de saisie avant de rafraîchir l'écran */
+  async function whenIdle(maxMs = 60000) {
+    const t = Date.now();
+    while (($("#modal-root").children.length || $("td.editing")) && Date.now() - t < maxMs) await new Promise(r => setTimeout(r, 400));
+  }
+
   async function loadData(silent) {
     if (!silent) $("#view").innerHTML = `<div class="loader"><span class="spinner"></span> Chargement des données SharePoint…</div>`;
     const res = await DS.load();
+    applyData(res);
+    saveCache(res);
+  }
+
+  function applyData(res) {
     state.columns = res.columns;
     state.articles = res.articles;
     state.ventes = res.ventes;
@@ -353,12 +391,13 @@
     if (!state.loaded) return;
     const k = currentView();
     $("#view-title").textContent = VIEWS[k].title;
-    document.title = VIEWS[k].title + " · Gestion des ventes IT";
+    document.title = VIEWS[k].title + " · " + (cfg.nomEntreprise || "Gestion des ventes");
     $$("#nav a").forEach(a => a.classList.toggle("active", a.dataset.view === (VIEWS[k].nav || k)));
     const view = $("#view");
     // réinitialise les gestionnaires d'événements laissés par la vue précédente
     for (const h of ["onclick", "onchange", "oninput", "onkeydown", "ondragstart", "ondragover", "ondrop", "ondragend"]) view[h] = null;
     VIEWS[k].render(view);
+    if (window.performance && performance.mark && !performance.getEntriesByName("itsoft-premier-affichage").length) performance.mark("itsoft-premier-affichage");
   }
 
   function ventesMissingBanner() {
@@ -717,7 +756,7 @@
         if (f.cat && F(a, "categorie") !== f.cat) return false;
         if (f.stock === "low" && !(hasStock() && artStock(a) <= artSeuil(a))) return false;
         if (f.stock === "out" && !(hasStock() && artStock(a) <= 0)) return false;
-        if (q && !norm(state.columns.map(c => a[c.name]).join(" ")).includes(q)) return false;
+        if (q && !searchKey(a).includes(q)) return false;
         return true;
       }).sort((a, b) => {
         if (!sc) return 0;
@@ -756,13 +795,45 @@
       (hasCA() ? `<span>Valeur du stock : <strong>${money(list.reduce((t, a) => t + artCA(a), 0))}</strong></span>` : "") +
       `<span class="muted hide-sm">Cliquez sur un article pour le vendre · sur une autre cellule pour la modifier</span>`;
 
+    /* Affichage progressif : les premières lignes tout de suite, la suite au fil du défilement */
+    const PAGE = 120;
+    let curList = [], shown = 0, io = null;
+    const appendMore = () => {
+      const next = curList.slice(shown, shown + 250);
+      if (!next.length) return;
+      shown += next.length;
+      $("#art-table tbody").insertAdjacentHTML("beforeend", next.map(a => `<tr data-id="${esc(a.id)}">${rowInner(a)}</tr>`).join(""));
+      if (shown >= curList.length) { if (io) io.disconnect(); const s = $("#art-more"); if (s) s.remove(); }
+    };
+    const setupMore = () => {
+      if (io) io.disconnect();
+      const s = $("#art-more");
+      if (!s) return;
+      const sc = $("#art-table .table-scroll");
+      const root = sc && getComputedStyle(sc).overflowY !== "visible" ? sc : null;
+      if ("IntersectionObserver" in window) {
+        io = new IntersectionObserver(es => { if (es.some(x => x.isIntersecting)) appendMore(); }, { root, rootMargin: "600px" });
+        io.observe(s);
+      }
+      // secours : déclenchement au défilement (tableau défilant sur ordinateur, page entière sur mobile)
+      const onScroll = () => {
+        const m = $("#art-more");
+        if (!m || !document.body.contains(m)) { window.removeEventListener("scroll", onScroll); return; }
+        const limit = root ? root.getBoundingClientRect().bottom : window.innerHeight;
+        if (m.getBoundingClientRect().top < limit + 600) appendMore();
+      };
+      if (root) root.onscroll = onScroll; else window.addEventListener("scroll", onScroll, { passive: true });
+    };
     const drawTable = () => {
       const list = apply();
+      curList = list; shown = Math.min(PAGE, list.length);
       $("#art-table").innerHTML = list.length ? `<div class="table-scroll"><table class="table responsive compact">
         <thead><tr>${layout.map(c => `<th class="sortable ${isNumCol(c) ? "num" : ""}" data-sort="${esc(c.name)}" draggable="true" title="Cliquer pour trier · glisser pour déplacer la colonne"><span class="grip" aria-hidden="true">⋮⋮</span>${esc(c.displayName)}${f.sort === c.name ? (f.dir > 0 ? " ▲" : " ▼") : ""}</th>`).join("")}<th>${store.get(COL_ORDER_KEY, null) ? `<button class="btn sm ghost" id="col-reset" title="Rétablir l'ordre d'origine des colonnes">↺</button>` : ""}</th></tr></thead>
-        <tbody>${list.map(a => `<tr data-id="${esc(a.id)}">${rowInner(a)}</tr>`).join("")}</tbody></table></div>
+        <tbody>${list.slice(0, shown).map(a => `<tr data-id="${esc(a.id)}">${rowInner(a)}</tr>`).join("")}</tbody></table>
+        ${shown < list.length ? `<button class="more-row" id="art-more" type="button">Afficher plus d'articles…</button>` : ""}</div>
         <div class="table-foot" id="art-foot">${footHTML(list)}</div>`
         : `<div class="empty">Aucun article ne correspond aux critères.</div>`;
+      setupMore();
     };
     const refreshFoot = () => { const ft = $("#art-foot"); if (ft) ft.innerHTML = footHTML(apply()); };
     const rowEl = id => $(`#art-table tr[data-id="${CSS.escape(String(id))}"]`);
@@ -869,7 +940,8 @@
 
     drawTable();
 
-    $("#art-q").addEventListener("input", e => { f.q = e.target.value; drawTable(); });
+    let qTimer = null; // recherche : on attend la fin de la frappe
+    $("#art-q").addEventListener("input", e => { f.q = e.target.value; clearTimeout(qTimer); qTimer = setTimeout(drawTable, 140); });
     /* ---- Glisser-déposer des en-têtes pour réordonner les colonnes ---- */
     let dragCol = null;
     const clearDrop = () => $$("#art-table th.drop-before, #art-table th.drop-after, #art-table th.dragging")
@@ -914,6 +986,7 @@
       if (e.target.id === "art-stock") { f.stock = e.target.value; drawTable(); }
     };
     el.onclick = async e => {
+      if (e.target.closest("#art-more")) return appendMore();
       const th0 = e.target.closest("[data-thumb]");
       if (th0) { const a = state.articles.find(x => x.id === th0.dataset.thumb); if (a) return showPhoto(a); }
       const sell = e.target.closest("[data-sell]");
@@ -1437,13 +1510,15 @@
     return "dl-sups";
   }
   /* Dernier achat connu d'un article (prix d'achat, fournisseur) */
+  let _lpIdx = { src: null, len: -1, map: null };
   function lastPurchase(a) {
-    let best = null;
-    for (const p of state.achats || []) {
-      if (String(p.ArticleId) !== String(a.id)) continue;
-      if (!best || new Date(p.DateAchat) > new Date(best.DateAchat)) best = p;
+    const src = state.achats || [];
+    if (_lpIdx.src !== src || _lpIdx.len !== src.length) { // index reconstruit seulement si les achats changent
+      const m = new Map();
+      for (const p of src) { const k = String(p.ArticleId), b = m.get(k); if (!b || new Date(p.DateAchat) > new Date(b.DateAchat)) m.set(k, p); }
+      _lpIdx = { src, len: src.length, map: m };
     }
-    return best;
+    return _lpIdx.map.get(String(a.id)) || null;
   }
   function ensureAchatsList() {
     if (state.achatsReady) return Promise.resolve(true);
@@ -2061,7 +2136,7 @@
         toast(errors ? `${errors} seuil(s) non enregistré(s).` : `${rows.length} seuil(s) enregistré(s).`, errors ? "bad" : "ok");
         return viewParametres(el);
       }
-      if (e.target.closest("#btn-logout")) return Auth.logout();
+      if (e.target.closest("#btn-logout")) { try { localStorage.removeItem(cacheKey()); } catch (_) {} return Auth.logout(); }
       if (e.target.closest("#btn-demo-reset")) {
         if (!(await confirmBox("Réinitialiser", "Toutes les données démo de ce navigateur seront remplacées par le jeu d'exemple.", "Réinitialiser"))) return;
         DS.reset(); state.cart = []; await loadData(); render(); return toast("Données démo réinitialisées.", "ok");
@@ -2098,7 +2173,10 @@
     const tb = $("#btn-logout-top");
     if (tb) tb.hidden = !Auth.enabled;
     const confirmLogout = async () => {
-      if (await confirmBox("Se déconnecter", `Vous allez être déconnecté de votre compte Microsoft 365${email ? ` (<strong>${esc(email)}</strong>)` : ""}.`, "Se déconnecter", false)) Auth.logout();
+      if (await confirmBox("Se déconnecter", `Vous allez être déconnecté de votre compte Microsoft 365${email ? ` (<strong>${esc(email)}</strong>)` : ""}.`, "Se déconnecter", false)) {
+        try { localStorage.removeItem(cacheKey()); } catch (_) {} // efface les données mémorisées sur cet appareil
+        Auth.logout();
+      }
     };
     $("#user-box").onclick = e => { if (e.target.closest("[data-logout]")) confirmLogout(); };
     if (tb) tb.onclick = confirmLogout;
@@ -2134,15 +2212,29 @@
     } catch (e) { return showFatal(e); }
     if (Auth.enabled && !Auth.account) return showLogin();
     renderUserBox();
-    try {
-      await loadData();
-      render();
-    } catch (e) { return showFatal(e); }
     window.addEventListener("hashchange", () => { closeModal(); render(); $("#view").focus({ preventScroll: true }); window.scrollTo(0, 0); });
+    const cached = readCache();
+    if (cached) {
+      // affichage immédiat des dernières données connues, puis synchronisation en arrière-plan
+      DS.importMeta(cached.meta);
+      applyData(cached.res);
+      render();
+      setSyncing(true);
+      try {
+        const res = await DS.load();
+        await whenIdle();
+        applyData(res); saveCache(res); render();
+      } catch (e) { toast("Synchronisation impossible : " + e.message, "bad"); }
+      setSyncing(false);
+      if (window.performance && performance.mark) performance.mark("itsoft-synchronise");
+    } else {
+      try { await loadData(); render(); } catch (e) { return showFatal(e); }
+    }
     $("#btn-refresh").addEventListener("click", async e => {
-      const b = e.currentTarget; b.disabled = true;
+      const b = e.currentTarget; if (b.classList.contains("spinning")) return;
+      setSyncing(true);
       try { await loadData(true); render(); toast("Données actualisées."); } catch (err) { toast(err.message, "bad"); }
-      b.disabled = false;
+      setSyncing(false);
     });
   }
 
