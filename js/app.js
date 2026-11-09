@@ -354,7 +354,10 @@
     $("#view-title").textContent = VIEWS[k].title;
     document.title = VIEWS[k].title + " · Gestion des ventes IT";
     $$("#nav a").forEach(a => a.classList.toggle("active", a.dataset.view === (VIEWS[k].nav || k)));
-    VIEWS[k].render($("#view"));
+    const view = $("#view");
+    // réinitialise les gestionnaires d'événements laissés par la vue précédente
+    for (const h of ["onclick", "onchange", "oninput", "onkeydown", "ondragstart", "ondragover", "ondrop", "ondragend"]) view[h] = null;
+    VIEWS[k].render(view);
   }
 
   function ventesMissingBanner() {
@@ -376,33 +379,36 @@
   }
 
   /* ============ Vue : tableau de bord ============ */
+  const MOIS = ["janv.", "févr.", "mars", "avr.", "mai", "juin", "juil.", "août", "sept.", "oct.", "nov.", "déc."];
+
   function viewDashboard(el) {
     const sales = groupSales(state.ventes);
-    const today = dayKey(new Date());
     const now = new Date();
+    const today = dayKey(now);
     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
     const sToday = sales.filter(s => dayKey(s.date) === today);
     const sMonth = sales.filter(s => new Date(s.date) >= monthStart);
     const caToday = sToday.reduce((t, s) => t + s.ttc, 0);
     const caMonth = sMonth.reduce((t, s) => t + s.ttc, 0);
-    const low = hasStock() ? state.articles.filter(a => artStock(a) <= artSeuil(a)).sort((a, b) => artStock(a) - artStock(b)) : [];
+    const out = hasStock() ? state.articles.filter(a => artStock(a) <= 0)
+      .sort((a, b) => String(F(a, "categorie") || "").localeCompare(String(F(b, "categorie") || ""), "fr") || String(artName(a)).localeCompare(String(artName(b)), "fr")) : [];
     const stockValue = hasStock() ? state.articles.reduce((t, a) => t + Math.max(0, artStock(a)) * artPrice(a), 0) : 0;
 
-    // 14 derniers jours
-    const days = [];
-    for (let i = 13; i >= 0; i--) { const d = new Date(now); d.setDate(d.getDate() - i); days.push({ key: dayKey(d), d, v: 0 }); }
-    const byDay = Object.fromEntries(days.map(x => [x.key, x]));
-    for (const s of sales) { const x = byDay[dayKey(s.date)]; if (x) x.v += s.ttc; }
-
-    // Top articles du mois
-    const top = new Map();
-    for (const s of sMonth) for (const l of s.lines) {
-      const k = l.Article || "?";
-      const t = top.get(k) || { name: k, qty: 0, ca: 0 };
-      t.qty += +l.Quantite || 0; t.ca += +l.Montant || 0; top.set(k, t);
+    // CA TTC des 12 derniers mois
+    const months = [];
+    for (let i = 11; i >= 0; i--) {
+      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      months.push({ key: d.getFullYear() + "-" + d.getMonth(), d, v: 0, n: 0 });
     }
-    const topList = [...top.values()].sort((a, b) => b.ca - a.ca).slice(0, 6);
+    const byMonth = Object.fromEntries(months.map(m => [m.key, m]));
+    for (const s of sales) { const d = new Date(s.date); const m = byMonth[d.getFullYear() + "-" + d.getMonth()]; if (m) { m.v += s.ttc; m.n++; } }
+    const caYear = months.reduce((t, m) => t + m.v, 0);
 
+    // Derniers achats : articles par date d'entrée (colonne DATEe), les plus récents d'abord
+    const dateCol = findCol("DATEe") || state.columns.find(c => c.type === "dateTime");
+    const purchases = dateCol ? state.articles.filter(a => a[dateCol.name]).sort((a, b) => new Date(b[dateCol.name]) - new Date(a[dateCol.name])) : [];
+
+    const thumbName = a => `<span class="name-cell">${thumbHTML(a)}<span class="ellipsis">${esc(artName(a))}</span></span>`;
     el.innerHTML = `
       <div class="stack">
         ${ventesMissingBanner()}
@@ -410,53 +416,79 @@
           <div class="card kpi"><div class="kpi-label">CA aujourd'hui</div><div class="kpi-value">${money(caToday)}</div><div class="kpi-sub">${sToday.length} vente(s)</div></div>
           <div class="card kpi"><div class="kpi-label">CA du mois</div><div class="kpi-value">${money(caMonth)}</div><div class="kpi-sub">${sMonth.length} vente(s) · panier moyen ${money(sMonth.length ? caMonth / sMonth.length : 0)}</div></div>
           <div class="card kpi"><div class="kpi-label">Articles</div><div class="kpi-value">${int(state.articles.length)}</div><div class="kpi-sub">${hasStock() ? "valeur du stock " + money(stockValue) : "stock non suivi"}</div></div>
-          <div class="card kpi"><div class="kpi-label">Alertes stock</div><div class="kpi-value" style="color:${low.length ? "var(--danger)" : "var(--success)"}">${int(low.length)}</div><div class="kpi-sub">${hasStock() ? "rupture ou stock faible" : "colonne stock non définie"}</div></div>
+          <div class="card kpi clickable-kpi" data-goto="out"><div class="kpi-label">En rupture de stock</div><div class="kpi-value" style="color:${out.length ? "var(--danger)" : "var(--success)"}">${int(out.length)}</div><div class="kpi-sub">article(s) à quantité 0</div></div>
         </div>
         <div class="grid-2">
           <div class="card">
-            <div class="card-head"><h2>Chiffre d'affaires TTC — 14 derniers jours</h2></div>
-            <div class="chart">${barChart(days)}</div>
+            <div class="card-head"><h2>Évolution du CA mensuel (TTC)</h2><span class="muted" style="font-size:13px">12 derniers mois · ${money(caYear)}</span></div>
+            <div class="chart">${lineChart(months)}</div>
           </div>
           <div class="card">
-            <div class="card-head"><h2>Meilleures ventes du mois</h2></div>
-            ${topList.length ? `<ul class="list-simple">${topList.map(t => `<li><span class="ellipsis">${esc(t.name)} <span class="muted">× ${int(t.qty)}</span></span><span class="num">${money(t.ca)}</span></li>`).join("")}</ul>` : `<div class="empty">Aucune vente ce mois-ci.</div>`}
+            <div class="card-head"><h2>Produits en rupture de stock</h2><button class="btn sm" data-goto="out">Tout voir</button></div>
+            ${out.length ? `<div class="dash-scroll"><ul class="list-simple">${out.slice(0, 40).map(a => `<li><span style="min-width:0">${thumbName(a)}</span><span class="muted ellipsis" style="font-size:12.5px;max-width:45%">${esc(F(a, "categorie") || "")}</span></li>`).join("")}</ul></div>
+              ${out.length > 40 ? `<div class="table-foot"><span class="muted">… et ${int(out.length - 40)} autre(s)</span></div>` : ""}`
+              : `<div class="empty">${hasStock() ? "Aucun produit en rupture." : "Colonne « Stock » non définie."}</div>`}
           </div>
         </div>
-        <div class="grid-2">
+        <div class="grid-2 even">
           <div class="card">
             <div class="card-head"><h2>Dernières ventes</h2><a class="btn sm" href="#/ventes">Tout voir</a></div>
-            ${sales.length ? `<div class="table-wrap"><table class="table responsive"><thead><tr><th>N°</th><th>Date</th><th>Client</th><th class="num">Total TTC</th></tr></thead><tbody>
-              ${sales.slice(0, 6).map(s => `<tr class="clickable" data-sale="${esc(s.num)}"><td class="primary-cell" data-label="N°">${esc(s.num)}</td><td data-label="Date">${fmtDateTime(s.date)}</td><td data-label="Client">${esc(s.client) || '<span class="muted">—</span>'}</td><td class="num" data-label="Total TTC">${money(s.ttc)}</td></tr>`).join("")}
+            ${sales.length ? `<div class="table-wrap"><table class="table responsive compact"><thead><tr><th>Date</th><th>Article(s)</th><th>Client</th><th class="num">Total TTC</th></tr></thead><tbody>
+              ${sales.slice(0, 8).map(s => `<tr class="clickable" data-sale="${esc(s.num)}"><td data-label="Date">${fmtDateTime(s.date)}</td>
+                <td class="primary-cell" data-label="Article(s)"><span class="ellipsis" style="display:block;max-width:260px">${esc(s.lines.map(l => (l.Quantite > 1 ? l.Quantite + " × " : "") + (l.Article || "")).join(", "))}</span></td>
+                <td data-label="Client">${esc(s.client) || '<span class="muted">—</span>'}</td><td class="num" data-label="Total TTC"><strong>${money(s.ttc)}</strong></td></tr>`).join("")}
             </tbody></table></div>` : `<div class="empty">Aucune vente enregistrée.</div>`}
           </div>
           <div class="card">
-            <div class="card-head"><h2>Stock à surveiller</h2><a class="btn sm" href="#/articles">Articles</a></div>
-            ${low.length ? `<ul class="list-simple">${low.slice(0, 8).map(a => { const st = stockStatus(a); return `<li><span class="ellipsis">${esc(artName(a))}</span><span class="badge ${st.cls}">${int(artStock(a))} · ${st.label}</span></li>`; }).join("")}</ul>` : `<div class="empty">${hasStock() ? "Aucune alerte de stock." : "Définissez la colonne « Stock » dans les paramètres."}</div>`}
+            <div class="card-head"><h2>Derniers achats</h2><button class="btn sm" data-goto="achats">Tout voir</button></div>
+            ${purchases.length ? `<div class="table-wrap"><table class="table responsive compact"><thead><tr><th>Date</th><th>Article</th><th>Fournisseur</th><th class="num">Qté</th><th class="num">Prix</th></tr></thead><tbody>
+              ${purchases.slice(0, 8).map(a => `<tr><td data-label="Date">${fmtDate(a[dateCol.name])}</td><td class="primary-cell" data-label="Article">${thumbName(a)}</td>
+                <td data-label="Fournisseur">${esc(F(a, "fournisseur") || "") || '<span class="muted">—</span>'}</td>
+                <td class="num" data-label="Qté">${int(artStock(a))}</td><td class="num" data-label="Prix">${money(artPrice(a))}</td></tr>`).join("")}
+            </tbody></table></div>` : `<div class="empty">Aucune date d'achat (colonne DATEe) renseignée.</div>`}
           </div>
         </div>
       </div>`;
     el.onclick = e => {
       const tr = e.target.closest("[data-sale]");
-      if (tr) showSale(tr.dataset.sale);
+      if (tr) return showSale(tr.dataset.sale);
+      const th = e.target.closest("[data-thumb]");
+      if (th) { const a = state.articles.find(x => x.id === th.dataset.thumb); if (a) return showPhoto(a); }
+      const g = e.target.closest("[data-goto]");
+      if (g) {
+        const fa = state.filters.articles;
+        if (g.dataset.goto === "out") { fa.stock = "out"; fa.cat = ""; fa.q = ""; }
+        if (g.dataset.goto === "achats" && dateCol) { fa.stock = ""; fa.sort = dateCol.name; fa.dir = -1; }
+        location.hash = "#/articles";
+        return;
+      }
       const c = e.target.closest('[data-action="create-ventes"]');
       if (c) createVentesList(c);
     };
   }
 
-  function barChart(days) {
-    const W = 640, H = 240, pl = 8, pr = 8, pt = 16, pb = 26;
-    const max = Math.max(1, ...days.map(d => d.v));
-    const bw = (W - pl - pr) / days.length;
-    const bars = days.map((d, i) => {
-      const h = (d.v / max) * (H - pt - pb);
-      const x = pl + i * bw + bw * 0.18, w = bw * 0.64, y = H - pb - h;
-      const lbl = d.d.toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit" });
-      return `<g><title>${lbl} : ${money(d.v)}</title><rect class="bar" x="${x}" y="${y}" width="${w}" height="${Math.max(h, d.v ? 2 : 0)}" rx="3"/>
-        ${i % 2 === (days.length - 1) % 2 ? `<text x="${x + w / 2}" y="${H - 8}" text-anchor="middle">${lbl}</text>` : ""}</g>`;
+  /* Courbe du CA mensuel (SVG) */
+  function lineChart(months) {
+    const W = 640, H = 240, pl = 14, pr = 14, pt = 26, pb = 28;
+    const max = Math.max(1, ...months.map(m => m.v));
+    const step = (W - pl - pr) / (months.length - 1);
+    const pts = months.map((m, i) => [pl + i * step, H - pb - (m.v / max) * (H - pt - pb)]);
+    const path = pts.map((p, i) => (i ? "L" : "M") + p[0].toFixed(1) + " " + p[1].toFixed(1)).join(" ");
+    const area = path + ` L${pts[pts.length - 1][0].toFixed(1)} ${H - pb} L${pts[0][0].toFixed(1)} ${H - pb} Z`;
+    const grid = [0.25, 0.5, 0.75, 1].map(f => { const y = H - pb - f * (H - pt - pb); return `<line class="grid" x1="${pl}" x2="${W - pr}" y1="${y}" y2="${y}"/>`; }).join("");
+    const dots = months.map((m, i) => {
+      const [x, y] = pts[i];
+      const lbl = MOIS[m.d.getMonth()] + " " + m.d.getFullYear();
+      return `<g class="pt"><title>${lbl} : ${money(m.v)} (${m.n} vente(s))</title>
+        <rect x="${x - step / 2}" y="${pt - 10}" width="${step}" height="${H - pt - pb + 10}" fill="transparent"/>
+        <circle cx="${x}" cy="${y}" r="${i === months.length - 1 ? 5 : 3.5}"/>
+        <text x="${x}" y="${H - 9}" text-anchor="middle">${MOIS[m.d.getMonth()]}${m.d.getMonth() === 0 || i === 0 ? " " + String(m.d.getFullYear()).slice(2) : ""}</text>
+        ${m.v && (m.v === max || i === months.length - 1) ? `<text class="val" x="${x}" y="${y - 10}" text-anchor="middle">${nfNum.format(Math.round(m.v))}</text>` : ""}</g>`;
     }).join("");
-    return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="Chiffre d'affaires par jour">
-      <line class="axis" x1="${pl}" x2="${W - pr}" y1="${H - pb}" y2="${H - pb}"/>
-      <text x="${pl}" y="11">max ${money(max)}</text>${bars}</svg>`;
+    return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Chiffre d'affaires mensuel sur 12 mois">
+      ${grid}<line class="axis" x1="${pl}" x2="${W - pr}" y1="${H - pb}" y2="${H - pb}"/>
+      <path class="area" d="${area}"/><path class="line" d="${path}"/>${dots}
+      <text x="${pl}" y="12">max ${money(max)}</text></svg>`;
   }
 
   /* ============ Vente rapide : un article, une quantité, un client ============ */
@@ -618,11 +650,18 @@
   const isNumCol = c => NUM.includes(c.type);
 
   /* Colonnes affichées dans la liste : celles de cfg.colonnesArticles, sinon les colonnes « métier » */
+  const COL_ORDER_KEY = "ventesit-col-order";
   function articleColumns() {
     const wanted = (cfg.colonnesArticles || []).map(findCol).filter(Boolean);
-    if (wanted.length) return wanted.filter((c, i) => wanted.indexOf(c) === i);
-    return ["reference", "designation", "categorie", "fournisseur", "marque", "prix", "stock"]
-      .map(k => findCol(state.map[k])).filter(Boolean);
+    let cols = wanted.length ? wanted.filter((c, i) => wanted.indexOf(c) === i)
+      : ["reference", "designation", "categorie", "fournisseur", "marque", "prix", "stock"].map(k => findCol(state.map[k])).filter(Boolean);
+    // ordre choisi par l'utilisateur (glisser-déposer des en-têtes), mémorisé dans ce navigateur
+    const saved = store.get(COL_ORDER_KEY, null);
+    if (Array.isArray(saved) && saved.length) {
+      const pos = c => { const i = saved.indexOf(c.name); return i < 0 ? 1000 + cols.indexOf(c) : i; };
+      cols = cols.slice().sort((a, b) => pos(a) - pos(b));
+    }
+    return cols;
   }
 
   const CA_COL = { name: "__ca", displayName: "CA (Qté × Prix)", type: "number", virtual: true };
@@ -705,7 +744,7 @@
     const drawTable = () => {
       const list = apply();
       $("#art-table").innerHTML = list.length ? `<div class="table-scroll"><table class="table responsive compact">
-        <thead><tr>${layout.map(c => `<th class="sortable ${isNumCol(c) ? "num" : ""}" data-sort="${esc(c.name)}" title="Trier">${esc(c.displayName)}${f.sort === c.name ? (f.dir > 0 ? " ▲" : " ▼") : ""}</th>`).join("")}<th></th></tr></thead>
+        <thead><tr>${layout.map(c => `<th class="sortable ${isNumCol(c) ? "num" : ""}" data-sort="${esc(c.name)}" draggable="true" title="Cliquer pour trier · glisser pour déplacer la colonne"><span class="grip" aria-hidden="true">⋮⋮</span>${esc(c.displayName)}${f.sort === c.name ? (f.dir > 0 ? " ▲" : " ▼") : ""}</th>`).join("")}<th>${store.get(COL_ORDER_KEY, null) ? `<button class="btn sm ghost" id="col-reset" title="Rétablir l'ordre d'origine des colonnes">↺</button>` : ""}</th></tr></thead>
         <tbody>${list.map(a => `<tr data-id="${esc(a.id)}">${rowInner(a)}</tr>`).join("")}</tbody></table></div>
         <div class="table-foot" id="art-foot">${footHTML(list)}</div>`
         : `<div class="empty">Aucun article ne correspond aux critères.</div>`;
@@ -816,6 +855,45 @@
     drawTable();
 
     $("#art-q").addEventListener("input", e => { f.q = e.target.value; drawTable(); });
+    /* ---- Glisser-déposer des en-têtes pour réordonner les colonnes ---- */
+    let dragCol = null;
+    const clearDrop = () => $$("#art-table th.drop-before, #art-table th.drop-after, #art-table th.dragging")
+      .forEach(t => t.classList.remove("drop-before", "drop-after", "dragging"));
+    el.ondragstart = e => {
+      const th = e.target.closest && e.target.closest("th[data-sort]");
+      if (!th) return;
+      dragCol = th.dataset.sort;
+      e.dataTransfer.effectAllowed = "move";
+      e.dataTransfer.setData("text/plain", dragCol);
+      th.classList.add("dragging");
+    };
+    el.ondragover = e => {
+      const th = dragCol && e.target.closest && e.target.closest("th[data-sort]");
+      if (!th) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "move";
+      $$("#art-table th.drop-before, #art-table th.drop-after").forEach(t => t.classList.remove("drop-before", "drop-after"));
+      if (th.dataset.sort === dragCol) return;
+      const r = th.getBoundingClientRect();
+      th.classList.add(e.clientX < r.left + r.width / 2 ? "drop-before" : "drop-after");
+    };
+    el.ondrop = e => {
+      const th = dragCol && e.target.closest && e.target.closest("th[data-sort]");
+      if (!th) return;
+      e.preventDefault();
+      const rr = th.getBoundingClientRect();
+      const before = e.clientX < rr.left + rr.width / 2;
+      const order = layout.map(c => c.name).filter(n => n !== dragCol);
+      let i = order.indexOf(th.dataset.sort);
+      if (i < 0) { dragCol = null; return clearDrop(); }
+      if (!before) i++;
+      order.splice(i, 0, dragCol);
+      dragCol = null;
+      store.set(COL_ORDER_KEY, order);
+      viewArticles(el);
+    };
+    el.ondragend = () => { dragCol = null; clearDrop(); };
+
     el.onchange = e => {
       if (e.target.id === "art-cat") { f.cat = e.target.value; drawTable(); }
       if (e.target.id === "art-stock") { f.stock = e.target.value; drawTable(); }
@@ -827,6 +905,7 @@
       if (sell) { const a = state.articles.find(x => x.id === sell.dataset.sell); if (a) return sellDialog(a); }
       const cell = e.target.closest("td.editable");
       if (cell && !cell.classList.contains("editing")) return startEdit(cell);
+      if (e.target.closest("#col-reset")) { store.set(COL_ORDER_KEY, null); try { localStorage.removeItem(COL_ORDER_KEY); } catch (_) {} return viewArticles(el); }
       const th = e.target.closest("[data-sort]");
       if (th) { if (f.sort === th.dataset.sort) f.dir = -f.dir; else { f.sort = th.dataset.sort; f.dir = 1; } return drawTable(); }
       if (e.target.closest("#art-new")) return articleForm(null);
