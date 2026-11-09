@@ -585,11 +585,16 @@
       .map(k => findCol(state.map[k])).filter(Boolean);
   }
 
+  const CA_COL = { name: "__ca", displayName: "CA (Qté × Prix)", type: "number", virtual: true };
+  const hasCA = () => !!(state.map.stock && state.map.prix);
+  const artCA = a => artStock(a) * artPrice(a);
+  const colByName = name => state.columns.find(c => c.name === name);
+
   function cellHTML(a, c) {
     const v = a[c.name];
     const empty = '<span class="muted">—</span>';
-    if (c.name === state.map.prix) return money(v);
-    if (c.name === state.map.stock) { const st = stockStatus(a); return `<span class="badge ${st.cls}">${int(v)} · ${st.label}</span>`; }
+    if (c.name === state.map.prix) return v == null || v === "" ? empty : money(v);
+    if (c.name === state.map.stock) { const st = stockStatus(a); return `<span class="badge ${st.cls}" title="${esc(st.label)}">${int(v)}</span>`; }
     if (v == null || v === "") return empty;
     switch (c.type) {
       case "number": case "currency": return nfNum.format(+v);
@@ -604,10 +609,16 @@
     const f = state.filters.articles;
     const cats = categories();
     const shownCols = articleColumns();
-    if (!f.sort || !shownCols.some(c => c.name === f.sort)) { f.sort = shownCols.length ? shownCols[0].name : ""; f.dir = 1; }
+    // colonnes du tableau : colonnes choisies + CA calculé juste après le prix
+    const layout = [];
+    for (const c of shownCols) { layout.push(c); if (hasCA() && c.name === state.map.prix) layout.push(CA_COL); }
+    if (hasCA() && !layout.includes(CA_COL)) layout.push(CA_COL);
+    const val = (a, c) => (c.virtual ? artCA(a) : a[c.name]);
+    if (!f.sort || !layout.some(c => c.name === f.sort)) { f.sort = layout.length ? layout[0].name : ""; f.dir = 1; }
+
     const apply = () => {
       const q = norm(f.q);
-      const sc = shownCols.find(c => c.name === f.sort);
+      const sc = layout.find(c => c.name === f.sort);
       return state.articles.filter(a => {
         if (f.cat && F(a, "categorie") !== f.cat) return false;
         if (f.stock === "low" && !(hasStock() && artStock(a) <= artSeuil(a))) return false;
@@ -616,40 +627,148 @@
         return true;
       }).sort((a, b) => {
         if (!sc) return 0;
-        const x = a[sc.name], y = b[sc.name];
+        const x = val(a, sc), y = val(b, sc);
         if (x == null || x === "") return 1;
         if (y == null || y === "") return -1;
         const r = (typeof x === "number" && typeof y === "number") ? x - y : String(x).localeCompare(String(y), "fr", { numeric: true });
         return r * f.dir;
       });
     };
+
     el.innerHTML = `
       <div class="card">
-        <div class="card-head">
+        <div class="card-head compact-head">
           <div class="search">${ICON.search}<input class="input" id="art-q" type="search" placeholder="Rechercher…" value="${esc(f.q)}"></div>
-          ${cats.length ? `<select class="input" id="art-cat" style="width:auto;flex:0 1 200px"><option value="">Toutes catégories</option>${cats.map(c => `<option ${f.cat === c ? "selected" : ""}>${esc(c)}</option>`).join("")}</select>` : ""}
-          ${hasStock() ? `<select class="input" id="art-stock" style="width:auto;flex:0 1 170px"><option value="">Tout le stock</option><option value="low" ${f.stock === "low" ? "selected" : ""}>Stock faible</option><option value="out" ${f.stock === "out" ? "selected" : ""}>En rupture</option></select>` : ""}
+          ${cats.length ? `<select class="input" id="art-cat" style="width:auto;flex:0 1 190px"><option value="">Toutes catégories</option>${cats.map(c => `<option ${f.cat === c ? "selected" : ""}>${esc(c)}</option>`).join("")}</select>` : ""}
+          ${hasStock() ? `<select class="input" id="art-stock" style="width:auto;flex:0 1 160px"><option value="">Tout le stock</option><option value="low" ${f.stock === "low" ? "selected" : ""}>Stock faible</option><option value="out" ${f.stock === "out" ? "selected" : ""}>En rupture</option></select>` : ""}
           <button class="btn" id="art-export" title="Exporter en CSV">${ICON.download}<span class="hide-sm">Exporter</span></button>
           <button class="btn primary" id="art-new">${ICON.plus} Nouvel article</button>
         </div>
         <div id="art-table"></div>
       </div>`;
 
+    const tdHTML = (a, c) => {
+      if (c.virtual) return `<td class="num ca" data-label="${esc(c.displayName)}">${money(artCA(a))}</td>`;
+      const primary = c.name === state.map.designation;
+      return `<td class="editable ${primary ? "primary-cell" : ""} ${isNumCol(c) ? "num" : ""}" data-col="${esc(c.name)}" data-label="${esc(c.displayName)}" title="Cliquer pour modifier">${cellHTML(a, c)}</td>`;
+    };
+    const rowInner = a => layout.map(c => tdHTML(a, c)).join("") +
+      `<td class="actions"><button class="btn sm icon ghost" data-edit="${esc(a.id)}" title="Formulaire complet" aria-label="Modifier dans un formulaire">${ICON.edit}</button><button class="btn sm icon ghost danger" data-del="${esc(a.id)}" title="Supprimer" aria-label="Supprimer">${ICON.trash}</button></td>`;
+    const footHTML = list => `<span>${int(list.length)} article(s) sur ${int(state.articles.length)}</span>` +
+      (hasStock() ? `<span>Quantité totale : <strong>${int(list.reduce((t, a) => t + artStock(a), 0))}</strong></span>` : "") +
+      (hasCA() ? `<span>CA total : <strong>${money(list.reduce((t, a) => t + artCA(a), 0))}</strong></span>` : "") +
+      `<span class="muted hide-sm">Cliquez sur une cellule pour la modifier · Entrée = valider · Échap = annuler · Tab = cellule suivante</span>`;
+
     const drawTable = () => {
       const list = apply();
-      $("#art-table").innerHTML = list.length ? `<div class="table-wrap"><table class="table responsive">
-        <thead><tr>${shownCols.map(c => `<th class="sortable ${isNumCol(c) ? "num" : ""}" data-sort="${esc(c.name)}" title="Trier">${esc(c.displayName)}${f.sort === c.name ? (f.dir > 0 ? " ▲" : " ▼") : ""}</th>`).join("")}<th></th></tr></thead>
-        <tbody>${list.map(a => `<tr>
-          ${shownCols.map(c => {
-            const lab = esc(c.displayName);
-            const primary = c.name === state.map.designation;
-            return `<td class="${primary ? "primary-cell" : ""} ${isNumCol(c) ? "num" : ""}" data-label="${lab}">${cellHTML(a, c)}</td>`;
-          }).join("")}
-          <td class="actions"><button class="btn sm" data-edit="${esc(a.id)}">${ICON.edit} Modifier</button> <button class="btn sm icon danger" data-del="${esc(a.id)}" aria-label="Supprimer">${ICON.trash}</button></td>
-        </tr>`).join("")}</tbody></table></div>
-        <div class="muted" style="padding:10px 16px;font-size:13px;border-top:1px solid var(--border)">${list.length} article(s) sur ${state.articles.length}</div>`
+      $("#art-table").innerHTML = list.length ? `<div class="table-scroll"><table class="table responsive compact">
+        <thead><tr>${layout.map(c => `<th class="sortable ${isNumCol(c) ? "num" : ""}" data-sort="${esc(c.name)}" title="Trier">${esc(c.displayName)}${f.sort === c.name ? (f.dir > 0 ? " ▲" : " ▼") : ""}</th>`).join("")}<th></th></tr></thead>
+        <tbody>${list.map(a => `<tr data-id="${esc(a.id)}">${rowInner(a)}</tr>`).join("")}</tbody></table></div>
+        <div class="table-foot" id="art-foot">${footHTML(list)}</div>`
         : `<div class="empty">Aucun article ne correspond aux critères.</div>`;
     };
+    const refreshFoot = () => { const ft = $("#art-foot"); if (ft) ft.innerHTML = footHTML(apply()); };
+    const rowEl = id => $(`#art-table tr[data-id="${CSS.escape(String(id))}"]`);
+    const restoreRow = (a, flashCol) => {
+      const tr = rowEl(a.id);
+      if (!tr) return;
+      tr.innerHTML = rowInner(a);
+      if (flashCol) tr.querySelectorAll(`td[data-col="${CSS.escape(flashCol)}"], td.ca`).forEach(td => td.classList.add("flash"));
+    };
+
+    /* ---- Édition directe dans le tableau ---- */
+    let editing = null;
+    function startEdit(td) {
+      if (editing || td.classList.contains("editing")) return;
+      const col = colByName(td.dataset.col);
+      const a = state.articles.find(x => x.id === td.closest("tr").dataset.id);
+      if (!col || !a) return;
+      const cur = col.type === "lookup" ? String(a[col.name + "LookupId"] || "") : a[col.name];
+      let html;
+      switch (col.type) {
+        case "number": case "currency":
+          html = `<input class="cell-input" type="number" step="any" inputmode="decimal" value="${esc(cur == null ? "" : cur)}">`; break;
+        case "dateTime": {
+          let dv = "";
+          if (cur) { const d = new Date(cur); dv = new Date(d.getTime() - d.getTimezoneOffset() * 6e4).toISOString().slice(0, 10); }
+          html = `<input class="cell-input" type="date" value="${dv}">`; break;
+        }
+        case "lookup":
+          html = `<select class="cell-input"><option value=""></option>${(col.options || []).map(o => `<option value="${esc(o.id)}" ${o.id === cur ? "selected" : ""}>${esc(o.label)}</option>`).join("")}${cur && !(col.options || []).some(o => o.id === cur) ? `<option value="${esc(cur)}" selected>${esc(cur)}</option>` : ""}</select>`; break;
+        case "choice":
+          html = `<select class="cell-input"><option value=""></option>${col.choices.map(c => `<option ${c === cur ? "selected" : ""}>${esc(c)}</option>`).join("")}${cur && !col.choices.includes(cur) ? `<option selected>${esc(cur)}</option>` : ""}</select>`; break;
+        case "boolean":
+          html = `<select class="cell-input"><option value="1" ${cur ? "selected" : ""}>Oui</option><option value="0" ${!cur ? "selected" : ""}>Non</option></select>`; break;
+        default:
+          html = `<input class="cell-input" type="text" value="${esc(cur == null ? "" : cur)}">`;
+      }
+      td.classList.add("editing");
+      td.innerHTML = html;
+      const inp = td.firstElementChild;
+      editing = { td, col, a, inp, done: false };
+      inp.focus();
+      if (inp.tagName === "INPUT" && inp.type !== "date") inp.select();
+      inp.addEventListener("keydown", ev => {
+        if (ev.key === "Enter") { ev.preventDefault(); commitEdit(); }
+        else if (ev.key === "Escape") { ev.preventDefault(); const ed = editing; if (ed) { ed.done = true; editing = null; restoreRow(ed.a); } }
+        else if (ev.key === "Tab") {
+          ev.preventDefault();
+          const tds = [...td.closest("tr").querySelectorAll("td.editable")];
+          const next = tds[tds.indexOf(td) + (ev.shiftKey ? -1 : 1)];
+          const target = next ? { id: a.id, col: next.dataset.col } : null;
+          commitEdit().then(() => {
+            if (!target) return;
+            const tr = rowEl(target.id);
+            const ntd = tr && tr.querySelector(`td[data-col="${CSS.escape(target.col)}"]`);
+            if (ntd) startEdit(ntd);
+          });
+        }
+      });
+      inp.addEventListener("blur", () => commitEdit());
+      if (inp.tagName === "SELECT") inp.addEventListener("change", () => commitEdit());
+    }
+
+    async function commitEdit() {
+      const ed = editing;
+      if (!ed || ed.done) return;
+      ed.done = true; editing = null;
+      const { td, col, a, inp } = ed;
+      const raw = inp.value;
+      let key = col.name, v;
+      if (col.type === "lookup") {
+        key = col.relationField ? col.name : col.name + "LookupId";
+        if (raw === String(a[col.name + "LookupId"] || "")) return restoreRow(a);
+        v = raw === "" ? null : (/^\d+$/.test(raw) ? parseInt(raw, 10) : raw);
+      } else if (NUM.includes(col.type)) {
+        v = raw.trim() === "" ? null : parseFloat(raw.replace(",", "."));
+        if (v !== null && isNaN(v)) { toast("Valeur numérique invalide.", "bad"); return restoreRow(a); }
+        const old = a[col.name] == null || a[col.name] === "" ? null : +a[col.name];
+        if (v === old) return restoreRow(a);
+      } else if (col.type === "dateTime") {
+        if (raw === (a[col.name] ? dayKey(a[col.name]) : "")) return restoreRow(a);
+        v = raw ? new Date(raw + "T12:00:00").toISOString() : null;
+      } else if (col.type === "boolean") {
+        v = raw === "1";
+        if (v === !!a[col.name]) return restoreRow(a);
+      } else {
+        v = raw.trim();
+        if (v === String(a[col.name] == null ? "" : a[col.name])) return restoreRow(a);
+        if (v === "") v = null;
+      }
+      if (col.required && (v === null || v === "")) { toast(`« ${col.displayName} » est obligatoire.`, "bad"); return restoreRow(a); }
+      if (col.name === state.map.stock && v !== null && v < 0) { toast("La quantité ne peut pas être négative.", "bad"); return restoreRow(a); }
+      td.classList.add("saving");
+      try {
+        const upd = await DS.updateArticle(a.id, { [key]: v });
+        Object.assign(a, upd);
+        restoreRow(a, col.name);
+        refreshFoot();
+      } catch (e) {
+        toast(e.message, "bad");
+        restoreRow(a);
+      }
+    }
+
     drawTable();
 
     $("#art-q").addEventListener("input", e => { f.q = e.target.value; drawTable(); });
@@ -658,12 +777,13 @@
       if (e.target.id === "art-stock") { f.stock = e.target.value; drawTable(); }
     };
     el.onclick = async e => {
+      const cell = e.target.closest("td.editable");
+      if (cell && !cell.classList.contains("editing")) return startEdit(cell);
       const th = e.target.closest("[data-sort]");
-      if (th) { if (f.sort === th.dataset.sort) f.dir = -f.dir; else { f.sort = th.dataset.sort; f.dir = 1; } return viewArticles(el); }
+      if (th) { if (f.sort === th.dataset.sort) f.dir = -f.dir; else { f.sort = th.dataset.sort; f.dir = 1; } return drawTable(); }
       if (e.target.closest("#art-new")) return articleForm(null);
       if (e.target.closest("#art-export")) {
-        const cols = state.columns;
-        return downloadCSV("articles.csv", [cols.map(c => c.displayName), ...apply().map(a => cols.map(c => a[c.name]))]);
+        return downloadCSV("articles.csv", [layout.map(c => c.displayName), ...apply().map(a => layout.map(c => val(a, c)))]);
       }
       const ed = e.target.closest("[data-edit]");
       if (ed) return articleForm(state.articles.find(a => a.id === ed.dataset.edit));
