@@ -207,6 +207,7 @@ table.table { width: 100%; border-collapse: collapse; }
 .name-cell { display: inline-flex; align-items: center; gap: 9px; }
 .product-top { display: flex; align-items: center; gap: 10px; }
 .product-top .thumb { cursor: inherit; }
+.thumb.no-photo { cursor: inherit; }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .thumb:not(.neutral) { background: hsl(var(--h) 35% 22%); color: hsl(var(--h) 70% 82%); } }
 :root[data-theme="dark"] .thumb:not(.neutral) { background: hsl(var(--h) 35% 22%); color: hsl(var(--h) 70% 82%); }
 

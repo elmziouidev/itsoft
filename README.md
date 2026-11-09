@@ -14,11 +14,13 @@ qu'aux données que ses droits SharePoint lui permettent de voir.
 
 | Écran | Contenu |
 |---|---|
-| **Tableau de bord** | CA du jour et du mois, panier moyen, valeur du stock, graphique des 14 derniers jours, meilleures ventes, alertes de stock |
-| **Caisse** | Recherche et filtre par catégorie, panier, client, mode de paiement, totaux HT / TVA / TTC, vérification du stock en temps réel, décrément automatique du stock, ticket imprimable |
-| **Articles** | Liste, recherche, filtres (catégorie, stock faible, rupture), ajout / modification / suppression dans `Tbl_article`, export CSV (Excel) |
+| **Tableau de bord** | CA du jour et du mois, achats du mois et marge estimée, valeur du stock, courbe du CA mensuel, ruptures de stock, dernières ventes, derniers achats |
+| **Articles** | Liste modifiable sur place, colonnes déplaçables, vente en un clic (🛒), réception d'achat (📦), catégories, photos, export CSV |
+| **Achats** | Historique des achats (`Tbl_achat`), articles à commander par fournisseur, bon de commande imprimable, fournisseurs |
 | **Ventes** | Historique filtrable par date, détail et réimpression du ticket, annulation (remise en stock), export CSV |
-| **Paramètres** | Correspondance des colonnes de `Tbl_article`, création de `Tbl_vente`, thème clair / sombre, déconnexion |
+| **Paramètres** | Seuils de stock par catégorie, état des listes SharePoint, thème clair / sombre, déconnexion |
+
+L'application ne gère pas la TVA : les prix sont utilisés tels qu'ils sont saisis.
 
 Les colonnes de `Tbl_article` sont **détectées automatiquement** (désignation, référence, catégorie, marque,
 prix, stock, seuil d'alerte) d'après leurs noms. Le formulaire d'article s'adapte à toutes les colonnes de la liste.
@@ -77,8 +79,7 @@ clientId: "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",   // ID d'application (client)
 tenantId: "yyyyyyyy-yyyy-yyyy-yyyy-yyyyyyyyyyyy",   // ID de l'annuaire (locataire)
 ```
 
-Ajustez si besoin `nomEntreprise`, `devise`, `tva` (20 % par défaut ; mettez `0` pour désactiver)
-et `prixIncluentTVA` (`true` si les prix de `Tbl_article` sont TTC). Validez avec **Commit changes** ;
+Ajustez si besoin `nomEntreprise` et `devise`. Validez avec **Commit changes** ;
 GitHub Pages republie le site en une à deux minutes.
 
 ### Étape 4 — Premier lancement

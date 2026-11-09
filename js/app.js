@@ -52,7 +52,7 @@
   const RULES = [
     ["seuil", ["seuil", "seuilalerte", "stockmin", "stockminimum", "qtemin", "minimum", "alerte"], NUM],
     ["stock", ["stock", "qtestock", "quantitestock", "quantite", "qte", "qty", "quantity", "enstock"], NUM],
-    ["prix", ["prixvente", "prixdevente", "prixunitaire", "prixttc", "prixht", "prix", "pu", "price", "tarif"], NUM],
+    ["prix", ["prixvente", "prixdevente", "prixunitaire", "prix", "pu", "price", "tarif"], NUM],
     ["reference", ["reference", "ref", "codearticle", "idarticle", "code", "sku"], TXT.concat(NUM)],
     ["categorie", ["categorie", "famille", "category", "rayon", "nomarticle", "type"], CAT],
     ["fournisseur", ["fournisseur", "supplier"], CAT],
@@ -124,7 +124,8 @@
     return /^https?:\/\//i.test(v) ? v : "";
   }
   function thumbHTML(a, big) {
-    const kind = deviceKind(a), url = photoUrl(a);
+    // icône représentative uniquement ; la photo n'est utilisée que si cfg.afficherPhotos est activé
+    const kind = deviceKind(a), url = cfg.afficherPhotos ? photoUrl(a) : "";
     const b = brandOf(a);
     if (b.unknown) { // pas de marque reconnue : couleur selon le type d'article, sans lettre
       const KH = { screen: 220, mobile: 220, phone: 200, tablet: 175, cable: 30, charger: 45, battery: 95, audio: 285, speaker: 265, memory: 150, network: 190, mouse: 330, keyboard: 330, gamepad: 0, watch: 250, radio: 20, tv: 205, mic: 310 };
@@ -132,7 +133,7 @@
     }
     const kindLabel = F(a, "categorie") || { mobile: "Smartphone", tablet: "Tablette", phone: "Téléphone", laptop: "Ordinateur" }[kind] || "Article";
     const tip = [kindLabel, b.label && !norm(kindLabel).includes(norm(b.label)) ? b.label : ""].filter(Boolean).join(" · ") + (url ? " — cliquer pour agrandir" : "");
-    return `<span class="thumb ${big ? "big" : ""} ${b.unknown ? "neutral" : ""}" style="--h:${b.hue}" data-thumb="${esc(a.id)}" title="${esc(tip)}">
+    return `<span class="thumb ${big ? "big" : ""} ${b.unknown ? "neutral" : ""} ${url ? "" : "no-photo"}" style="--h:${b.hue}" ${url ? `data-thumb="${esc(a.id)}"` : ""} title="${esc(tip)}">
       ${DEVICE_SVG[kind]}${b.letter ? `<span class="thumb-letter">${esc(b.letter)}</span>` : ""}
       ${url ? `<img src="${esc(url)}" alt="" decoding="async" referrerpolicy="no-referrer" style="opacity:0" onload="this.style.opacity=1" onerror="this.remove()">` : ""}</span>`;
   }
@@ -241,12 +242,6 @@
     return "dl-cats";
   }
 
-  function taxes(sum) {
-    const t = (+cfg.tva || 0) / 100;
-    if (!t) return { ht: sum, tva: 0, ttc: sum };
-    if (cfg.prixIncluentTVA) { const ht = sum / (1 + t); return { ht, tva: sum - ht, ttc: sum }; }
-    return { ht: sum, tva: sum * t, ttc: sum * (1 + t) };
-  }
 
   function groupSales(lines) {
     const m = new Map();
@@ -256,7 +251,7 @@
       const s = m.get(k);
       s.lines.push(l); s.sum += +l.Montant || 0; s.qty += +l.Quantite || 0;
     }
-    return [...m.values()].map(s => ({ ...s, ...taxes(s.sum) })).sort((a, b) => new Date(b.date) - new Date(a.date));
+    return [...m.values()].map(s => ({ ...s, total: s.sum })).sort((a, b) => new Date(b.date) - new Date(a.date));
   }
 
   /* ============ UI : toasts & modales ============ */
@@ -393,20 +388,20 @@
     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
     const sToday = sales.filter(s => dayKey(s.date) === today);
     const sMonth = sales.filter(s => new Date(s.date) >= monthStart);
-    const caToday = sToday.reduce((t, s) => t + s.ttc, 0);
-    const caMonth = sMonth.reduce((t, s) => t + s.ttc, 0);
+    const caToday = sToday.reduce((t, s) => t + s.total, 0);
+    const caMonth = sMonth.reduce((t, s) => t + s.total, 0);
     const out = hasStock() ? state.articles.filter(a => artStock(a) <= 0)
       .sort((a, b) => String(F(a, "categorie") || "").localeCompare(String(F(b, "categorie") || ""), "fr") || String(artName(a)).localeCompare(String(artName(b)), "fr")) : [];
     const stockValue = hasStock() ? state.articles.reduce((t, a) => t + Math.max(0, artStock(a)) * artPrice(a), 0) : 0;
 
-    // CA TTC des 12 derniers mois
+    // CA des 12 derniers mois
     const months = [];
     for (let i = 11; i >= 0; i--) {
       const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
       months.push({ key: d.getFullYear() + "-" + d.getMonth(), d, v: 0, n: 0 });
     }
     const byMonth = Object.fromEntries(months.map(m => [m.key, m]));
-    for (const s of sales) { const d = new Date(s.date); const m = byMonth[d.getFullYear() + "-" + d.getMonth()]; if (m) { m.v += s.ttc; m.n++; } }
+    for (const s of sales) { const d = new Date(s.date); const m = byMonth[d.getFullYear() + "-" + d.getMonth()]; if (m) { m.v += s.total; m.n++; } }
     const caYear = months.reduce((t, m) => t + m.v, 0);
 
     // Derniers achats : liste des achats si elle existe, sinon articles par date d'entrée (DATEe)
@@ -439,7 +434,7 @@
         </div>
         <div class="grid-2">
           <div class="card">
-            <div class="card-head"><h2>Évolution du CA mensuel (TTC)</h2><span class="muted" style="font-size:13px">12 derniers mois · ${money(caYear)}</span></div>
+            <div class="card-head"><h2>Évolution du CA mensuel</h2><span class="muted" style="font-size:13px">12 derniers mois · ${money(caYear)}</span></div>
             <div class="chart">${lineChart(months)}</div>
           </div>
           <div class="card">
@@ -452,10 +447,10 @@
         <div class="grid-2 even">
           <div class="card">
             <div class="card-head"><h2>Dernières ventes</h2><a class="btn sm" href="#/ventes">Tout voir</a></div>
-            ${sales.length ? `<div class="table-wrap"><table class="table responsive compact"><thead><tr><th>Date</th><th>Article(s)</th><th>Client</th><th class="num">Total TTC</th></tr></thead><tbody>
+            ${sales.length ? `<div class="table-wrap"><table class="table responsive compact"><thead><tr><th>Date</th><th>Article(s)</th><th>Client</th><th class="num">Total</th></tr></thead><tbody>
               ${sales.slice(0, 8).map(s => `<tr class="clickable" data-sale="${esc(s.num)}"><td data-label="Date">${fmtDateTime(s.date)}</td>
                 <td class="primary-cell" data-label="Article(s)"><span class="ellipsis" style="display:block;max-width:260px">${esc(s.lines.map(l => (l.Quantite > 1 ? l.Quantite + " × " : "") + (l.Article || "")).join(", "))}</span></td>
-                <td data-label="Client">${esc(s.client) || '<span class="muted">—</span>'}</td><td class="num" data-label="Total TTC"><strong>${money(s.ttc)}</strong></td></tr>`).join("")}
+                <td data-label="Client">${esc(s.client) || '<span class="muted">—</span>'}</td><td class="num" data-label="Total"><strong>${money(s.total)}</strong></td></tr>`).join("")}
             </tbody></table></div>` : `<div class="empty">Aucune vente enregistrée.</div>`}
           </div>
           <div class="card">
@@ -556,9 +551,8 @@
     };
     const update = () => {
       const { qty, price } = read();
-      const t = taxes(Math.max(0, qty) * (isNaN(price) ? 0 : price));
-      $("#sell-total", m).innerHTML = (cfg.tva ? `<span class="muted">Total HT</span><span class="num">${money(t.ht)}</span><span class="muted">TVA ${cfg.tva} %</span><span class="num">${money(t.tva)}</span>` : "") +
-        `<span class="grand">Total TTC</span><span class="num grand">${money(t.ttc)}</span>`;
+      const total = Math.max(0, qty) * (isNaN(price) ? 0 : price);
+      $("#sell-total", m).innerHTML = `<span class="grand">Total</span><span class="num grand">${money(total)}</span>`;
       $("#sell-new", m).hidden = !isNewClient();
     };
     update();
@@ -625,8 +619,7 @@
         ${s.lines.map(l => `<tr><td>${esc(l.Article)}${l.Reference ? `<br><span class="muted" style="font-size:12px">${esc(l.Reference)}</span>` : ""}</td><td class="num">${int(l.Quantite)}</td><td class="num">${money(l.PrixUnitaire)}</td><td class="num">${money(l.Montant)}</td></tr>`).join("")}
       </tbody></table>
       <div class="totals">
-        ${cfg.tva ? `<span>Total HT</span><span class="num">${money(s.ht)}</span><span>TVA ${cfg.tva} %</span><span class="num">${money(s.tva)}</span>` : ""}
-        <strong class="grand">Total TTC</strong><strong class="num grand">${money(s.ttc)}</strong>
+        <strong class="grand">Total</strong><strong class="num grand">${money(s.total)}</strong>
       </div>
     </div>`;
   }
@@ -742,7 +735,7 @@
           ${cats.length ? `<select class="input" id="art-cat" style="width:auto;flex:0 1 190px"><option value="">Toutes catégories</option>${cats.map(c => `<option ${f.cat === c ? "selected" : ""}>${esc(c)}</option>`).join("")}</select>` : ""}
           ${hasStock() ? `<select class="input" id="art-stock" style="width:auto;flex:0 1 160px"><option value="">Tout le stock</option><option value="low" ${f.stock === "low" ? "selected" : ""}>Stock faible</option><option value="out" ${f.stock === "out" ? "selected" : ""}>En rupture</option></select>` : ""}
           ${state.map.categorie ? `<a class="btn" href="#/categories" title="Ajouter, renommer ou supprimer des catégories">${ICON.edit}<span class="hide-sm">Catégories</span></a>` : ""}
-          ${state.map.photo ? `<a class="btn" href="#/photos" title="Rechercher des photos par catégorie">${ICON.search}<span class="hide-sm">Photos</span></a>` : ""}
+          ${state.map.photo && cfg.afficherPhotos ? `<a class="btn" href="#/photos" title="Rechercher des photos par catégorie">${ICON.search}<span class="hide-sm">Photos</span></a>` : ""}
           <button class="btn" id="art-export" title="Exporter en CSV">${ICON.download}<span class="hide-sm">Exporter</span></button>
           <button class="btn primary" id="art-new">${ICON.plus} Nouvel article</button>
         </div>
@@ -1905,16 +1898,16 @@
       </div>`;
     const draw = () => {
       const list = apply();
-      const tot = list.reduce((t, s) => t + s.ttc, 0);
+      const tot = list.reduce((t, s) => t + s.total, 0);
       $("#v-sum").innerHTML = `<span><span class="muted">Ventes :</span> <strong>${int(list.length)}</strong></span>
         <span><span class="muted">Articles vendus :</span> <strong>${int(list.reduce((t, s) => t + s.qty, 0))}</strong></span>
-        <span><span class="muted">Total TTC :</span> <strong>${money(tot)}</strong></span>`;
+        <span><span class="muted">Total :</span> <strong>${money(tot)}</strong></span>`;
       $("#v-table").innerHTML = list.length ? `<div class="table-wrap"><table class="table responsive">
-        <thead><tr><th>N° vente</th><th>Date</th><th>Client</th><th>Paiement</th><th class="num">Articles</th><th class="num">Total TTC</th></tr></thead>
+        <thead><tr><th>N° vente</th><th>Date</th><th>Client</th><th>Paiement</th><th class="num">Articles</th><th class="num">Total</th></tr></thead>
         <tbody>${list.slice(0, 500).map(s => `<tr class="clickable" data-sale="${esc(s.num)}">
           <td class="primary-cell" data-label="N°">${esc(s.num)}</td><td data-label="Date">${fmtDateTime(s.date)}</td>
           <td data-label="Client">${esc(s.client) || '<span class="muted">—</span>'}</td><td data-label="Paiement">${esc(s.paiement) || "—"}</td>
-          <td class="num" data-label="Articles">${int(s.qty)}</td><td class="num" data-label="Total TTC"><strong>${money(s.ttc)}</strong></td></tr>`).join("")}
+          <td class="num" data-label="Articles">${int(s.qty)}</td><td class="num" data-label="Total"><strong>${money(s.total)}</strong></td></tr>`).join("")}
         </tbody></table></div>${list.length > 500 ? `<div class="muted" style="padding:10px 16px">Affichage limité aux 500 ventes les plus récentes — affinez les filtres.</div>` : ""}`
         : `<div class="empty">Aucune vente pour ces critères.</div>`;
     };

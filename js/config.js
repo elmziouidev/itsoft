@@ -55,6 +55,10 @@ window.APP_CONFIG = {
   categoriesField: "Nom_Categorie",
   categoriesSeuilField: "Seuil_alerte", // colonne Nombre de la liste des catégories : seuil de stock faible
 
+  // Vignettes des articles : false = icône représentative (type d'article + marque) ;
+  // true = photo de la colonne « Photo » quand elle existe (et bouton « Photos » dans Articles)
+  afficherPhotos: false,
+
   // Afficher la section technique « Colonnes de Tbl_article » dans Paramètres
   afficherColonnes: false,
 
@@ -70,8 +74,6 @@ window.APP_CONFIG = {
   // Paramètres commerciaux
   nomEntreprise: "ITSoft",
   devise: "MAD",
-  tva: 20,                 // en %, mettre 0 pour désactiver
-  prixIncluentTVA: false,  // true si les prix de Tbl_article sont TTC
   seuilAlerteDefaut: 1,    // stock « faible » si quantité ≤ cette valeur (0 = rupture)
   modesPaiement: ["Espèces", "Carte bancaire", "Virement", "Chèque"]
 };
