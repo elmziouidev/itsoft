@@ -108,7 +108,25 @@ a { color: var(--primary); }
 .user { display: flex; align-items: center; gap: 10px; }
 .avatar { width: 32px; height: 32px; border-radius: 50%; background: var(--primary-soft); color: var(--primary); display: grid; place-items: center; font-weight: 700; font-size: 13px; flex-shrink: 0; }
 .user-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.logout-btn { flex-shrink: 0; color: var(--muted); }
+.logout-btn, .settings-btn { flex-shrink: 0; color: var(--muted); }
+.settings-btn:hover, .settings-btn.active, #btn-settings-top.active { color: var(--primary); background: var(--primary-soft); }
+.user .settings-btn { margin-left: auto; }
+
+/* Indicateurs du tableau de bord : dégradés de couleur */
+.kpis-grad .kpi { border: 0; color: #fff; position: relative; overflow: hidden; box-shadow: 0 6px 18px -8px var(--kpi-shadow, rgba(16,24,40,.35)); }
+.kpis-grad .kpi::after { content: ""; position: absolute; right: -28px; top: -28px; width: 110px; height: 110px; border-radius: 50%; background: rgba(255,255,255,.12); pointer-events: none; }
+.kpis-grad .kpi-label, .kpis-grad .kpi-sub { color: rgba(255,255,255,.88); }
+.kpis-grad .kpi-value { color: #fff; }
+.kpis-grad .g-total  { background: linear-gradient(135deg, #1f4fd1 0%, #6c3fd8 100%); --kpi-shadow: rgba(31,79,209,.55); }
+.kpis-grad .g-today  { background: linear-gradient(135deg, #0e7490 0%, #22a3c4 100%); --kpi-shadow: rgba(14,116,144,.5); }
+.kpis-grad .g-month  { background: linear-gradient(135deg, #3c3489 0%, #7f77dd 100%); --kpi-shadow: rgba(60,52,137,.5); }
+.kpis-grad .g-profit { background: linear-gradient(135deg, #0f6e56 0%, #2fb37f 100%); --kpi-shadow: rgba(15,110,86,.5); }
+.kpis-grad .g-buys   { background: linear-gradient(135deg, #b25e09 0%, #ef9f27 100%); --kpi-shadow: rgba(178,94,9,.5); }
+.kpis-grad .g-out    { background: linear-gradient(135deg, #a32d2d 0%, #e2604a 100%); --kpi-shadow: rgba(163,45,45,.5); }
+.kpis-grad .clickable-kpi:hover { transform: translateY(-2px); transition: transform .15s; }
+.kpis.kpis-grad { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+@media (min-width: 1680px) { .kpis.kpis-grad { grid-template-columns: repeat(6, minmax(0, 1fr)); } }
+@media (max-width: 960px) { .kpis.kpis-grad { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .logout-btn:hover { color: var(--danger); background: var(--danger-soft); }
 .btn.show-mobile { display: none; }
 @media (max-width: 860px) { .btn.show-mobile:not([hidden]) { display: inline-flex; } }

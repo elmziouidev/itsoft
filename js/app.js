@@ -40,6 +40,7 @@
     warn: '<svg viewBox="0 0 24 24"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0zM12 9v4M12 17h.01"/></svg>',
     info: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>',
     cartPlus: '<svg viewBox="0 0 24 24"><circle cx="9" cy="20" r="1.5"/><circle cx="18" cy="20" r="1.5"/><path d="M2 3h3l2.7 12.4a1 1 0 0 0 1 .8h9.6a1 1 0 0 0 1-.8L21 7H6"/><path d="M13.5 8.5v5M11 11h5"/></svg>',
+    settings: '<svg viewBox="0 0 24 24"><path d="M4 6h8M16 6h4M4 12h2M10 12h10M4 18h11M19 18h1"/><circle cx="14" cy="6" r="2"/><circle cx="8" cy="12" r="2"/><circle cx="17" cy="18" r="2"/></svg>',
     logout: '<svg viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5M21 12H9"/></svg>'
   };
 
@@ -448,6 +449,7 @@
     $("#view-title").textContent = VIEWS[k].title;
     document.title = VIEWS[k].title + " · " + (cfg.nomEntreprise || "Gestion des ventes");
     $$("#nav a").forEach(a => a.classList.toggle("active", a.dataset.view === (VIEWS[k].nav || k)));
+    $$(".settings-btn, #btn-settings-top").forEach(b => b.classList.toggle("active", k === "parametres"));
     const view = $("#view");
     // réinitialise les gestionnaires d'événements laissés par la vue précédente
     for (const h of ["onclick", "onchange", "oninput", "onkeydown", "ondragstart", "ondragover", "ondrop", "ondragend"]) view[h] = null;
@@ -486,6 +488,7 @@
     const sMonth = sales.filter(s => new Date(s.date) >= monthStart);
     const caToday = sToday.reduce((t, s) => t + s.total, 0);
     const caMonth = sMonth.reduce((t, s) => t + s.total, 0);
+    const caAll = sales.reduce((t, s) => t + s.total, 0), repAll = sales.filter(s => s.repair).length;
     const out = hasStock() ? state.articles.filter(a => artStock(a) <= 0)
       .sort((a, b) => String(F(a, "categorie") || "").localeCompare(String(F(b, "categorie") || ""), "fr") || String(artName(a)).localeCompare(String(artName(b)), "fr")) : [];
     const stockValue = hasStock() ? state.articles.reduce((t, a) => t + Math.max(0, artStock(a)) * artPrice(a), 0) : 0;
@@ -521,13 +524,13 @@
     el.innerHTML = `
       <div class="stack">
         ${ventesMissingBanner()}
-        <div class="kpis">
-          <div class="card kpi"><div class="kpi-label">CA aujourd'hui</div><div class="kpi-value">${money(caToday)}</div><div class="kpi-sub">${sToday.length} vente(s)</div></div>
-          <div class="card kpi"><div class="kpi-label">CA du mois</div><div class="kpi-value">${money(caMonth)}</div><div class="kpi-sub">${sMonth.length - repMonth.length} vente(s) · ${repMonth.length} réparation(s) (${money(caRepMonth)})</div></div>
-          <div class="card kpi"><div class="kpi-label">Bénéfice du mois</div><div class="kpi-value" style="color:${profitMonth < 0 ? "var(--danger)" : "var(--success)"}">${money(profitMonth)}</div><div class="kpi-sub">ventes + réparations${unknownMonth ? ` · ${unknownMonth} vente(s) sans prix d'achat non comptée(s)` : ""}</div></div>
-          <div class="card kpi clickable-kpi" data-goto="achats-hist"><div class="kpi-label">Achats du mois</div><div class="kpi-value">${money(achatsMonth)}</div><div class="kpi-sub">${(state.achats || []).filter(p => new Date(p.DateAchat) >= monthStart).length} achat(s) enregistré(s)</div></div>
-          <div class="card kpi"><div class="kpi-label">Articles</div><div class="kpi-value">${int(state.articles.length)}</div><div class="kpi-sub">${hasStock() ? "valeur du stock " + money(stockValue) : "stock non suivi"}</div></div>
-          <div class="card kpi clickable-kpi" data-goto="out"><div class="kpi-label">En rupture de stock</div><div class="kpi-value" style="color:${out.length ? "var(--danger)" : "var(--success)"}">${int(out.length)}</div><div class="kpi-sub">article(s) à quantité 0</div></div>
+        <div class="kpis kpis-grad">
+          <div class="card kpi g-total"><div class="kpi-label">CA global</div><div class="kpi-value">${money(caAll)}</div><div class="kpi-sub">${int(sales.length - repAll)} vente(s) · ${int(repAll)} réparation(s) depuis le début</div></div>
+          <div class="card kpi g-today"><div class="kpi-label">CA aujourd'hui</div><div class="kpi-value">${money(caToday)}</div><div class="kpi-sub">${sToday.length} opération(s)</div></div>
+          <div class="card kpi g-month"><div class="kpi-label">CA du mois</div><div class="kpi-value">${money(caMonth)}</div><div class="kpi-sub">${sMonth.length - repMonth.length} vente(s) · ${repMonth.length} réparation(s) (${money(caRepMonth)})</div></div>
+          <div class="card kpi g-profit"><div class="kpi-label">Bénéfice du mois</div><div class="kpi-value">${money(profitMonth)}</div><div class="kpi-sub">ventes + réparations${unknownMonth ? ` · ${unknownMonth} vente(s) sans prix d'achat non comptée(s)` : ""}</div></div>
+          <div class="card kpi g-buys clickable-kpi" data-goto="achats-hist"><div class="kpi-label">Achats du mois</div><div class="kpi-value">${money(achatsMonth)}</div><div class="kpi-sub">${(state.achats || []).filter(p => new Date(p.DateAchat) >= monthStart).length} achat(s) enregistré(s)</div></div>
+          <div class="card kpi g-out clickable-kpi" data-goto="out"><div class="kpi-label">En rupture de stock</div><div class="kpi-value">${int(out.length)}</div><div class="kpi-sub">article(s) à quantité 0${hasStock() ? " · stock " + money(stockValue) : ""}</div></div>
         </div>
         <div class="grid-2">
           <div class="card">
@@ -2558,6 +2561,7 @@
     const email = Auth.account ? Auth.account.username : "";
     $("#user-box").innerHTML = `<div class="user" title="${esc(email)}"><span class="avatar">${esc(initials)}</span>
       <div style="min-width:0;flex:1"><div class="user-name">${esc(name)}</div><div class="muted ellipsis" style="font-size:12px">${DS.mode === "demo" ? "Mode démo" : esc(email || "SharePoint")}</div></div>
+      <a class="btn sm icon ghost settings-btn" href="#/parametres" title="Paramètres" aria-label="Paramètres">${ICON.settings}</a>
       ${Auth.enabled ? `<button class="btn sm icon ghost logout-btn" data-logout title="Se déconnecter" aria-label="Se déconnecter">${ICON.logout}</button>` : ""}</div>`;
     // sur mobile, le profil est masqué : bouton de déconnexion dans la barre du haut
     const tb = $("#btn-logout-top");
