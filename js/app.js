@@ -243,6 +243,33 @@
     if (all) for (const c of state.categories || []) if (c.name && ![...m.keys()].some(k => norm(k) === norm(c.name))) m.set(c.name, c.name);
     return [...m.values()].sort((x, y) => String(x).localeCompare(String(y), "fr"));
   }
+  /* Ajout rapide d'une catégorie (depuis le filtre de la page Articles) */
+  function newCategoryDialog(onDone) {
+    const m = openModal({
+      title: "Nouvelle catégorie", size: "sm",
+      body: `<label class="field">Nom de la catégorie<input class="input" id="nc-name" placeholder="ex. ÉCOUTEUR BT" autocomplete="off" style="text-transform:uppercase"></label>
+        <p class="muted" style="font-size:13px;margin:10px 0 0">Elle sera ajoutée à la liste ${esc(cfg.categoriesList || "")} et proposée pour vos articles.</p>`,
+      foot: `<button class="btn" data-close>Annuler</button><button class="btn primary" id="nc-ok">${ICON.plus} Ajouter</button>`
+    });
+    const inp = $("#nc-name", m);
+    const go = async () => {
+      const name = String(inp.value || "").replace(/\s+/g, " ").trim().toUpperCase();
+      if (!name) { inp.focus(); return toast("Saisissez le nom de la catégorie.", "bad"); }
+      const exists = (state.categories || []).find(c => norm(c.name) === norm(name)) || categories(true).find(c => norm(c) === norm(name));
+      if (exists) { closeModal(); toast(`La catégorie « ${typeof exists === "string" ? exists : exists.name} » existe déjà.`, "bad"); return; }
+      const btn = $("#nc-ok", m); busy(btn, true, "Ajout…");
+      try {
+        await DS.createCategorie(name);
+        state.categories = await DS.loadCategories();
+        closeModal();
+        toast(`Catégorie « ${name} » ajoutée.`, "ok");
+        if (onDone) onDone(name);
+      } catch (e) { busy(btn, false); toast(e.message, "bad"); }
+    };
+    $("#nc-ok", m).addEventListener("click", go);
+    inp.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); go(); } });
+  }
+
   /* Liste de suggestions (datalist) pour la saisie de la catégorie */
   function catDatalist() {
     let dl = document.getElementById("dl-cats");
@@ -883,7 +910,8 @@
 
   function viewArticles(el) {
     const f = state.filters.articles;
-    const cats = categories();
+    const cats = categories(true); // catégories des articles + celles de la liste des catégories
+    const catCanAdd = Array.isArray(state.categories) && !!state.map.categorie;
     const shownCols = articleColumns();
     // colonnes du tableau : colonnes choisies + CA calculé juste après le prix
     const layout = [];
@@ -914,7 +942,7 @@
       <div class="card">
         <div class="card-head compact-head">
           <div class="search">${ICON.search}<input class="input" id="art-q" type="search" placeholder="Rechercher…" value="${esc(f.q)}"></div>
-          ${cats.length ? `<select class="input" id="art-cat" style="width:auto;flex:0 1 190px"><option value="">Toutes catégories</option>${cats.map(c => `<option ${f.cat === c ? "selected" : ""}>${esc(c)}</option>`).join("")}</select>` : ""}
+          ${cats.length || catCanAdd ? `<select class="input" id="art-cat" style="width:auto;flex:0 1 190px"><option value="">Toutes catégories</option>${catCanAdd ? `<option value="__new__">＋ Nouvelle catégorie…</option>` : ""}${cats.map(c => `<option ${f.cat === c ? "selected" : ""}>${esc(c)}</option>`).join("")}</select>` : ""}
           ${hasStock() ? `<select class="input" id="art-stock" style="width:auto;flex:0 1 160px"><option value="">Tout le stock</option><option value="low" ${f.stock === "low" ? "selected" : ""}>Stock faible</option><option value="out" ${f.stock === "out" ? "selected" : ""}>En rupture</option></select>` : ""}
           ${state.map.categorie ? `<a class="btn" href="#/categories" title="Ajouter, renommer ou supprimer des catégories">${ICON.edit}<span class="hide-sm">Catégories</span></a>` : ""}
           ${state.map.photo && cfg.afficherPhotos ? `<a class="btn" href="#/photos" title="Rechercher des photos par catégorie">${ICON.search}<span class="hide-sm">Photos</span></a>` : ""}
@@ -1124,7 +1152,10 @@
     el.ondragend = () => { dragCol = null; clearDrop(); };
 
     el.onchange = e => {
-      if (e.target.id === "art-cat") { f.cat = e.target.value; drawTable(); }
+      if (e.target.id === "art-cat") {
+        if (e.target.value === "__new__") { e.target.value = f.cat; return newCategoryDialog(() => viewArticles(el)); }
+        f.cat = e.target.value; drawTable();
+      }
       if (e.target.id === "art-stock") { f.stock = e.target.value; drawTable(); }
     };
     el.onclick = async e => {
