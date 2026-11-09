@@ -25,6 +25,19 @@
 
   const VENTE_FIELDS = VENTE_COLUMNS.map(c => c.name);
 
+  /* Colonnes de la liste des achats (créée par l'application) */
+  const ACHAT_COLUMNS = [
+    { name: "ArticleId", number: { decimalPlaces: "none" } },
+    { name: "Article", text: {} },
+    { name: "Fournisseur", text: {} },
+    { name: "Quantite", number: { decimalPlaces: "none" } },
+    { name: "PrixAchat", number: { decimalPlaces: "two" } },
+    { name: "Montant", number: { decimalPlaces: "two" } },
+    { name: "DateAchat", dateTime: { format: "dateTime" } },
+    { name: "Utilisateur", text: {} }
+  ];
+  const ACHAT_FIELDS = ACHAT_COLUMNS.map(c => c.name);
+
   const SYSTEM_COLUMNS = new Set([
     "ContentType", "Attachments", "Edit", "LinkTitle", "LinkTitleNoMenu", "DocIcon",
     "ItemChildCount", "FolderChildCount", "AppAuthor", "AppEditor", "ComplianceAssetId",
@@ -208,11 +221,85 @@
         const v = await this.getAll(`/sites/${this.siteId}/lists/${this.ventesListId}/items?$expand=fields&$top=500`);
         ventes = v.map(it => this.fromVente(it));
       }
-      let categories = null, clients = null;
+      let categories = null, clients = null, fournisseurs = null, achats = [];
       try { categories = await this.loadCategories(); } catch (e) { console.warn("Catégories indisponibles", e); }
       try { clients = await this.loadClients(); } catch (e) { console.warn("Clients indisponibles", e); }
-      return { columns, articles, ventes, categories, clients, ventesReady: !!this.ventesListId, siteName: this.siteName };
+      try { fournisseurs = await this.loadFournisseurs(); } catch (e) { console.warn("Fournisseurs indisponibles", e); }
+      try { achats = await this.loadAchats(); } catch (e) { console.warn("Achats indisponibles", e); }
+      return { columns, articles, ventes, categories, clients, fournisseurs, achats, achatsReady: !!this.achatsListId,
+        ventesReady: !!this.ventesListId, siteName: this.siteName };
     },
+
+    /* ---- Outils : colonnes retrouvées par nom affiché ---- */
+    async fieldMap(listId, names) {
+      const cols = await this.getAll(`/sites/${this.siteId}/lists/${listId}/columns?$select=name,displayName`);
+      const m = { Title: "Title" };
+      for (const L of names) {
+        const c = cols.find(x => x.name === L) || cols.find(x => norm(x.displayName) === norm(L));
+        m[L] = c ? c.name : L;
+      }
+      return m;
+    },
+    fromMapped(it, m, names) {
+      const f = it.fields || {}, out = { id: String(it.id), Created: f.Created };
+      for (const L of ["Title"].concat(names)) out[L] = f[m[L] || L];
+      return out;
+    },
+    toMapped(fields, m) {
+      const out = {};
+      for (const k of Object.keys(fields)) out[m[k] || k] = fields[k];
+      return out;
+    },
+
+    /* ---- Achats (Tbl_achat) ---- */
+    async loadAchats() {
+      if (!cfg.achatsList) return [];
+      if (!this.achatsListId) this.achatsListId = await this.findList(cfg.achatsList);
+      if (!this.achatsListId) return [];
+      this.amap = await this.fieldMap(this.achatsListId, ACHAT_FIELDS);
+      const its = await this.getAll(`/sites/${this.siteId}/lists/${this.achatsListId}/items?$expand=fields&$top=500`);
+      return its.map(it => this.fromMapped(it, this.amap, ACHAT_FIELDS));
+    },
+    async createAchatsList() {
+      const list = await this.call(`/sites/${this.siteId}/lists`, {
+        method: "POST",
+        body: JSON.stringify({ displayName: cfg.achatsList, columns: ACHAT_COLUMNS, list: { template: "genericList" } })
+      }, ["Sites.Manage.All"]);
+      this.achatsListId = list.id;
+      this.amap = await this.fieldMap(this.achatsListId, ACHAT_FIELDS);
+    },
+    async createAchatLine(fields) {
+      const it = await this.call(`/sites/${this.siteId}/lists/${this.achatsListId}/items`,
+        { method: "POST", body: JSON.stringify({ fields: this.toMapped(fields, this.amap || {}) }) });
+      return this.fromMapped(it, this.amap || {}, ACHAT_FIELDS);
+    },
+    async deleteAchatLine(id) {
+      await this.call(`/sites/${this.siteId}/lists/${this.achatsListId}/items/${id}`, { method: "DELETE" });
+    },
+
+    /* ---- Fournisseurs (Tbl_Fournisseur / Nom_fournisseur) ---- */
+    supPath(suffix = "") { return `/sites/${this.siteId}/lists/${this.fournisseursListId}/items${suffix}`; },
+    supFields(name) {
+      const f = cfg.fournisseursField || "Title", fields = { [f]: name };
+      if (f !== "Title") fields.Title = name;
+      return fields;
+    },
+    async loadFournisseurs() {
+      if (!cfg.fournisseursList) return null;
+      if (!this.fournisseursListId) this.fournisseursListId = await this.findList(cfg.fournisseursList);
+      if (!this.fournisseursListId) return null;
+      const f = cfg.fournisseursField || "Title";
+      const its = await this.getAll(this.supPath(`?$expand=fields($select=${f})&$top=500`));
+      return its.map(i => ({ id: String(i.id), name: String((i.fields || {})[f] || "").replace(/\s+/g, " ").trim() })).filter(x => x.name);
+    },
+    async createFournisseur(name) {
+      const it = await this.call(this.supPath(), { method: "POST", body: JSON.stringify({ fields: this.supFields(name) }) });
+      return { id: String(it.id), name };
+    },
+    async updateFournisseur(id, name) {
+      await this.call(this.supPath(`/${id}/fields`), { method: "PATCH", body: JSON.stringify(this.supFields(name)) });
+    },
+    async deleteFournisseur(id) { await this.call(this.supPath(`/${id}`), { method: "DELETE" }); },
 
     vmap: null,
     fromVente(it) {
@@ -337,7 +424,7 @@
   /* ---------------------------------------------------------------- */
   /*  Mode démo (localStorage) — reproduit la structure de Tbl_article */
   /* ---------------------------------------------------------------- */
-  const DEMO_KEY = "ventesit-demo-v4";
+  const DEMO_KEY = "ventesit-demo-v5";
   const DemoService = {
     mode: "demo",
     db: null,
@@ -346,8 +433,8 @@
       const cats = [{ id: "1", label: "SMARTPHONE" }, { id: "2", label: "TABLETTE" }, { id: "3", label: "TELEPHONE" }, { id: "4", label: "ACCESSOIRE" }];
       const arts = [
         [30, "HONOR X6b", "TAKHFID", 1, 1350, "12-128 RAS", "2023-07-18", "1"],
-        [31, "SPARK GO 2024", "TAKHFID", 0, 1030, "128/4 RAS", "2024-10-28", "1"],
-        [32, "SPARK GO1", "TAKHFID", 1, 935, "3-64 RAS", "2023-07-18", "1"],
+        [31, "SPARK GO 2024", "TKHFID", 0, 1030, "128/4 RAS", "2024-10-28", "1"],
+        [32, "SPARK GO1", "AZZ", 1, 935, "3-64 RAS", "2023-07-18", "1"],
         [33, "REALME NOTE 50", "TAKHFID", 1, 1130, "128/4 RAS", "2023-07-18", "1"],
         [38, "VIVO Y03", "TAKHFID", 2, 1120, "4-64 RAS", "2023-07-18", "1"],
         [39, "ZTE", "TAKHFID", 2, 800, "4/128 RAS", "2023-07-18", "1"],
@@ -413,8 +500,19 @@
       }
       const clone = x => JSON.parse(JSON.stringify(x));
       if (!this.db.clients) this.db.clients = [{ id: "1", name: "ANONYME", phone: "" }, { id: "2", name: "Société Atlas", phone: "0522000000" }];
-      return { columns: clone(this.db.columns), articles: this.db.articles.map(a => this.resolve(a)), ventes: clone(this.db.ventes), categories: clone(this.db.categories || []), clients: clone(this.db.clients), ventesReady: true, siteName: "Démo" };
+      if (!this.db.fournisseurs) this.db.fournisseurs = [{ id: "1", name: "TAKHFID" }, { id: "2", name: "AZIZ" }];
+      if (!this.db.achats) this.db.achats = [];
+      return { columns: clone(this.db.columns), articles: this.db.articles.map(a => this.resolve(a)), ventes: clone(this.db.ventes),
+        categories: clone(this.db.categories || []), clients: clone(this.db.clients), fournisseurs: clone(this.db.fournisseurs),
+        achats: clone(this.db.achats), achatsReady: !!this.db.achatsReady, ventesReady: true, siteName: "Démo" };
     },
+    async createAchatsList() { this.db.achatsReady = true; this.persist(); },
+    async createAchatLine(fields) { const v = { ...fields, id: String(Date.now()) + Math.floor(Math.random() * 1000) }; this.db.achats.push(v); this.persist(); return { ...v }; },
+    async deleteAchatLine(id) { this.db.achats = this.db.achats.filter(x => x.id !== String(id)); this.persist(); },
+    async loadFournisseurs() { return JSON.parse(JSON.stringify(this.db.fournisseurs || [])); },
+    async createFournisseur(name) { const c = { id: String(Date.now()), name }; this.db.fournisseurs.push(c); this.persist(); return { ...c }; },
+    async updateFournisseur(id, name) { const c = this.db.fournisseurs.find(x => x.id === String(id)); if (c) c.name = name; this.persist(); },
+    async deleteFournisseur(id) { this.db.fournisseurs = this.db.fournisseurs.filter(x => x.id !== String(id)); this.persist(); },
     async loadClients() { return JSON.parse(JSON.stringify(this.db.clients || [])); },
     async createClient(name, phone) { const c = { id: String(Date.now()), name, phone: phone || "" }; this.db.clients.push(c); this.persist(); return { ...c }; },
     async loadCategories() { return JSON.parse(JSON.stringify(this.db.categories || [])); },

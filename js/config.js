@@ -45,6 +45,11 @@ window.APP_CONFIG = {
   clientsPhone: "Telephone_client",
   clientParDefaut: "ANONYME",      // client enregistré si le champ Client est laissé vide
 
+  // Fournisseurs et achats
+  fournisseursList: "Tbl_Fournisseur",
+  fournisseursField: "Nom_fournisseur",
+  achatsList: "Tbl_achat",            // créée par l'application au premier achat
+
   // Liste des catégories (gérée depuis l'écran « Catégories ») et sa colonne contenant le nom
   categoriesList: "Tbl_Calegorie",
   categoriesField: "Nom_Categorie",

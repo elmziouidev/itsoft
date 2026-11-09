@@ -328,6 +328,9 @@
     state.ventesReady = res.ventesReady;
     state.categories = res.categories || null;
     state.clients = res.clients || null;
+    state.fournisseurs = res.fournisseurs || null;
+    state.achats = res.achats || [];
+    state.achatsReady = !!res.achatsReady;
     state.siteName = res.siteName;
     computeMapping();
     // retirer du panier les articles disparus
@@ -342,7 +345,9 @@
     ventes: { title: "Historique des ventes", render: viewVentes },
     parametres: { title: "Paramètres", render: viewParametres },
     photos: { title: "Photos des articles", render: viewPhotos, nav: "articles" },
-    categories: { title: "Catégories", render: viewCategories, nav: "articles" }
+    categories: { title: "Catégories", render: viewCategories, nav: "articles" },
+    achats: { title: "Achats", render: viewAchats },
+    fournisseurs: { title: "Fournisseurs", render: viewFournisseurs, nav: "achats" }
   };
   function currentView() {
     const k = (location.hash.match(/^#\/(\w+)/) || [])[1];
@@ -404,9 +409,22 @@
     for (const s of sales) { const d = new Date(s.date); const m = byMonth[d.getFullYear() + "-" + d.getMonth()]; if (m) { m.v += s.ttc; m.n++; } }
     const caYear = months.reduce((t, m) => t + m.v, 0);
 
-    // Derniers achats : articles par date d'entrée (colonne DATEe), les plus récents d'abord
+    // Derniers achats : liste des achats si elle existe, sinon articles par date d'entrée (DATEe)
     const dateCol = findCol("DATEe") || state.columns.find(c => c.type === "dateTime");
-    const purchases = dateCol ? state.articles.filter(a => a[dateCol.name]).sort((a, b) => new Date(b[dateCol.name]) - new Date(a[dateCol.name])) : [];
+    const achats = (state.achats || []).slice().sort((a, b) => new Date(b.DateAchat) - new Date(a.DateAchat));
+    const purchases = achats.length ? achats.map(p => {
+      const a = state.articles.find(x => String(x.id) === String(p.ArticleId)) || { id: "", [state.map.designation]: p.Article };
+      return { a, date: p.DateAchat, sup: p.Fournisseur, q: +p.Quantite || 0, price: +p.PrixAchat || 0 };
+    }) : dateCol ? state.articles.filter(a => a[dateCol.name]).sort((a, b) => new Date(b[dateCol.name]) - new Date(a[dateCol.name]))
+      .map(a => ({ a, date: a[dateCol.name], sup: F(a, "fournisseur"), q: artStock(a), price: artPrice(a) })) : [];
+    const achatsMonth = (state.achats || []).filter(p => new Date(p.DateAchat) >= monthStart).reduce((t, p) => t + (+p.Montant || 0), 0);
+    // Marge estimée du mois : (prix de vente − dernier prix d'achat connu) × quantité
+    let marge = 0, margeLines = 0;
+    for (const s of sMonth) for (const l of s.lines) {
+      const a = state.articles.find(x => String(x.id) === String(l.ArticleId));
+      const lp = a && lastPurchase(a);
+      if (lp) { marge += ((+l.PrixUnitaire || 0) - (+lp.PrixAchat || 0)) * (+l.Quantite || 0); margeLines++; }
+    }
 
     const thumbName = a => `<span class="name-cell">${thumbHTML(a)}<span class="ellipsis">${esc(artName(a))}</span></span>`;
     el.innerHTML = `
@@ -415,6 +433,7 @@
         <div class="kpis">
           <div class="card kpi"><div class="kpi-label">CA aujourd'hui</div><div class="kpi-value">${money(caToday)}</div><div class="kpi-sub">${sToday.length} vente(s)</div></div>
           <div class="card kpi"><div class="kpi-label">CA du mois</div><div class="kpi-value">${money(caMonth)}</div><div class="kpi-sub">${sMonth.length} vente(s) · panier moyen ${money(sMonth.length ? caMonth / sMonth.length : 0)}</div></div>
+          <div class="card kpi clickable-kpi" data-goto="achats-hist"><div class="kpi-label">Achats du mois</div><div class="kpi-value">${money(achatsMonth)}</div><div class="kpi-sub">${margeLines ? `marge estimée sur ventes : <strong>${money(marge)}</strong>` : "marge : saisissez vos prix d'achat"}</div></div>
           <div class="card kpi"><div class="kpi-label">Articles</div><div class="kpi-value">${int(state.articles.length)}</div><div class="kpi-sub">${hasStock() ? "valeur du stock " + money(stockValue) : "stock non suivi"}</div></div>
           <div class="card kpi clickable-kpi" data-goto="out"><div class="kpi-label">En rupture de stock</div><div class="kpi-value" style="color:${out.length ? "var(--danger)" : "var(--success)"}">${int(out.length)}</div><div class="kpi-sub">article(s) à quantité 0</div></div>
         </div>
@@ -440,12 +459,13 @@
             </tbody></table></div>` : `<div class="empty">Aucune vente enregistrée.</div>`}
           </div>
           <div class="card">
-            <div class="card-head"><h2>Derniers achats</h2><button class="btn sm" data-goto="achats">Tout voir</button></div>
-            ${purchases.length ? `<div class="table-wrap"><table class="table responsive compact"><thead><tr><th>Date</th><th>Article</th><th>Fournisseur</th><th class="num">Qté</th><th class="num">Prix</th></tr></thead><tbody>
-              ${purchases.slice(0, 8).map(a => `<tr><td data-label="Date">${fmtDate(a[dateCol.name])}</td><td class="primary-cell" data-label="Article">${thumbName(a)}</td>
-                <td data-label="Fournisseur">${esc(F(a, "fournisseur") || "") || '<span class="muted">—</span>'}</td>
-                <td class="num" data-label="Qté">${int(artStock(a))}</td><td class="num" data-label="Prix">${money(artPrice(a))}</td></tr>`).join("")}
-            </tbody></table></div>` : `<div class="empty">Aucune date d'achat (colonne DATEe) renseignée.</div>`}
+            <div class="card-head"><h2>Derniers achats</h2><button class="btn sm" data-goto="${achats.length ? "achats-hist" : "achats"}">Tout voir</button></div>
+            ${purchases.length ? `<div class="table-wrap"><table class="table responsive compact"><thead><tr><th>Date</th><th>Article</th><th>Fournisseur</th><th class="num">Qté</th><th class="num">${achats.length ? "Prix d'achat" : "Prix"}</th></tr></thead><tbody>
+              ${purchases.slice(0, 8).map(x => `<tr><td data-label="Date">${fmtDate(x.date)}</td><td class="primary-cell" data-label="Article">${x.a.id ? thumbName(x.a) : esc(artName(x.a))}</td>
+                <td data-label="Fournisseur">${esc(x.sup || "") || '<span class="muted">—</span>'}</td>
+                <td class="num" data-label="Qté">${int(x.q)}</td><td class="num" data-label="Prix">${money(x.price)}</td></tr>`).join("")}
+            </tbody></table></div>${achats.length ? "" : `<div class="table-foot muted">Basé sur la date d'entrée des articles (DATEe) — enregistrez vos achats avec 📦 dans Articles.</div>`}`
+              : `<div class="empty">Aucun achat enregistré.</div>`}
           </div>
         </div>
       </div>`;
@@ -458,6 +478,7 @@
       if (g) {
         const fa = state.filters.articles;
         if (g.dataset.goto === "out") { fa.stock = "out"; fa.cat = ""; fa.q = ""; }
+        if (g.dataset.goto === "achats-hist") { (state.filters.achats || (state.filters.achats = { q: "", sup: "", from: "", to: "" })).tab = "hist"; location.hash = "#/achats"; return; }
         if (g.dataset.goto === "achats" && dateCol) { fa.stock = ""; fa.sort = dateCol.name; fa.dir = -1; }
         location.hash = "#/articles";
         return;
@@ -735,7 +756,7 @@
       return `<td class="editable ${isNumCol(c) ? "num" : ""}" data-col="${esc(c.name)}" data-label="${esc(c.displayName)}" title="Cliquer pour modifier">${cellHTML(a, c)}</td>`;
     };
     const rowInner = a => layout.map(c => tdHTML(a, c)).join("") +
-      `<td class="actions"><button class="btn sm icon ghost sell-btn" data-sell="${esc(a.id)}" title="Vendre" aria-label="Vendre">${ICON.cart}</button><button class="btn sm icon ghost" data-edit="${esc(a.id)}" title="Modifier (formulaire complet)" aria-label="Modifier dans un formulaire">${ICON.edit}</button><button class="btn sm icon ghost danger" data-del="${esc(a.id)}" title="Supprimer" aria-label="Supprimer">${ICON.trash}</button></td>`;
+      `<td class="actions"><button class="btn sm icon ghost sell-btn" data-sell="${esc(a.id)}" title="Vendre" aria-label="Vendre">${ICON.cart}</button><button class="btn sm icon ghost rcv-btn" data-rcv="${esc(a.id)}" title="Réceptionner un achat (entrée en stock)" aria-label="Réceptionner un achat">📦</button><button class="btn sm icon ghost" data-edit="${esc(a.id)}" title="Modifier (formulaire complet)" aria-label="Modifier dans un formulaire">${ICON.edit}</button><button class="btn sm icon ghost danger" data-del="${esc(a.id)}" title="Supprimer" aria-label="Supprimer">${ICON.trash}</button></td>`;
     const footHTML = list => `<span>${int(list.length)} article(s) sur ${int(state.articles.length)}</span>` +
       (hasStock() ? `<span>Quantité totale : <strong>${int(list.reduce((t, a) => t + artStock(a), 0))}</strong></span>` : "") +
       (hasCA() ? `<span>Valeur du stock : <strong>${money(list.reduce((t, a) => t + artCA(a), 0))}</strong></span>` : "") +
@@ -783,7 +804,7 @@
         case "boolean":
           html = `<select class="cell-input"><option value="1" ${cur ? "selected" : ""}>Oui</option><option value="0" ${!cur ? "selected" : ""}>Non</option></select>`; break;
         default:
-          html = `<input class="cell-input" type="text" value="${esc(cur == null ? "" : cur)}" ${col.name === state.map.categorie ? `list="${catDatalist()}"` : ""}>`;
+          html = `<input class="cell-input" type="text" value="${esc(cur == null ? "" : cur)}" ${col.name === state.map.categorie ? `list="${catDatalist()}"` : col.name === state.map.fournisseur ? `list="${supDatalist()}"` : ""}>`;
       }
       td.classList.add("editing");
       td.innerHTML = html;
@@ -903,6 +924,8 @@
       if (th0) { const a = state.articles.find(x => x.id === th0.dataset.thumb); if (a) return showPhoto(a); }
       const sell = e.target.closest("[data-sell]");
       if (sell) { const a = state.articles.find(x => x.id === sell.dataset.sell); if (a) return sellDialog(a); }
+      const rcv = e.target.closest("[data-rcv]");
+      if (rcv) { const a = state.articles.find(x => x.id === rcv.dataset.rcv); if (a) return receiveDialog(a); }
       const cell = e.target.closest("td.editable");
       if (cell && !cell.classList.contains("editing")) return startEdit(cell);
       if (e.target.closest("#col-reset")) { store.set(COL_ORDER_KEY, null); try { localStorage.removeItem(COL_ORDER_KEY); } catch (_) {} return viewArticles(el); }
@@ -952,7 +975,7 @@
       case "note":
         return `<textarea class="input" id="${id}" name="${esc(col.name)}" rows="3" ${req}>${esc(v)}</textarea>`;
       default:
-        return `<input class="input" id="${id}" name="${esc(col.name)}" type="text" value="${esc(v)}" ${req} ${col.name === state.map.categorie ? `list="${catDatalist()}" autocomplete="off"` : ""}>`;
+        return `<input class="input" id="${id}" name="${esc(col.name)}" type="text" value="${esc(v)}" ${req} ${col.name === state.map.categorie ? `list="${catDatalist()}" autocomplete="off"` : col.name === state.map.fournisseur ? `list="${supDatalist()}" autocomplete="off"` : ""}>`;
     }
   }
 
@@ -1402,6 +1425,457 @@
     };
   }
 
+  /* ============ Fournisseurs & achats : outils communs ============ */
+  const supKey = s => String(s || "").toUpperCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^A-Z0-9]/g, "");
+  const cleanSup = s => String(s || "").replace(/\s+/g, " ").replace(/[\/+\s]+$/, "").trim();
+
+  /* Noms des fournisseurs connus : liste Tbl_Fournisseur + valeurs saisies dans les articles */
+  function supplierNames() {
+    const m = new Map();
+    for (const s of state.fournisseurs || []) if (s.name && !m.has(supKey(s.name))) m.set(supKey(s.name), s.name);
+    for (const a of state.articles) { const v = cleanSup(F(a, "fournisseur")); if (v && !m.has(supKey(v))) m.set(supKey(v), v); }
+    return [...m.values()].sort((x, y) => x.localeCompare(y, "fr"));
+  }
+  function supDatalist() {
+    let dl = document.getElementById("dl-sups");
+    if (!dl) { dl = document.createElement("datalist"); dl.id = "dl-sups"; document.body.appendChild(dl); }
+    dl.innerHTML = supplierNames().map(n => `<option value="${esc(n)}"></option>`).join("");
+    return "dl-sups";
+  }
+  /* Dernier achat connu d'un article (prix d'achat, fournisseur) */
+  function lastPurchase(a) {
+    let best = null;
+    for (const p of state.achats || []) {
+      if (String(p.ArticleId) !== String(a.id)) continue;
+      if (!best || new Date(p.DateAchat) > new Date(best.DateAchat)) best = p;
+    }
+    return best;
+  }
+  function ensureAchatsList() {
+    if (state.achatsReady) return Promise.resolve(true);
+    return confirmBox("Créer la liste des achats", `La liste <strong>${esc(cfg.achatsList)}</strong> n'existe pas encore sur SharePoint. L'application va la créer (une seule fois). Continuer ?`, "Créer la liste", false)
+      .then(async ok => {
+        if (!ok) return false;
+        try { await DS.createAchatsList(); state.achatsReady = true; toast(`Liste « ${cfg.achatsList} » créée.`, "ok"); return true; }
+        catch (e) { toast("Création impossible : " + e.message, "bad"); return false; }
+      });
+  }
+  async function ensureSupplier(name) {
+    if (!name || !Array.isArray(state.fournisseurs)) return;
+    if (state.fournisseurs.some(s => supKey(s.name) === supKey(name))) return;
+    try { state.fournisseurs.push(await DS.createFournisseur(name)); } catch (e) { console.warn(e); }
+  }
+
+  /* ============ Réceptionner un achat (depuis Articles ou « À commander ») ============ */
+  async function receiveDialog(a, presetQty) {
+    if (!(await ensureAchatsList())) return;
+    const last = lastPurchase(a);
+    const defSup = cleanSup(F(a, "fournisseur")) || (last && last.Fournisseur) || "";
+    const dateCol = findCol("DATEe");
+    const m = openModal({
+      title: "Réceptionner un achat", size: "sm",
+      body: `
+        <div class="sell-head">${thumbHTML(a, true)}<div style="min-width:0"><strong>${esc(artName(a))}</strong>
+          <div class="muted" style="font-size:13px">${esc(F(a, "categorie") || "")}${hasStock() ? ` · stock actuel <strong>${int(artStock(a))}</strong>` : ""}</div></div></div>
+        <form id="rcv-form" class="form-grid" style="margin-top:16px" novalidate>
+          <label class="field">Quantité reçue
+            <span class="qty qty-lg"><button type="button" data-d="-1" aria-label="Diminuer">−</button><input id="rcv-qty" type="number" min="1" value="${presetQty || 1}" inputmode="numeric"><button type="button" data-d="1" aria-label="Augmenter">+</button></span></label>
+          <label class="field">Prix d'achat unitaire (${esc(cfg.devise)})<input class="input" id="rcv-price" type="number" step="any" min="0" value="${last ? +last.PrixAchat : ""}" placeholder="${last ? "" : "ex. 80"}" inputmode="decimal"></label>
+          <label class="field full">Fournisseur<input class="input" id="rcv-sup" list="${supDatalist()}" value="${esc(defSup)}" placeholder="Nom du fournisseur" autocomplete="off"></label>
+          <label class="field">Date<input class="input" id="rcv-date" type="date" value="${dayKey(new Date())}"></label>
+          <label class="field">Nouveau prix de vente <span class="muted" style="font-weight:400">(facultatif)</span><input class="input" id="rcv-sell" type="number" step="any" min="0" placeholder="${artPrice(a)}" inputmode="decimal"></label>
+          <div class="full totals" id="rcv-total"></div>
+          <button type="submit" hidden></button>
+        </form>
+        ${last ? `<p class="muted" style="font-size:12.5px;margin:10px 0 0">Dernier achat : ${fmtDate(last.DateAchat)} · ${int(last.Quantite)} × ${money(last.PrixAchat)} chez ${esc(last.Fournisseur || "—")}</p>` : ""}`,
+      foot: `<button class="btn" data-close>Annuler</button><button class="btn primary lg" id="rcv-ok">${ICON.download} Enregistrer l'achat</button>`
+    });
+    const qtyI = $("#rcv-qty", m), priceI = $("#rcv-price", m);
+    const update = () => {
+      const q = parseInt(qtyI.value, 10) || 0, p = parseFloat(String(priceI.value).replace(",", "."));
+      $("#rcv-total", m).innerHTML = `<span class="grand">Montant de l'achat</span><span class="num grand">${money(q * (isNaN(p) ? 0 : p))}</span>` +
+        (hasStock() ? `<span class="muted">Stock après réception</span><span class="num">${int(artStock(a) + q)}</span>` : "");
+    };
+    update();
+    m.querySelectorAll("[data-d]").forEach(b => b.addEventListener("click", () => { qtyI.value = Math.max(1, (parseInt(qtyI.value, 10) || 1) + +b.dataset.d); update(); }));
+    [qtyI, priceI].forEach(i => i.addEventListener("input", update));
+    setTimeout(() => qtyI.select(), 60);
+    const submit = async () => {
+      const qty = parseInt(qtyI.value, 10) || 0;
+      const price = parseFloat(String(priceI.value).replace(",", "."));
+      const sup = cleanSup($("#rcv-sup", m).value);
+      const sell = $("#rcv-sell", m).value === "" ? null : parseFloat(String($("#rcv-sell", m).value).replace(",", "."));
+      if (qty < 1) { qtyI.focus(); return toast("Quantité invalide.", "bad"); }
+      if (isNaN(price) || price < 0) { priceI.focus(); return toast("Saisissez le prix d'achat unitaire.", "bad"); }
+      if (!sup) { $("#rcv-sup", m).focus(); return toast("Indiquez le fournisseur.", "bad"); }
+      if (sell !== null && (isNaN(sell) || sell < 0)) return toast("Prix de vente invalide.", "bad");
+      const btn = $("#rcv-ok", m);
+      busy(btn, true, "Enregistrement…");
+      try {
+        const known = supplierNames().find(n => supKey(n) === supKey(sup)) || sup;
+        await ensureSupplier(known);
+        const dRaw = $("#rcv-date", m).value;
+        const d = dRaw ? new Date(dRaw + "T" + new Date().toTimeString().slice(0, 8)) : new Date();
+        const line = await DS.createAchatLine({
+          Title: "A" + saleNumber(d).slice(1), ArticleId: parseInt(a.id, 10), Article: String(artName(a)), Fournisseur: known,
+          Quantite: qty, PrixAchat: price, Montant: Math.round(qty * price * 100) / 100, DateAchat: d.toISOString(), Utilisateur: Auth.userName()
+        });
+        state.achats.push(line);
+        const fresh = await DS.getArticle(a.id);
+        const upd = {};
+        if (hasStock()) upd[state.map.stock] = (+fresh[state.map.stock] || 0) + qty;
+        if (state.map.fournisseur) upd[state.map.fournisseur] = known;
+        if (dateCol) upd[dateCol.name] = d.toISOString();
+        if (sell !== null && state.map.prix) upd[state.map.prix] = sell;
+        Object.assign(a, await DS.updateArticle(a.id, upd));
+        closeModal();
+        toast(`Achat enregistré : +${qty} « ${artName(a)} ».`, "ok");
+        if (currentView() === "articles" && state.refreshArticle) state.refreshArticle(a); else render();
+      } catch (e) { busy(btn, false); toast(e.message, "bad"); }
+    };
+    $("#rcv-ok", m).addEventListener("click", submit);
+    $("#rcv-form", m).addEventListener("submit", e => { e.preventDefault(); submit(); });
+  }
+
+  /* ============ Vue : fournisseurs ============ */
+  /* Distance d'édition (avec inversion de deux lettres) */
+  function editDist(a, b) {
+    const d = Array.from({ length: a.length + 1 }, (_, i) => [i]);
+    for (let j = 1; j <= b.length; j++) d[0][j] = j;
+    for (let i = 1; i <= a.length; i++) for (let j = 1; j <= b.length; j++) {
+      const c = a[i - 1] === b[j - 1] ? 0 : 1;
+      d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + c);
+      if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) d[i][j] = Math.min(d[i][j], d[i - 2][j - 2] + 1);
+    }
+    return d[a.length][b.length];
+  }
+  function looksSame(x, y) {
+    if (x === y) return true;
+    if (!x || !y || x[0] !== y[0]) return false;
+    const [s, l] = x.length <= y.length ? [x, y] : [y, x];
+    if (s.length >= 4 && l.startsWith(s)) return true;
+    const max = s.length <= 3 ? (x.slice(0, 2) === y.slice(0, 2) ? 1 : 0) : s.length <= 5 ? 1 : 2;
+    return max > 0 && editDist(x, y) <= max;
+  }
+
+  function viewFournisseurs(el) {
+    const supCol = state.map.fournisseur;
+    if (!supCol) { el.innerHTML = `<div class="alert warn">${ICON.warn}<div class="grow">Aucune colonne « fournisseur » dans les articles.</div></div>`; return; }
+    const listOK = Array.isArray(state.fournisseurs);
+    const f = state.filters.sups || (state.filters.sups = { q: "" });
+
+    const rows = () => {
+      const m = new Map();
+      for (const s of state.fournisseurs || []) { const k = supKey(s.name); if (!k) continue; if (!m.has(k)) m.set(k, { name: s.name, items: [], ids: [] }); m.get(k).ids.push(s.id); }
+      for (const a of state.articles) {
+        const v = cleanSup(F(a, "fournisseur")); if (!v) continue;
+        const k = supKey(v); if (!m.has(k)) m.set(k, { name: v, items: [], ids: [] }); m.get(k).items.push(a);
+      }
+      for (const r of m.values()) {
+        const ps = (state.achats || []).filter(p => supKey(p.Fournisseur) === supKey(r.name));
+        r.achats = ps.reduce((t, p) => t + (+p.Montant || 0), 0);
+        r.last = ps.reduce((d, p) => (!d || new Date(p.DateAchat) > d ? new Date(p.DateAchat) : d), null);
+      }
+      return [...m.values()].sort((x, y) => x.name.localeCompare(y.name, "fr"));
+    };
+    const findRow = name => rows().find(r => supKey(r.name) === supKey(name));
+    const progress = (d, t) => { const p = $("#sup-progress"); if (p) p.textContent = `Mise à jour des articles ${d} / ${t}…`; };
+    const moveArticles = (items, name) => runPool(items.filter(a => F(a, "fournisseur") !== name),
+      async a => Object.assign(a, await DS.updateArticle(a.id, { [supCol]: name })), progress);
+    const reload = async () => { if (listOK) state.fournisseurs = await DS.loadFournisseurs(); };
+
+    /* Regroupements suggérés : noms qui semblent désigner le même fournisseur */
+    const suggestions = () => {
+      const list = rows().filter(r => !/[\/+]/.test(r.name));
+      const parent = list.map((_, i) => i);
+      const find = i => parent[i] === i ? i : (parent[i] = find(parent[i]));
+      for (let i = 0; i < list.length; i++) for (let j = i + 1; j < list.length; j++)
+        if (looksSame(supKey(list[i].name), supKey(list[j].name))) parent[find(i)] = find(j);
+      const groups = new Map();
+      list.forEach((r, i) => { const k = find(i); if (!groups.has(k)) groups.set(k, []); groups.get(k).push(r); });
+      return [...groups.values()].filter(g => g.length > 1)
+        .map(g => g.sort((x, y) => (y.items.length - x.items.length) || (y.ids.length - x.ids.length)));
+    };
+
+    el.innerHTML = `
+      <div class="stack" style="gap:14px">
+        ${listOK ? "" : `<div class="alert warn">${ICON.warn}<div class="grow">La liste « ${esc(cfg.fournisseursList || "")} » est introuvable : seuls les fournisseurs saisis dans les articles sont affichés.</div></div>`}
+        <div class="card" id="sup-sugg"></div>
+        <div class="card">
+          <div class="card-head compact-head">
+            <form id="sup-add" class="row" style="flex:1 1 320px;gap:8px">
+              <input class="input" id="sup-new" placeholder="Nouveau fournisseur" style="flex:1" ${listOK ? "" : "disabled"}>
+              <button class="btn primary" ${listOK ? "" : "disabled"}>${ICON.plus} Ajouter</button>
+            </form>
+            <div class="search" style="flex:0 1 240px">${ICON.search}<input class="input" id="sup-q" type="search" placeholder="Filtrer…" value="${esc(f.q)}"></div>
+          </div>
+          <div id="sup-progress" class="muted" style="padding:0 16px;font-size:13px"></div>
+          <div id="sup-table"></div>
+        </div>
+      </div>`;
+
+    const drawSugg = () => {
+      const groups = suggestions();
+      $("#sup-sugg").innerHTML = groups.length ? `
+        <div class="card-head"><h2>Variantes à regrouper (${groups.length})</h2><span class="muted" style="font-size:13px">Cochez les groupes corrects, ajustez le nom retenu, puis regroupez</span></div>
+        <div class="sugg-list">${groups.map((g, i) => `<div class="sugg" data-g="${i}">
+          <label class="check"><input type="checkbox" data-gchk checked></label>
+          <span class="sugg-names">${g.map(r => `<span class="badge">${esc(r.name)} <span class="muted">${r.items.length}</span></span>`).join(" ")}</span>
+          <span class="sugg-arrow">→</span><input class="input sugg-target" data-gname value="${esc(g[0].name)}" list="dl-sugg-${i}">
+          <datalist id="dl-sugg-${i}">${g.map(r => `<option value="${esc(r.name)}"></option>`).join("")}</datalist></div>`).join("")}</div>
+        <div class="table-foot"><button class="btn primary" id="sugg-apply">Regrouper les groupes cochés</button><span class="muted">Les articles concernés reçoivent le nom retenu ; la liste ${esc(cfg.fournisseursList || "")} est mise à jour.</span></div>`
+        : `<div class="card-pad muted" style="font-size:13.5px">${ICON.info} Aucune variante de nom détectée : vos fournisseurs sont propres.</div>`;
+      return groups;
+    };
+    let groups = drawSugg();
+
+    const draw = () => {
+      const q = supKey(f.q);
+      const list = rows().filter(r => !q || supKey(r.name).includes(q));
+      $("#sup-table").innerHTML = list.length ? `<div class="table-scroll"><table class="table responsive compact">
+        <thead><tr><th>Fournisseur</th><th class="num">Articles</th><th class="num">Achats enregistrés</th><th>Dernier achat</th>${listOK ? `<th>Liste</th>` : ""}<th></th></tr></thead>
+        <tbody>${list.map(r => `<tr data-sup="${esc(r.name)}">
+          <td class="primary-cell" data-label="Fournisseur">${esc(r.name)}</td>
+          <td class="num" data-label="Articles">${r.items.length ? int(r.items.length) : '<span class="muted">0</span>'}</td>
+          <td class="num" data-label="Achats">${r.achats ? money(r.achats) : '<span class="muted">—</span>'}</td>
+          <td data-label="Dernier achat">${r.last ? fmtDate(r.last) : '<span class="muted">—</span>'}</td>
+          ${listOK ? `<td data-label="Liste">${r.ids.length ? '<span class="badge ok">Oui</span>' : `<button class="btn sm" data-addlist>${ICON.plus} Ajouter</button>`}</td>` : ""}
+          <td class="actions"><button class="btn sm icon ghost" data-rename title="Renommer ou fusionner" aria-label="Renommer">${ICON.edit}</button><button class="btn sm icon ghost danger" data-delsup title="Supprimer" aria-label="Supprimer">${ICON.trash}</button></td>
+        </tr>`).join("")}</tbody></table></div>
+        <div class="table-foot"><span>${int(list.length)} fournisseur(s)</span></div>` : `<div class="empty">Aucun fournisseur.</div>`;
+    };
+    draw();
+
+    /* Renommer « row » en « name » (fusion si le nom existe déjà) */
+    async function renameTo(row, name, silent) {
+      const target = rows().find(r => supKey(r.name) === supKey(name) && supKey(r.name) !== supKey(row.name));
+      const finalName = target ? target.name : name;
+      const r1 = await moveArticles(row.items, finalName);
+      if (listOK) {
+        if (target) { for (const id of row.ids) await DS.deleteFournisseur(id); if (!target.ids.length) await DS.createFournisseur(finalName); }
+        else if (row.ids.length) { await DS.updateFournisseur(row.ids[0], finalName); for (const id of row.ids.slice(1)) await DS.deleteFournisseur(id); }
+        else await DS.createFournisseur(finalName);
+      }
+      if (!silent) { await reload(); $("#sup-progress").textContent = ""; toast(r1.errors ? `${r1.errors} article(s) non mis à jour.` : (target ? "Fournisseurs fusionnés." : "Fournisseur renommé."), r1.errors ? "bad" : "ok"); groups = drawSugg(); draw(); }
+      return r1.errors;
+    }
+
+    $("#sup-add").addEventListener("submit", async e => {
+      e.preventDefault();
+      const name = cleanSup($("#sup-new").value);
+      if (!name) return;
+      const ex = findRow(name);
+      if (ex && ex.ids.length) return toast(`« ${ex.name} » existe déjà.`, "bad");
+      try { await DS.createFournisseur(name); await reload(); $("#sup-new").value = ""; toast("Fournisseur ajouté.", "ok"); groups = drawSugg(); draw(); }
+      catch (err) { toast(err.message, "bad"); }
+    });
+    $("#sup-q").addEventListener("input", e => { f.q = e.target.value; draw(); });
+
+    el.onclick = async e => {
+      if (e.target.closest("#sugg-apply")) {
+        const chosen = $$("#sup-sugg .sugg").filter(s => s.querySelector("[data-gchk]").checked)
+          .map(s => ({ g: groups[+s.dataset.g], name: cleanSup(s.querySelector("[data-gname]").value) })).filter(x => x.name);
+        if (!chosen.length) return toast("Aucun groupe coché.", "bad");
+        const n = chosen.reduce((t, c) => t + c.g.reduce((u, r) => u + (supKey(r.name) === supKey(c.name) ? 0 : r.items.length), 0), 0);
+        if (!(await confirmBox("Regrouper les fournisseurs", `${chosen.length} groupe(s) seront regroupés et <strong>${n}</strong> article(s) mis à jour. Continuer ?`, "Regrouper", false))) return;
+        const btn = $("#sugg-apply"); busy(btn, true, "Regroupement…");
+        let errors = 0;
+        for (const c of chosen) {
+          let keeper = c.g.find(r => supKey(r.name) === supKey(c.name));
+          if (!keeper) { await renameTo(c.g[0], c.name, true); keeper = c.g[0]; }
+          for (const r of c.g) if (r !== keeper) errors += await renameTo(r, c.name, true);
+          if (listOK) { await reload(); const fresh = findRow(c.name); if (fresh && !fresh.ids.length) await DS.createFournisseur(c.name); }
+        }
+        await reload(); $("#sup-progress").textContent = "";
+        toast(errors ? `${errors} article(s) non mis à jour.` : "Fournisseurs regroupés.", errors ? "bad" : "ok");
+        groups = drawSugg(); draw(); return;
+      }
+      const tr = e.target.closest("tr[data-sup]");
+      if (!tr) return;
+      const row = findRow(tr.dataset.sup);
+      if (!row) return;
+      if (e.target.closest("[data-addlist]")) { try { await DS.createFournisseur(row.name); await reload(); draw(); toast("Ajouté à la liste.", "ok"); } catch (err) { toast(err.message, "bad"); } return; }
+      if (e.target.closest("[data-rename]")) {
+        const m = openModal({
+          title: "Renommer le fournisseur", size: "sm",
+          body: `<label class="field">Nouveau nom<input class="input" id="sup-rn" value="${esc(row.name)}" list="${supDatalist()}" autocomplete="off"></label>
+            <p class="muted" style="font-size:13px;margin:12px 0 0">${row.items.length} article(s) seront mis à jour. Choisir le nom d'un fournisseur existant = <strong>fusionner</strong>.</p>`,
+          foot: `<button class="btn" data-close>Annuler</button><button class="btn primary" id="sup-rn-ok">Renommer</button>`
+        });
+        $("#sup-rn", m).select();
+        const go = async () => { const name = cleanSup($("#sup-rn", m).value); closeModal(); if (name && name !== row.name) await renameTo(row, name); };
+        $("#sup-rn-ok", m).addEventListener("click", go);
+        $("#sup-rn", m).addEventListener("keydown", ev => { if (ev.key === "Enter") { ev.preventDefault(); go(); } });
+        return;
+      }
+      if (e.target.closest("[data-delsup]")) {
+        const n = row.items.length;
+        const others = rows().filter(r => r !== row).map(r => r.name);
+        const m = openModal({
+          title: "Supprimer le fournisseur", size: "sm",
+          body: n ? `<p style="margin:0 0 12px">« <strong>${esc(row.name)}</strong> » est indiqué sur <strong>${n}</strong> article(s). Remplacer par :</p>
+              <select class="input" id="sup-move"><option value="">(aucun fournisseur)</option>${others.map(o => `<option>${esc(o)}</option>`).join("")}</select>`
+            : `<p style="margin:0">Supprimer « <strong>${esc(row.name)}</strong> » de la liste ?</p>`,
+          foot: `<button class="btn" data-close>Annuler</button><button class="btn danger solid" id="sup-del-ok">Supprimer</button>`
+        });
+        $("#sup-del-ok", m).addEventListener("click", async () => {
+          const dest = n ? $("#sup-move", m).value : "";
+          closeModal();
+          if (n) await moveArticles(row.items, dest);
+          try { if (listOK) for (const id of row.ids) await DS.deleteFournisseur(id); } catch (err) { toast(err.message, "bad"); }
+          await reload(); $("#sup-progress").textContent = ""; toast("Fournisseur supprimé.", "ok"); groups = drawSugg(); draw();
+        });
+      }
+    };
+  }
+
+  /* ============ Vue : achats (historique + à commander) ============ */
+  function viewAchats(el) {
+    const f = state.filters.achats || (state.filters.achats = { tab: "hist", q: "", sup: "", from: "", to: "" });
+    el.innerHTML = `
+      <div class="stack" style="gap:14px">
+        <div class="tabs" role="tablist">
+          <button class="tab ${f.tab === "hist" ? "on" : ""}" data-tab="hist" role="tab">Historique des achats</button>
+          <button class="tab ${f.tab === "cmd" ? "on" : ""}" data-tab="cmd" role="tab">À commander</button>
+          <span class="spacer"></span>
+          <a class="btn" href="#/fournisseurs">${ICON.edit}<span class="hide-sm">Fournisseurs</span></a>
+        </div>
+        <div id="ach-body"></div>
+      </div>`;
+    const body = $("#ach-body");
+    if (f.tab === "cmd") drawToOrder(body); else drawHistory(body, f);
+    el.onclick = e => {
+      const t = e.target.closest("[data-tab]");
+      if (t) { f.tab = t.dataset.tab; return viewAchats(el); }
+      if (body._click) body._click(e);
+    };
+    el.oninput = e => { if (body._input) body._input(e); };
+    el.onchange = e => { if (body._change) body._change(e); };
+  }
+
+  function drawHistory(body, f) {
+    if (!state.achatsReady) {
+      body.innerHTML = `<div class="card card-pad"><div class="alert info">${ICON.info}<div class="grow">Aucun achat enregistré pour l'instant.
+        Pour enregistrer un achat, ouvrez <a href="#/articles">Articles</a> et cliquez sur le bouton <strong>📦 Réceptionner</strong> de l'article reçu.
+        La liste <code>${esc(cfg.achatsList)}</code> sera créée automatiquement au premier achat.</div></div></div>`;
+      return;
+    }
+    const sups = [...new Set((state.achats || []).map(p => p.Fournisseur).filter(Boolean))].sort((x, y) => x.localeCompare(y, "fr"));
+    body.innerHTML = `<div class="card">
+      <div class="card-head compact-head">
+        <div class="search" style="flex:1 1 200px">${ICON.search}<input class="input" id="ah-q" type="search" placeholder="Article, fournisseur…" value="${esc(f.q)}"></div>
+        <select class="input" id="ah-sup" style="width:auto;flex:0 1 200px"><option value="">Tous les fournisseurs</option>${sups.map(s => `<option ${f.sup === s ? "selected" : ""}>${esc(s)}</option>`).join("")}</select>
+        <label class="row" style="gap:6px"><span class="muted" style="font-size:13px">Du</span><input class="input" id="ah-from" type="date" value="${esc(f.from)}" style="width:auto"></label>
+        <label class="row" style="gap:6px"><span class="muted" style="font-size:13px">au</span><input class="input" id="ah-to" type="date" value="${esc(f.to)}" style="width:auto"></label>
+        <button class="btn" id="ah-export">${ICON.download}<span class="hide-sm">Exporter</span></button>
+      </div>
+      <div id="ah-table"></div></div>`;
+    const apply = () => {
+      const q = norm(f.q);
+      return (state.achats || []).filter(p => {
+        const k = p.DateAchat ? dayKey(p.DateAchat) : "";
+        if (f.sup && p.Fournisseur !== f.sup) return false;
+        if (f.from && k < f.from) return false;
+        if (f.to && k > f.to) return false;
+        if (q && !norm([p.Article, p.Fournisseur, p.Title, p.Utilisateur].join(" ")).includes(q)) return false;
+        return true;
+      }).sort((a, b) => new Date(b.DateAchat) - new Date(a.DateAchat));
+    };
+    const draw = () => {
+      const list = apply();
+      const tot = list.reduce((t, p) => t + (+p.Montant || 0), 0);
+      $("#ah-table").innerHTML = list.length ? `<div class="table-scroll"><table class="table responsive compact">
+        <thead><tr><th>Date</th><th>Article</th><th>Fournisseur</th><th class="num">Qté</th><th class="num">Prix d'achat</th><th class="num">Montant</th><th>Par</th><th></th></tr></thead>
+        <tbody>${list.map(p => `<tr data-ach="${esc(p.id)}"><td data-label="Date">${fmtDate(p.DateAchat)}</td><td class="primary-cell" data-label="Article">${esc(p.Article || "")}</td>
+          <td data-label="Fournisseur">${esc(p.Fournisseur || "")}</td><td class="num" data-label="Qté">${int(p.Quantite)}</td>
+          <td class="num" data-label="Prix d'achat">${money(p.PrixAchat)}</td><td class="num" data-label="Montant"><strong>${money(p.Montant)}</strong></td>
+          <td data-label="Par" class="muted">${esc(p.Utilisateur || "")}</td>
+          <td class="actions"><button class="btn sm icon ghost danger" data-cancel title="Annuler cet achat" aria-label="Annuler">${ICON.trash}</button></td></tr>`).join("")}</tbody></table></div>
+        <div class="table-foot"><span>${int(list.length)} achat(s)</span><span>Quantité : <strong>${int(list.reduce((t, p) => t + (+p.Quantite || 0), 0))}</strong></span><span>Total : <strong>${money(tot)}</strong></span></div>`
+        : `<div class="empty">Aucun achat pour ces critères.</div>`;
+    };
+    draw();
+    body._input = e => { if (e.target.id === "ah-q") { f.q = e.target.value; draw(); } };
+    body._change = e => {
+      if (e.target.id === "ah-sup") { f.sup = e.target.value; draw(); }
+      if (e.target.id === "ah-from") { f.from = e.target.value; draw(); }
+      if (e.target.id === "ah-to") { f.to = e.target.value; draw(); }
+    };
+    body._click = async e => {
+      if (e.target.closest("#ah-export")) {
+        return downloadCSV("achats.csv", [["Date", "Article", "Fournisseur", "Quantité", "Prix d'achat", "Montant", "Utilisateur"],
+          ...apply().map(p => [fmtDate(p.DateAchat), p.Article, p.Fournisseur, p.Quantite, p.PrixAchat, p.Montant, p.Utilisateur])]);
+      }
+      const b = e.target.closest("[data-cancel]");
+      if (!b) return;
+      const p = state.achats.find(x => x.id === b.closest("tr").dataset.ach);
+      if (!p || !(await confirmBox("Annuler l'achat", `L'achat de <strong>${int(p.Quantite)} × ${esc(p.Article)}</strong> sera supprimé${hasStock() ? " et la quantité retirée du stock" : ""}. Continuer ?`, "Annuler l'achat"))) return;
+      try {
+        await DS.deleteAchatLine(p.id);
+        state.achats = state.achats.filter(x => x !== p);
+        const a = state.articles.find(x => String(x.id) === String(p.ArticleId));
+        if (a && hasStock()) {
+          const fresh = await DS.getArticle(a.id);
+          Object.assign(a, await DS.updateArticle(a.id, { [state.map.stock]: Math.max(0, (+fresh[state.map.stock] || 0) - (+p.Quantite || 0)) }));
+        }
+        toast("Achat annulé.", "ok"); draw();
+      } catch (err) { toast(err.message, "bad"); }
+    };
+  }
+
+  /* Articles en rupture ou sous le seuil, regroupés par fournisseur habituel */
+  function drawToOrder(body) {
+    if (!hasStock()) { body.innerHTML = `<div class="empty">Colonne « Stock » non définie.</div>`; return; }
+    const need = state.articles.filter(a => artStock(a) <= artSeuil(a));
+    const groups = new Map();
+    for (const a of need) {
+      const last = lastPurchase(a);
+      const sup = cleanSup(F(a, "fournisseur")) || (last && last.Fournisseur) || "(fournisseur non renseigné)";
+      const k = supKey(sup) || "_";
+      if (!groups.has(k)) groups.set(k, { sup, items: [] });
+      const seuil = artSeuil(a);
+      groups.get(k).items.push({ a, last, sugg: Math.max(1, Math.max(seuil * 2, seuil + 1) - artStock(a)) });
+    }
+    const list = [...groups.values()].sort((x, y) => y.items.length - x.items.length || x.sup.localeCompare(y.sup, "fr"));
+    body.innerHTML = list.length ? `
+      <div class="alert info">${ICON.info}<div class="grow"><strong>${int(need.length)}</strong> article(s) en rupture ou sous leur seuil, chez <strong>${list.length}</strong> fournisseur(s).
+        Ajustez les quantités, imprimez le bon de commande du fournisseur, puis, à la livraison, cliquez sur 📦 pour réceptionner.</div></div>
+      ${list.map((g, gi) => `<div class="card cmd-group" data-g="${gi}">
+        <div class="card-head compact-head"><h2>${esc(g.sup)} <span class="muted" style="font-weight:400">· ${g.items.length} article(s)</span></h2>
+          <span class="spacer"></span><button class="btn sm" data-print>${ICON.print} Bon de commande</button></div>
+        <div class="table-wrap"><table class="table responsive compact"><thead><tr><th>Article</th><th>Catégorie</th><th class="num">Stock</th><th class="num">Seuil</th><th class="num">À commander</th><th class="num">Dernier prix d'achat</th><th></th></tr></thead>
+        <tbody>${g.items.map((x, i) => `<tr data-i="${i}">
+          <td class="primary-cell" data-label="Article"><span class="name-cell">${thumbHTML(x.a)}<span>${esc(artName(x.a))}</span></span></td>
+          <td data-label="Catégorie">${esc(F(x.a, "categorie") || "")}</td>
+          <td class="num" data-label="Stock">${cellHTML(x.a, findCol(state.map.stock))}</td>
+          <td class="num" data-label="Seuil">${int(artSeuil(x.a))}</td>
+          <td class="num" data-label="À commander"><input class="cell-input seuil-input" type="number" min="0" step="1" data-q value="${x.sugg}"></td>
+          <td class="num" data-label="Dernier prix">${x.last ? money(x.last.PrixAchat) : '<span class="muted">—</span>'}</td>
+          <td class="actions"><button class="btn sm" data-rcv title="Réceptionner la livraison">📦 Réceptionner</button></td></tr>`).join("")}</tbody></table></div></div>`).join("")}`
+      : `<div class="card card-pad"><div class="empty">Aucun article à commander : tous les stocks sont au-dessus de leur seuil.</div></div>`;
+    body._click = e => {
+      const card = e.target.closest(".cmd-group");
+      if (!card) return;
+      const g = list[+card.dataset.g];
+      const tr = e.target.closest("tr[data-i]");
+      if (tr && e.target.closest("[data-rcv]")) {
+        const x = g.items[+tr.dataset.i];
+        return receiveDialog(x.a, parseInt(tr.querySelector("[data-q]").value, 10) || 1);
+      }
+      if (e.target.closest("[data-print]")) {
+        const qtys = $$("tr[data-i]", card).map(r => parseInt(r.querySelector("[data-q]").value, 10) || 0);
+        const lines = g.items.map((x, i) => ({ ...x, q: qtys[i] })).filter(x => x.q > 0);
+        const tot = lines.reduce((t, x) => t + (x.last ? x.q * (+x.last.PrixAchat || 0) : 0), 0);
+        $("#print-area").innerHTML = `<div class="receipt"><h2>${esc(cfg.nomEntreprise)} — Bon de commande</h2>
+          <div class="meta"><span class="muted">Fournisseur</span><strong>${esc(g.sup)}</strong><span class="muted">Date</span><span>${fmtDate(new Date())}</span><span class="muted">Établi par</span><span>${esc(Auth.userName())}</span></div>
+          <table><thead><tr><th>Article</th><th>Catégorie</th><th class="num">Quantité</th><th class="num">Prix indicatif</th></tr></thead><tbody>
+          ${lines.map(x => `<tr><td>${esc(artName(x.a))}</td><td>${esc(F(x.a, "categorie") || "")}</td><td class="num">${int(x.q)}</td><td class="num">${x.last ? money(x.last.PrixAchat) : "—"}</td></tr>`).join("")}
+          </tbody></table>${tot ? `<div class="totals"><strong class="grand">Total estimé</strong><strong class="num grand">${money(tot)}</strong></div>` : ""}</div>`;
+        window.print();
+      }
+    };
+  }
+
   /* ============ Vue : historique des ventes ============ */
   function viewVentes(el) {
     const f = state.filters.ventes;
@@ -1523,6 +1997,8 @@
               <div><div class="muted" style="font-size:13px">Site SharePoint</div><strong>${esc(state.siteName || "")}</strong><div class="muted" style="font-size:13px;word-break:break-all">https://${esc(cfg.siteHost)}${esc(cfg.sitePath)}</div></div>
               <div><div class="muted" style="font-size:13px">Liste des articles</div><strong>${esc(cfg.articlesList)}</strong> <span class="badge ok">${int(state.articles.length)} éléments</span></div>
               <div><div class="muted" style="font-size:13px">Liste des ventes</div><strong>${esc(cfg.ventesList)}</strong> ${state.ventesReady ? `<span class="badge ok">${int(state.ventes.length)} lignes</span>` : `<span class="badge bad">absente</span>`}</div>
+              <div><div class="muted" style="font-size:13px">Liste des achats</div><strong>${esc(cfg.achatsList || "")}</strong> ${state.achatsReady ? `<span class="badge ok">${int(state.achats.length)} lignes</span>` : `<span class="badge">créée au premier achat</span>`}</div>
+              <div><div class="muted" style="font-size:13px">Fournisseurs</div><strong>${esc(cfg.fournisseursList || "")}</strong> ${Array.isArray(state.fournisseurs) ? `<span class="badge ok">${int(state.fournisseurs.length)}</span> <a href="#/fournisseurs" style="font-size:13px">Gérer</a>` : `<span class="badge bad">absente</span>`}</div>
             </div>
             <div class="row" style="margin-top:16px">
               ${state.ventesReady ? "" : `<button class="btn primary" data-action="create-ventes">Créer la liste ${esc(cfg.ventesList)}</button>`}
