@@ -30,7 +30,8 @@
     print: '<svg viewBox="0 0 24 24"><path d="M6 9V2h12v7M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><path d="M6 14h12v8H6z"/></svg>',
     cart: '<svg viewBox="0 0 24 24"><circle cx="9" cy="20" r="1.5"/><circle cx="18" cy="20" r="1.5"/><path d="M2 3h3l2.7 12.4a1 1 0 0 0 1 .8h9.6a1 1 0 0 0 1-.8L21 7H6"/></svg>',
     warn: '<svg viewBox="0 0 24 24"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0zM12 9v4M12 17h.01"/></svg>',
-    info: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>'
+    info: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>',
+    logout: '<svg viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5M21 12H9"/></svg>'
   };
 
   /* ============ État ============ */
@@ -2089,7 +2090,18 @@
   function renderUserBox() {
     const name = Auth.userName();
     const initials = name.split(/\s+/).map(w => w[0]).join("").slice(0, 2).toUpperCase();
-    $("#user-box").innerHTML = `<div class="user"><span class="avatar">${esc(initials)}</span><div style="min-width:0"><div class="user-name">${esc(name)}</div><div class="muted" style="font-size:12px">${DS.mode === "demo" ? "Mode démo" : "SharePoint"}</div></div></div>`;
+    const email = Auth.account ? Auth.account.username : "";
+    $("#user-box").innerHTML = `<div class="user" title="${esc(email)}"><span class="avatar">${esc(initials)}</span>
+      <div style="min-width:0;flex:1"><div class="user-name">${esc(name)}</div><div class="muted ellipsis" style="font-size:12px">${DS.mode === "demo" ? "Mode démo" : esc(email || "SharePoint")}</div></div>
+      ${Auth.enabled ? `<button class="btn sm icon ghost logout-btn" data-logout title="Se déconnecter" aria-label="Se déconnecter">${ICON.logout}</button>` : ""}</div>`;
+    // sur mobile, le profil est masqué : bouton de déconnexion dans la barre du haut
+    const tb = $("#btn-logout-top");
+    if (tb) tb.hidden = !Auth.enabled;
+    const confirmLogout = async () => {
+      if (await confirmBox("Se déconnecter", `Vous allez être déconnecté de votre compte Microsoft 365${email ? ` (<strong>${esc(email)}</strong>)` : ""}.`, "Se déconnecter", false)) Auth.logout();
+    };
+    $("#user-box").onclick = e => { if (e.target.closest("[data-logout]")) confirmLogout(); };
+    if (tb) tb.onclick = confirmLogout;
     const badge = $("#mode-badge");
     if (DS.mode === "demo") { badge.hidden = false; badge.className = "badge warn"; badge.textContent = "Démo"; }
   }

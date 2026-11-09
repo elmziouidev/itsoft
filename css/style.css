@@ -77,6 +77,10 @@ a { color: var(--primary); }
 .user { display: flex; align-items: center; gap: 10px; }
 .avatar { width: 32px; height: 32px; border-radius: 50%; background: var(--primary-soft); color: var(--primary); display: grid; place-items: center; font-weight: 700; font-size: 13px; flex-shrink: 0; }
 .user-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.logout-btn { flex-shrink: 0; color: var(--muted); }
+.logout-btn:hover { color: var(--danger); background: var(--danger-soft); }
+.btn.show-mobile { display: none; }
+@media (max-width: 860px) { .btn.show-mobile:not([hidden]) { display: inline-flex; } }
 
 .main { min-width: 0; display: flex; flex-direction: column; }
 .topbar {
