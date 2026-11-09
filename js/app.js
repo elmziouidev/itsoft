@@ -488,7 +488,9 @@
     const sMonth = sales.filter(s => new Date(s.date) >= monthStart);
     const caToday = sToday.reduce((t, s) => t + s.total, 0);
     const caMonth = sMonth.reduce((t, s) => t + s.total, 0);
-    const caAll = sales.reduce((t, s) => t + s.total, 0), repAll = sales.filter(s => s.repair).length;
+    // Capital : somme, pour chaque article, du prix de vente × quantité en stock
+    const inStock = hasStock() ? state.articles.filter(a => artStock(a) > 0) : [];
+    const inStockCount = inStock.length, inStockQty = inStock.reduce((t, a) => t + artStock(a), 0);
     const out = hasStock() ? state.articles.filter(a => artStock(a) <= 0)
       .sort((a, b) => String(F(a, "categorie") || "").localeCompare(String(F(b, "categorie") || ""), "fr") || String(artName(a)).localeCompare(String(artName(b)), "fr")) : [];
     const stockValue = hasStock() ? state.articles.reduce((t, a) => t + Math.max(0, artStock(a)) * artPrice(a), 0) : 0;
@@ -525,12 +527,12 @@
       <div class="stack">
         ${ventesMissingBanner()}
         <div class="kpis kpis-grad">
-          <div class="card kpi g-total"><div class="kpi-label">CA global</div><div class="kpi-value">${money(caAll)}</div><div class="kpi-sub">${int(sales.length - repAll)} vente(s) · ${int(repAll)} réparation(s) depuis le début</div></div>
+          <div class="card kpi g-total"><div class="kpi-label">Capital</div><div class="kpi-value">${money(stockValue)}</div><div class="kpi-sub">prix de vente × quantité en stock · ${int(inStockCount)} article(s) en stock (${int(inStockQty)} pièces)</div></div>
           <div class="card kpi g-today"><div class="kpi-label">CA aujourd'hui</div><div class="kpi-value">${money(caToday)}</div><div class="kpi-sub">${sToday.length} opération(s)</div></div>
           <div class="card kpi g-month"><div class="kpi-label">CA du mois</div><div class="kpi-value">${money(caMonth)}</div><div class="kpi-sub">${sMonth.length - repMonth.length} vente(s) · ${repMonth.length} réparation(s) (${money(caRepMonth)})</div></div>
           <div class="card kpi g-profit"><div class="kpi-label">Bénéfice du mois</div><div class="kpi-value">${money(profitMonth)}</div><div class="kpi-sub">ventes + réparations${unknownMonth ? ` · ${unknownMonth} vente(s) sans prix d'achat non comptée(s)` : ""}</div></div>
           <div class="card kpi g-buys clickable-kpi" data-goto="achats-hist"><div class="kpi-label">Achats du mois</div><div class="kpi-value">${money(achatsMonth)}</div><div class="kpi-sub">${(state.achats || []).filter(p => new Date(p.DateAchat) >= monthStart).length} achat(s) enregistré(s)</div></div>
-          <div class="card kpi g-out clickable-kpi" data-goto="out"><div class="kpi-label">En rupture de stock</div><div class="kpi-value">${int(out.length)}</div><div class="kpi-sub">article(s) à quantité 0${hasStock() ? " · stock " + money(stockValue) : ""}</div></div>
+          <div class="card kpi g-out clickable-kpi" data-goto="out"><div class="kpi-label">En rupture de stock</div><div class="kpi-value">${int(out.length)}</div><div class="kpi-sub">article(s) à quantité 0</div></div>
         </div>
         <div class="grid-2">
           <div class="card">
