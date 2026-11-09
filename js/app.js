@@ -252,15 +252,35 @@
   }
 
 
+  /* Réparation : ligne de type « Réparation » (ou n° commençant par R si la colonne Type n'existe pas) */
+  const isRepair = l => norm(l.TypeOperation) === "reparation" || /^R\d{8}-/.test(String(l.Title || ""));
+  let _artIdx = { src: null, len: -1, map: null };
+  function artById(id) {
+    if (_artIdx.src !== state.articles || _artIdx.len !== state.articles.length)
+      _artIdx = { src: state.articles, len: state.articles.length, map: new Map(state.articles.map(a => [String(a.id), a])) };
+    return _artIdx.map.get(String(id)) || null;
+  }
+  /* Coût d'une ligne : coût enregistré, sinon estimation par le dernier prix d'achat de l'article */
+  function lineCost(l) {
+    if (l.Cout != null && l.Cout !== "" && !isNaN(+l.Cout)) return { cost: +l.Cout, known: true };
+    if (isRepair(l)) return { cost: 0, known: true }; // réparation sans pièce : main-d'œuvre seule
+    const a = artById(l.ArticleId), lp = a && lastPurchase(a);
+    return lp ? { cost: (+lp.PrixAchat || 0) * (+l.Quantite || 0), known: true } : { cost: 0, known: false };
+  }
+
   function groupSales(lines) {
     const m = new Map();
     for (const l of lines) {
       const k = l.Title || "#" + l.id;
-      if (!m.has(k)) m.set(k, { num: k, date: l.DateVente || l.Created, client: l.Client || "", paiement: l.ModePaiement || "", vendeur: l.Vendeur || "", lines: [], sum: 0, qty: 0 });
+      if (!m.has(k)) m.set(k, { num: k, date: l.DateVente || l.Created, client: l.Client || "", paiement: l.ModePaiement || "", vendeur: l.Vendeur || "", lines: [], sum: 0, qty: 0, cost: 0, unknown: 0, repair: false });
       const s = m.get(k);
       s.lines.push(l); s.sum += +l.Montant || 0; s.qty += +l.Quantite || 0;
+      if (isRepair(l)) s.repair = true;
+      const c = lineCost(l);
+      if (c.known) s.cost += c.cost; else s.unknown++;
     }
-    return [...m.values()].map(s => ({ ...s, total: s.sum })).sort((a, b) => new Date(b.date) - new Date(a.date));
+    return [...m.values()].map(s => ({ ...s, total: s.sum, profit: s.unknown ? null : s.sum - s.cost }))
+      .sort((a, b) => new Date(b.date) - new Date(a.date));
   }
 
   /* ============ UI : toasts & modales ============ */
@@ -376,7 +396,7 @@
   const VIEWS = {
     tableau: { title: "Tableau de bord", render: viewDashboard },
     articles: { title: "Articles", render: viewArticles },
-    ventes: { title: "Historique des ventes", render: viewVentes },
+    ventes: { title: "Ventes et réparations", render: viewVentes },
     parametres: { title: "Paramètres", render: viewParametres },
     photos: { title: "Photos des articles", render: viewPhotos, nav: "articles" },
     categories: { title: "Catégories", render: viewCategories, nav: "articles" },
@@ -434,15 +454,22 @@
       .sort((a, b) => String(F(a, "categorie") || "").localeCompare(String(F(b, "categorie") || ""), "fr") || String(artName(a)).localeCompare(String(artName(b)), "fr")) : [];
     const stockValue = hasStock() ? state.articles.reduce((t, a) => t + Math.max(0, artStock(a)) * artPrice(a), 0) : 0;
 
-    // CA des 12 derniers mois
+    // Ventes (articles + réparations) et achats des 12 derniers mois
     const months = [];
     for (let i = 11; i >= 0; i--) {
       const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
-      months.push({ key: d.getFullYear() + "-" + d.getMonth(), d, v: 0, n: 0 });
+      months.push({ key: d.getFullYear() + "-" + d.getMonth(), d, v: 0, n: 0, rep: 0, a: 0, na: 0 });
     }
     const byMonth = Object.fromEntries(months.map(m => [m.key, m]));
-    for (const s of sales) { const d = new Date(s.date); const m = byMonth[d.getFullYear() + "-" + d.getMonth()]; if (m) { m.v += s.total; m.n++; } }
-    const caYear = months.reduce((t, m) => t + m.v, 0);
+    const mOf = x => { const d = new Date(x); return byMonth[d.getFullYear() + "-" + d.getMonth()]; };
+    for (const s of sales) { const m = mOf(s.date); if (m) { m.v += s.total; m.n++; if (s.repair) m.rep += s.total; } }
+    for (const p of state.achats || []) { const m = mOf(p.DateAchat); if (m) { m.a += +p.Montant || 0; m.na++; } }
+    const caYear = months.reduce((t, m) => t + m.v, 0), achYear = months.reduce((t, m) => t + m.a, 0);
+    // Bénéfice du mois : ventes (prix − coût d'achat) + réparations (prix − pièces)
+    const repMonth = sMonth.filter(s => s.repair);
+    const caRepMonth = repMonth.reduce((t, s) => t + s.total, 0);
+    const profitMonth = sMonth.reduce((t, s) => t + (s.profit != null ? s.profit : 0), 0);
+    const unknownMonth = sMonth.filter(s => s.profit == null).length;
 
     // Derniers achats : liste des achats si elle existe, sinon articles par date d'entrée (DATEe)
     const dateCol = findCol("DATEe") || state.columns.find(c => c.type === "dateTime");
@@ -453,13 +480,6 @@
     }) : dateCol ? state.articles.filter(a => a[dateCol.name]).sort((a, b) => new Date(b[dateCol.name]) - new Date(a[dateCol.name]))
       .map(a => ({ a, date: a[dateCol.name], sup: F(a, "fournisseur"), q: artStock(a), price: artPrice(a) })) : [];
     const achatsMonth = (state.achats || []).filter(p => new Date(p.DateAchat) >= monthStart).reduce((t, p) => t + (+p.Montant || 0), 0);
-    // Marge estimée du mois : (prix de vente − dernier prix d'achat connu) × quantité
-    let marge = 0, margeLines = 0;
-    for (const s of sMonth) for (const l of s.lines) {
-      const a = state.articles.find(x => String(x.id) === String(l.ArticleId));
-      const lp = a && lastPurchase(a);
-      if (lp) { marge += ((+l.PrixUnitaire || 0) - (+lp.PrixAchat || 0)) * (+l.Quantite || 0); margeLines++; }
-    }
 
     const thumbName = a => `<span class="name-cell">${thumbHTML(a)}<span class="ellipsis">${esc(artName(a))}</span></span>`;
     el.innerHTML = `
@@ -467,14 +487,16 @@
         ${ventesMissingBanner()}
         <div class="kpis">
           <div class="card kpi"><div class="kpi-label">CA aujourd'hui</div><div class="kpi-value">${money(caToday)}</div><div class="kpi-sub">${sToday.length} vente(s)</div></div>
-          <div class="card kpi"><div class="kpi-label">CA du mois</div><div class="kpi-value">${money(caMonth)}</div><div class="kpi-sub">${sMonth.length} vente(s) · panier moyen ${money(sMonth.length ? caMonth / sMonth.length : 0)}</div></div>
-          <div class="card kpi clickable-kpi" data-goto="achats-hist"><div class="kpi-label">Achats du mois</div><div class="kpi-value">${money(achatsMonth)}</div><div class="kpi-sub">${margeLines ? `marge estimée sur ventes : <strong>${money(marge)}</strong>` : "marge : saisissez vos prix d'achat"}</div></div>
+          <div class="card kpi"><div class="kpi-label">CA du mois</div><div class="kpi-value">${money(caMonth)}</div><div class="kpi-sub">${sMonth.length - repMonth.length} vente(s) · ${repMonth.length} réparation(s) (${money(caRepMonth)})</div></div>
+          <div class="card kpi"><div class="kpi-label">Bénéfice du mois</div><div class="kpi-value" style="color:${profitMonth < 0 ? "var(--danger)" : "var(--success)"}">${money(profitMonth)}</div><div class="kpi-sub">ventes + réparations${unknownMonth ? ` · ${unknownMonth} vente(s) sans prix d'achat non comptée(s)` : ""}</div></div>
+          <div class="card kpi clickable-kpi" data-goto="achats-hist"><div class="kpi-label">Achats du mois</div><div class="kpi-value">${money(achatsMonth)}</div><div class="kpi-sub">${(state.achats || []).filter(p => new Date(p.DateAchat) >= monthStart).length} achat(s) enregistré(s)</div></div>
           <div class="card kpi"><div class="kpi-label">Articles</div><div class="kpi-value">${int(state.articles.length)}</div><div class="kpi-sub">${hasStock() ? "valeur du stock " + money(stockValue) : "stock non suivi"}</div></div>
           <div class="card kpi clickable-kpi" data-goto="out"><div class="kpi-label">En rupture de stock</div><div class="kpi-value" style="color:${out.length ? "var(--danger)" : "var(--success)"}">${int(out.length)}</div><div class="kpi-sub">article(s) à quantité 0</div></div>
         </div>
         <div class="grid-2">
           <div class="card">
-            <div class="card-head"><h2>Évolution du CA mensuel</h2><span class="muted" style="font-size:13px">12 derniers mois · ${money(caYear)}</span></div>
+            <div class="card-head"><h2>Ventes et achats par mois</h2>
+              <span class="chart-legend"><span><i class="lg-sales"></i>Ventes + réparations ${money(caYear)}</span><span><i class="lg-buys"></i>Achats ${money(achYear)}</span></span></div>
             <div class="chart">${lineChart(months)}</div>
           </div>
           <div class="card">
@@ -486,7 +508,7 @@
         </div>
         <div class="grid-2 even">
           <div class="card">
-            <div class="card-head"><h2>Dernières ventes</h2><a class="btn sm" href="#/ventes">Tout voir</a></div>
+            <div class="card-head"><h2>Dernières ventes et réparations</h2><div class="row" style="gap:6px"><button class="btn sm" data-repair>${ICON.plus} Réparation</button><a class="btn sm" href="#/ventes">Tout voir</a></div></div>
             ${sales.length ? `<div class="table-wrap"><table class="table responsive compact"><thead><tr><th>Date</th><th>Article(s)</th><th>Client</th><th class="num">Total</th></tr></thead><tbody>
               ${sales.slice(0, 8).map(s => `<tr class="clickable" data-sale="${esc(s.num)}"><td data-label="Date">${fmtDateTime(s.date)}</td>
                 <td class="primary-cell" data-label="Article(s)"><span class="ellipsis" style="display:block;max-width:260px">${esc(s.lines.map(l => (l.Quantite > 1 ? l.Quantite + " × " : "") + (l.Article || "")).join(", "))}</span></td>
@@ -505,6 +527,7 @@
         </div>
       </div>`;
     el.onclick = e => {
+      if (e.target.closest("[data-repair]")) return repairDialog();
       const tr = e.target.closest("[data-sale]");
       if (tr) return showSale(tr.dataset.sale);
       const th = e.target.closest("[data-thumb]");
@@ -524,26 +547,32 @@
   }
 
   /* Courbe du CA mensuel (SVG) */
+  /* Courbes mensuelles : ventes (articles + réparations) et achats */
   function lineChart(months) {
     const W = 640, H = 240, pl = 14, pr = 14, pt = 26, pb = 28;
-    const max = Math.max(1, ...months.map(m => m.v));
+    const max = Math.max(1, ...months.map(m => Math.max(m.v, m.a)));
     const step = (W - pl - pr) / (months.length - 1);
-    const pts = months.map((m, i) => [pl + i * step, H - pb - (m.v / max) * (H - pt - pb)]);
-    const path = pts.map((p, i) => (i ? "L" : "M") + p[0].toFixed(1) + " " + p[1].toFixed(1)).join(" ");
-    const area = path + ` L${pts[pts.length - 1][0].toFixed(1)} ${H - pb} L${pts[0][0].toFixed(1)} ${H - pb} Z`;
-    const grid = [0.25, 0.5, 0.75, 1].map(f => { const y = H - pb - f * (H - pt - pb); return `<line class="grid" x1="${pl}" x2="${W - pr}" y1="${y}" y2="${y}"/>`; }).join("");
-    const dots = months.map((m, i) => {
-      const [x, y] = pts[i];
+    const y = v => H - pb - (v / max) * (H - pt - pb);
+    const pts = key => months.map((m, i) => [pl + i * step, y(m[key])]);
+    const pathOf = p => p.map((q, i) => (i ? "L" : "M") + q[0].toFixed(1) + " " + q[1].toFixed(1)).join(" ");
+    const ps = pts("v"), pa = pts("a");
+    const area = pathOf(ps) + ` L${ps[ps.length - 1][0].toFixed(1)} ${H - pb} L${ps[0][0].toFixed(1)} ${H - pb} Z`;
+    const grid = [0.25, 0.5, 0.75, 1].map(f => { const gy = H - pb - f * (H - pt - pb); return `<line class="grid" x1="${pl}" x2="${W - pr}" y1="${gy}" y2="${gy}"/>`; }).join("");
+    const last = months.length - 1;
+    const cols = months.map((m, i) => {
+      const x = ps[i][0];
       const lbl = MOIS[m.d.getMonth()] + " " + m.d.getFullYear();
-      return `<g class="pt"><title>${lbl} : ${money(m.v)} (${m.n} vente(s))</title>
+      const tip = `${lbl}\nVentes : ${money(m.v)} (${m.n} opération(s)${m.rep ? ", dont réparations " + money(m.rep) : ""})\nAchats : ${money(m.a)} (${m.na})`;
+      return `<g class="pt"><title>${esc(tip)}</title>
         <rect x="${x - step / 2}" y="${pt - 10}" width="${step}" height="${H - pt - pb + 10}" fill="transparent"/>
-        <circle cx="${x}" cy="${y}" r="${i === months.length - 1 ? 5 : 3.5}"/>
+        <circle class="c-buys" cx="${x}" cy="${pa[i][1]}" r="${i === last ? 4.5 : 3}"/>
+        <circle class="c-sales" cx="${x}" cy="${ps[i][1]}" r="${i === last ? 5 : 3.5}"/>
         <text x="${x}" y="${H - 9}" text-anchor="middle">${MOIS[m.d.getMonth()]}${m.d.getMonth() === 0 || i === 0 ? " " + String(m.d.getFullYear()).slice(2) : ""}</text>
-        ${m.v && (m.v === max || i === months.length - 1) ? `<text class="val" x="${x}" y="${y - 10}" text-anchor="middle">${nfNum.format(Math.round(m.v))}</text>` : ""}</g>`;
+        ${i === last && m.v ? `<text class="val" x="${x}" y="${ps[i][1] - 10}" text-anchor="end">${nfNum.format(Math.round(m.v))}</text>` : ""}</g>`;
     }).join("");
-    return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Chiffre d'affaires mensuel sur 12 mois">
+    return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Ventes et achats mensuels sur 12 mois">
       ${grid}<line class="axis" x1="${pl}" x2="${W - pr}" y1="${H - pb}" y2="${H - pb}"/>
-      <path class="area" d="${area}"/><path class="line" d="${path}"/>${dots}
+      <path class="area" d="${area}"/><path class="line line-buys" d="${pathOf(pa)}"/><path class="line" d="${pathOf(ps)}"/>${cols}
       <text x="${pl}" y="12">max ${money(max)}</text></svg>`;
   }
 
@@ -624,10 +653,12 @@
         }
         const d = new Date(), num = saleNumber(d);
         const ref = F(a, "reference");
+        const lp = lastPurchase(a); // coût d'achat mémorisé pour calculer le bénéfice
         const v = await DS.createVenteLine({
           Title: num, ArticleId: parseInt(a.id, 10), Article: String(artName(a)), Reference: ref == null ? "" : String(ref),
           Quantite: qty, PrixUnitaire: price, Montant: Math.round(qty * price * 100) / 100,
-          Client: clientName, ModePaiement: $("#sell-pay", m).value, Vendeur: Auth.userName(), DateVente: d.toISOString()
+          Client: clientName, ModePaiement: $("#sell-pay", m).value, Vendeur: Auth.userName(), DateVente: d.toISOString(),
+          TypeOperation: "Vente", Cout: lp ? Math.round((+lp.PrixAchat || 0) * qty * 100) / 100 : null
         });
         state.ventes.push(v);
         if (hasStock()) Object.assign(a, await DS.updateArticle(a.id, { [state.map.stock]: stockNow - qty }));
@@ -644,12 +675,119 @@
     $("#sell-form", m).addEventListener("submit", e => { e.preventDefault(); submit(); });
   }
 
+  /* ============ Réparation : prestation facturée, avec pièce du stock facultative ============ */
+  async function ensureRepairColumns() {
+    const miss = DS.ventesColumnsMissing ? DS.ventesColumnsMissing() : [];
+    if (!miss.length) return true;
+    const ok = await confirmBox("Préparer la liste des ventes",
+      `Pour distinguer les réparations et calculer le bénéfice, l'application va ajouter ${miss.length > 1 ? "les colonnes" : "la colonne"} <strong>${miss.join(", ")}</strong> à la liste <strong>${esc(cfg.ventesList)}</strong> (une seule fois). Continuer ?`,
+      "Ajouter", false);
+    if (!ok) return true; // la réparation sera quand même enregistrée (n° commençant par R)
+    try { await DS.ensureVentesColumns(); toast("Colonnes ajoutées.", "ok"); }
+    catch (e) { toast("Colonnes non ajoutées : " + e.message, "bad"); }
+    return true;
+  }
+
+  async function repairDialog() {
+    if (!state.ventesReady) return toast(`La liste « ${cfg.ventesList} » est introuvable.`, "bad");
+    await ensureRepairColumns();
+    const clients = state.clients || [];
+    const canAddClient = Array.isArray(state.clients);
+    const defClient = cfg.clientParDefaut || "Client comptoir";
+    // liste des pièces : articles en stock
+    const pieces = state.articles.filter(a => !hasStock() || artStock(a) > 0);
+    const pieceLabel = a => `${artName(a)} — ${F(a, "categorie") || ""}`.replace(/ — $/, "");
+    const m = openModal({
+      title: "Nouvelle réparation", size: "sm",
+      body: `
+        <form id="rep-form" class="form-grid" novalidate>
+          <label class="field full">Réparation effectuée<input class="input" id="rep-desc" placeholder="ex. Changement écran Redmi 13C" autocomplete="off"></label>
+          <label class="field full">Client
+            <input class="input" id="rep-client" list="dl-rep-clients" placeholder="Rechercher ou saisir un client (vide = ${esc(defClient)})" autocomplete="off">
+            <datalist id="dl-rep-clients">${clients.map(c => `<option value="${esc(c.name)}">${esc(c.phone || "")}</option>`).join("")}</datalist></label>
+          <div class="full" id="rep-new" hidden><div class="alert info" style="padding:10px 12px">${ICON.info}<div class="grow"><strong>Nouveau client</strong> : il sera ajouté à ${esc(cfg.clientsList || "")}.
+            <input class="input" id="rep-phone" placeholder="Téléphone (facultatif)" style="margin-top:8px" inputmode="tel"></div></div></div>
+          <label class="field full">Pièce utilisée du stock <span class="muted" style="font-weight:400">(facultatif)</span>
+            <input class="input" id="rep-piece" list="dl-rep-pieces" placeholder="Rechercher un article (ex. afficheur)…" autocomplete="off">
+            <datalist id="dl-rep-pieces">${pieces.map(a => `<option value="${esc(pieceLabel(a))}"></option>`).join("")}</datalist>
+            <span class="muted" id="rep-piece-info" style="font-weight:400;font-size:12.5px"></span></label>
+          <label class="field">Prix facturé (${esc(cfg.devise)})<input class="input" id="rep-price" type="number" step="any" min="0" inputmode="decimal" placeholder="ex. 350"></label>
+          <label class="field">Coût des pièces (${esc(cfg.devise)})<input class="input" id="rep-cost" type="number" step="any" min="0" inputmode="decimal" value="0"></label>
+          <label class="field full">Paiement<select class="input" id="rep-pay">${cfg.modesPaiement.map(p => `<option>${esc(p)}</option>`).join("")}</select></label>
+          <div class="full totals" id="rep-total"></div>
+          <button type="submit" hidden></button>
+        </form>`,
+      foot: `<button class="btn" data-close>Annuler</button><button class="btn primary lg" id="rep-ok">${ICON.plus} Enregistrer la réparation</button>`
+    });
+    const descI = $("#rep-desc", m), priceI = $("#rep-price", m), costI = $("#rep-cost", m), pieceI = $("#rep-piece", m), clientI = $("#rep-client", m);
+    const findPiece = () => { const v = pieceI.value.trim(); return v ? pieces.find(a => pieceLabel(a) === v) || pieces.find(a => norm(artName(a)) === norm(v)) || null : null; };
+    const num = x => { const n = parseFloat(String(x).replace(",", ".")); return isNaN(n) ? 0 : n; };
+    const isNewClient = () => { const v = clientI.value.trim(); return canAddClient && v && !clients.some(c => norm(c.name) === norm(v)) && norm(v) !== norm(defClient); };
+    const update = () => {
+      const p = num(priceI.value), c = num(costI.value), b = p - c;
+      $("#rep-total", m).innerHTML = `<span class="muted">Prix facturé</span><span class="num">${money(p)}</span><span class="muted">Coût des pièces</span><span class="num">${money(c)}</span>
+        <span class="grand">Bénéfice</span><span class="num grand" style="color:${b < 0 ? "var(--danger)" : "var(--success)"}">${money(b)}</span>`;
+      $("#rep-new", m).hidden = !isNewClient();
+    };
+    pieceI.addEventListener("change", () => {
+      const a = findPiece();
+      const lp = a && lastPurchase(a);
+      $("#rep-piece-info", m).textContent = a ? `Stock : ${int(artStock(a))} · ${lp ? "dernier prix d'achat " + money(lp.PrixAchat) : "prix d'achat inconnu"} · 1 pièce sera retirée du stock` : (pieceI.value.trim() ? "Article introuvable dans le stock." : "");
+      if (a && lp) costI.value = +lp.PrixAchat;
+      if (a && !descI.value.trim()) descI.value = "Réparation – " + artName(a);
+      update();
+    });
+    [priceI, costI, clientI].forEach(i => i.addEventListener("input", update));
+    update();
+    setTimeout(() => descI.focus(), 60);
+
+    const submit = async () => {
+      const desc = descI.value.trim(), price = num(priceI.value), cost = num(costI.value), piece = findPiece();
+      if (!desc) { descI.focus(); return toast("Décrivez la réparation.", "bad"); }
+      if (!(priceI.value !== "" && price >= 0)) { priceI.focus(); return toast("Saisissez le prix facturé.", "bad"); }
+      if (pieceI.value.trim() && !piece) { pieceI.focus(); return toast("Choisissez la pièce dans la liste proposée (ou videz le champ).", "bad"); }
+      const btn = $("#rep-ok", m); busy(btn, true, "Enregistrement…");
+      try {
+        let stockNow = null;
+        if (piece && hasStock()) {
+          const fresh = await DS.getArticle(piece.id);
+          stockNow = +fresh[state.map.stock] || 0;
+          if (stockNow < 1) throw new Error(`« ${artName(piece)} » n'est plus en stock.`);
+        }
+        const typed = clientI.value.trim();
+        const known = clients.find(c => norm(c.name) === norm(typed));
+        const clientName = known ? known.name : (typed || defClient);
+        if (isNewClient()) {
+          try { state.clients.push(await DS.createClient(clientName, $("#rep-phone", m).value.trim())); }
+          catch (e) { toast("Client non ajouté à la liste : " + e.message, "bad"); }
+        }
+        const d = new Date(), numero = "R" + saleNumber(d).slice(1);
+        const v = await DS.createVenteLine({
+          Title: numero, ArticleId: piece ? parseInt(piece.id, 10) : 0, Article: desc, Reference: piece ? String(artName(piece)) : "",
+          Quantite: 1, PrixUnitaire: price, Montant: Math.round(price * 100) / 100,
+          Client: clientName, ModePaiement: $("#rep-pay", m).value, Vendeur: Auth.userName(), DateVente: d.toISOString(),
+          TypeOperation: "Réparation", Cout: Math.round(cost * 100) / 100
+        });
+        if (!v.TypeOperation) v.TypeOperation = "Réparation";
+        if (v.Cout == null) v.Cout = Math.round(cost * 100) / 100;
+        state.ventes.push(v);
+        if (piece && hasStock()) Object.assign(piece, await DS.updateArticle(piece.id, { [state.map.stock]: stockNow - 1 }));
+        closeModal();
+        toast(`Réparation ${numero} enregistrée.`, "ok");
+        render();
+        showSale(numero);
+      } catch (e) { busy(btn, false); toast(e.message, "bad"); }
+    };
+    $("#rep-ok", m).addEventListener("click", submit);
+    $("#rep-form", m).addEventListener("submit", e => { e.preventDefault(); submit(); });
+  }
+
   /* ============ Détail / ticket de vente ============ */
   function receiptHTML(s) {
     return `<div class="receipt">
       <h2>${esc(cfg.nomEntreprise)}</h2>
       <div class="meta">
-        <span class="muted">Vente n°</span><strong>${esc(s.num)}</strong>
+        <span class="muted">${s.repair ? "Réparation n°" : "Vente n°"}</span><strong>${esc(s.num)}</strong>
         <span class="muted">Date</span><span>${fmtDateTime(s.date)}</span>
         <span class="muted">Client</span><span>${esc(s.client) || "—"}</span>
         <span class="muted">Paiement</span><span>${esc(s.paiement) || "—"}</span>
@@ -668,7 +806,7 @@
     const s = groupSales(state.ventes.filter(v => (v.Title || "#" + v.id) === num))[0];
     if (!s) return;
     const m = openModal({
-      title: "Vente " + s.num,
+      title: (s.repair ? "Réparation " : "Vente ") + s.num,
       body: receiptHTML(s),
       foot: `<button class="btn danger" data-cancel>${ICON.trash} Annuler la vente</button><span class="spacer"></span><button class="btn" data-close>Fermer</button><button class="btn primary" data-print>${ICON.print} Imprimer</button>`
     });
@@ -1539,7 +1677,7 @@
   async function receiveDialog(a, presetQty) {
     if (!(await ensureAchatsList())) return;
     const last = lastPurchase(a);
-    const defSup = cleanSup(F(a, "fournisseur")) || (last && last.Fournisseur) || "";
+    const defSup = (last && last.Fournisseur) || cleanSup(F(a, "fournisseur")) || "";
     const dateCol = findCol("DATEe");
     const m = openModal({
       title: "Réceptionner un achat", size: "sm",
@@ -1593,7 +1731,6 @@
         const fresh = await DS.getArticle(a.id);
         const upd = {};
         if (hasStock()) upd[state.map.stock] = (+fresh[state.map.stock] || 0) + qty;
-        if (state.map.fournisseur) upd[state.map.fournisseur] = known;
         if (dateCol) upd[dateCol.name] = d.toISOString();
         if (sell !== null && state.map.prix) upd[state.map.prix] = sell;
         Object.assign(a, await DS.updateArticle(a.id, upd));
@@ -1899,7 +2036,7 @@
     const groups = new Map();
     for (const a of need) {
       const last = lastPurchase(a);
-      const sup = cleanSup(F(a, "fournisseur")) || (last && last.Fournisseur) || "(fournisseur non renseigné)";
+      const sup = (last && last.Fournisseur) || cleanSup(F(a, "fournisseur")) || "(fournisseur non renseigné)";
       const k = supKey(sup) || "_";
       if (!groups.has(k)) groups.set(k, { sup, items: [] });
       const seuil = artSeuil(a);
@@ -1948,12 +2085,15 @@
   /* ============ Vue : historique des ventes ============ */
   function viewVentes(el) {
     const f = state.filters.ventes;
+    if (!f.type) f.type = "";
     const apply = () => {
       const q = norm(f.q);
       return groupSales(state.ventes).filter(s => {
         const k = dayKey(s.date);
         if (f.from && k < f.from) return false;
         if (f.to && k > f.to) return false;
+        if (f.type === "vente" && s.repair) return false;
+        if (f.type === "reparation" && !s.repair) return false;
         if (q && !norm([s.num, s.client, s.vendeur, s.paiement, ...s.lines.map(l => l.Article + " " + (l.Reference || ""))].join(" ")).includes(q)) return false;
         return true;
       });
@@ -1962,43 +2102,62 @@
       <div class="stack">
         ${ventesMissingBanner()}
         <div class="card">
-          <div class="card-head">
-            <div class="search">${ICON.search}<input class="input" id="v-q" type="search" placeholder="N°, client, article…" value="${esc(f.q)}"></div>
+          <div class="card-head compact-head">
+            <div class="search" style="flex:1 1 200px">${ICON.search}<input class="input" id="v-q" type="search" placeholder="N°, client, article…" value="${esc(f.q)}"></div>
+            <select class="input" id="v-type" style="width:auto;flex:0 1 170px">
+              <option value="" ${f.type === "" ? "selected" : ""}>Ventes et réparations</option>
+              <option value="vente" ${f.type === "vente" ? "selected" : ""}>Ventes d'articles</option>
+              <option value="reparation" ${f.type === "reparation" ? "selected" : ""}>Réparations</option></select>
             <label class="row" style="gap:6px"><span class="muted" style="font-size:13px">Du</span><input class="input" id="v-from" type="date" value="${esc(f.from)}" style="width:auto"></label>
             <label class="row" style="gap:6px"><span class="muted" style="font-size:13px">au</span><input class="input" id="v-to" type="date" value="${esc(f.to)}" style="width:auto"></label>
             <button class="btn" id="v-export">${ICON.download}<span class="hide-sm">Exporter</span></button>
+            <button class="btn primary" id="v-repair">${ICON.plus} Réparation</button>
           </div>
-          <div id="v-sum" class="row" style="padding:12px 20px;border-bottom:1px solid var(--border);gap:18px"></div>
+          <div id="v-sum" class="sum-bar"></div>
           <div id="v-table"></div>
         </div>
       </div>`;
     const draw = () => {
       const list = apply();
-      const tot = list.reduce((t, s) => t + s.total, 0);
-      $("#v-sum").innerHTML = `<span><span class="muted">Ventes :</span> <strong>${int(list.length)}</strong></span>
-        <span><span class="muted">Articles vendus :</span> <strong>${int(list.reduce((t, s) => t + s.qty, 0))}</strong></span>
-        <span><span class="muted">Total :</span> <strong>${money(tot)}</strong></span>`;
-      $("#v-table").innerHTML = list.length ? `<div class="table-wrap"><table class="table responsive">
-        <thead><tr><th>N° vente</th><th>Date</th><th>Client</th><th>Paiement</th><th class="num">Articles</th><th class="num">Total</th></tr></thead>
+      const sales = list.filter(s => !s.repair), reps = list.filter(s => s.repair);
+      const sum = arr => arr.reduce((t, s) => t + s.total, 0);
+      const profit = list.reduce((t, s) => t + (s.profit != null ? s.profit : 0), 0);
+      const unknown = list.filter(s => s.profit == null).length;
+      $("#v-sum").innerHTML = `
+        <span><span class="muted">Ventes d'articles :</span> <strong>${money(sum(sales))}</strong> <span class="muted">(${int(sales.length)})</span></span>
+        <span><span class="muted">Réparations :</span> <strong>${money(sum(reps))}</strong> <span class="muted">(${int(reps.length)})</span></span>
+        <span><span class="muted">Total :</span> <strong>${money(sum(list))}</strong></span>
+        <span><span class="muted">Bénéfice :</span> <strong style="color:var(--success)">${money(profit)}</strong>${unknown ? ` <span class="muted" title="Ventes d'articles dont le prix d'achat est inconnu">(${int(unknown)} sans prix d'achat)</span>` : ""}</span>`;
+      $("#v-table").innerHTML = list.length ? `<div class="table-wrap"><table class="table responsive compact">
+        <thead><tr><th>Date</th><th>Type</th><th>Détail</th><th>Client</th><th class="num">Total</th><th class="num">Bénéfice</th></tr></thead>
         <tbody>${list.slice(0, 500).map(s => `<tr class="clickable" data-sale="${esc(s.num)}">
-          <td class="primary-cell" data-label="N°">${esc(s.num)}</td><td data-label="Date">${fmtDateTime(s.date)}</td>
-          <td data-label="Client">${esc(s.client) || '<span class="muted">—</span>'}</td><td data-label="Paiement">${esc(s.paiement) || "—"}</td>
-          <td class="num" data-label="Articles">${int(s.qty)}</td><td class="num" data-label="Total"><strong>${money(s.total)}</strong></td></tr>`).join("")}
-        </tbody></table></div>${list.length > 500 ? `<div class="muted" style="padding:10px 16px">Affichage limité aux 500 ventes les plus récentes — affinez les filtres.</div>` : ""}`
+          <td data-label="Date">${fmtDateTime(s.date)}</td>
+          <td data-label="Type">${s.repair ? '<span class="badge info">Réparation</span>' : '<span class="badge">Vente</span>'}</td>
+          <td class="primary-cell" data-label="Détail"><span class="ellipsis" style="display:block;max-width:320px">${esc(s.lines.map(l => (l.Quantite > 1 ? l.Quantite + " × " : "") + (l.Article || "")).join(", "))}</span></td>
+          <td data-label="Client">${esc(s.client) || '<span class="muted">—</span>'}</td>
+          <td class="num" data-label="Total"><strong>${money(s.total)}</strong></td>
+          <td class="num" data-label="Bénéfice">${s.profit != null ? `<span style="color:${s.profit < 0 ? "var(--danger)" : "var(--success)"}">${money(s.profit)}</span>` : '<span class="muted" title="Prix d\'achat inconnu">—</span>'}</td></tr>`).join("")}
+        </tbody></table></div>${list.length > 500 ? `<div class="muted" style="padding:10px 16px">Affichage limité aux 500 opérations les plus récentes — affinez les filtres.</div>` : ""}`
         : `<div class="empty">Aucune vente pour ces critères.</div>`;
     };
     draw();
     $("#v-q").addEventListener("input", e => { f.q = e.target.value; draw(); });
     el.onchange = e => {
+      if (e.target.id === "v-type") { f.type = e.target.value; draw(); }
       if (e.target.id === "v-from") { f.from = e.target.value; draw(); }
       if (e.target.id === "v-to") { f.to = e.target.value; draw(); }
     };
     el.onclick = e => {
+      if (e.target.closest("#v-repair")) return repairDialog();
       const tr = e.target.closest("[data-sale]");
       if (tr) return showSale(tr.dataset.sale);
       if (e.target.closest("#v-export")) {
-        const rows = [["N° vente", "Date", "Client", "Paiement", "Vendeur", "Article", "Référence", "Quantité", "Prix unitaire", "Montant"]];
-        for (const s of apply()) for (const l of s.lines) rows.push([s.num, fmtDateTime(s.date), s.client, s.paiement, s.vendeur, l.Article, l.Reference, l.Quantite, l.PrixUnitaire, l.Montant]);
+        const rows = [["N°", "Type", "Date", "Client", "Paiement", "Vendeur", "Article / réparation", "Pièce / référence", "Quantité", "Prix unitaire", "Montant", "Coût", "Bénéfice"]];
+        for (const s of apply()) for (const l of s.lines) {
+          const c = lineCost(l);
+          rows.push([s.num, isRepair(l) ? "Réparation" : "Vente", fmtDateTime(s.date), s.client, s.paiement, s.vendeur, l.Article, l.Reference, l.Quantite, l.PrixUnitaire, l.Montant,
+            c.known ? Math.round(c.cost * 100) / 100 : "", c.known ? Math.round(((+l.Montant || 0) - c.cost) * 100) / 100 : ""]);
+        }
         return downloadCSV("ventes.csv", rows);
       }
       const c = e.target.closest('[data-action="create-ventes"]');

@@ -20,7 +20,9 @@
     { name: "Client", text: {} },
     { name: "ModePaiement", text: {} },
     { name: "Vendeur", text: {} },
-    { name: "DateVente", dateTime: { format: "dateTime" } }
+    { name: "DateVente", dateTime: { format: "dateTime" } },
+    { name: "TypeOperation", text: {} },              // « Vente » ou « Réparation »
+    { name: "Cout", number: { decimalPlaces: "two" } } // coût d'achat des articles / pièces (pour le bénéfice)
   ];
 
   const VENTE_FIELDS = VENTE_COLUMNS.map(c => c.name);
@@ -232,28 +234,43 @@
       if (!this.ventesListId) return [];
       // colonnes retrouvées par leur nom affiché (ex. field_1 … field_10 si la liste vient d'un CSV)
       const [vcols, v] = await Promise.all([
-        this.getAll(`/sites/${this.siteId}/lists/${this.ventesListId}/columns?$select=name,displayName`),
+        this.getAll(`/sites/${this.siteId}/lists/${this.ventesListId}/columns?$select=name,displayName,readOnly,hidden`),
         this.getAll(`/sites/${this.siteId}/lists/${this.ventesListId}/items?$expand=fields&$top=500`)
       ]);
       this.vmap = { Title: "Title" };
+      this.ventesMissing = [];
+      const usable = vcols.filter(x => !x.readOnly && !x.hidden); // jamais les colonnes système (ex. « Type » = DocIcon)
       for (const L of VENTE_FIELDS) {
-        const c = vcols.find(x => x.name === L) || vcols.find(x => norm(x.displayName) === norm(L));
+        const c = usable.find(x => x.name === L) || usable.find(x => norm(x.displayName) === norm(L));
         this.vmap[L] = c ? c.name : L;
+        if (!c) this.ventesMissing.push(L);
       }
       return v.map(it => this.fromVente(it));
+    },
+    /* Colonnes manquantes dans la liste des ventes (ex. Type et Cout, ajoutées pour les réparations) */
+    ventesColumnsMissing() { return (this.ventesMissing || []).slice(); },
+    async ensureVentesColumns() {
+      for (const L of this.ventesColumnsMissing()) {
+        const def = VENTE_COLUMNS.find(c => c.name === L);
+        await this.call(`/sites/${this.siteId}/lists/${this.ventesListId}/columns`,
+          { method: "POST", body: JSON.stringify({ ...def, displayName: L }) }, ["Sites.Manage.All"]);
+        this.vmap[L] = L;
+      }
+      this.ventesMissing = [];
     },
 
     /* Mémorise / restaure les identifiants techniques (affichage instantané depuis le cache) */
     exportMeta() {
       const k = ["siteId", "siteName", "articlesListId", "ventesListId", "achatsListId", "categoriesListId", "clientsListId",
-        "fournisseursListId", "vmap", "amap", "catSeuilField", "columns"];
+        "fournisseursListId", "vmap", "amap", "catSeuilField", "columns", "ventesMissing"];
       return Object.fromEntries(k.map(x => [x, this[x]]));
     },
     importMeta(m) { if (m) for (const k of Object.keys(m)) if (m[k] !== undefined && m[k] !== null) this[k] = m[k]; },
 
     /* ---- Outils : colonnes retrouvées par nom affiché ---- */
     async fieldMap(listId, names) {
-      const cols = await this.getAll(`/sites/${this.siteId}/lists/${listId}/columns?$select=name,displayName`);
+      const cols = (await this.getAll(`/sites/${this.siteId}/lists/${listId}/columns?$select=name,displayName,readOnly,hidden`))
+        .filter(x => !x.readOnly && !x.hidden); // colonnes système exclues
       const m = { Title: "Title" };
       for (const L of names) {
         const c = cols.find(x => x.name === L) || cols.find(x => norm(x.displayName) === norm(L));
@@ -329,8 +346,11 @@
       return out;
     },
     toVente(fields) {
-      const out = {};
-      for (const k of Object.keys(fields)) out[(this.vmap || {})[k] || k] = fields[k];
+      const out = {}, missing = this.ventesMissing || [];
+      for (const k of Object.keys(fields)) {
+        if (missing.includes(k)) continue; // colonne absente de la liste : ignorée
+        out[(this.vmap || {})[k] || k] = fields[k];
+      }
       return out;
     },
 
@@ -563,7 +583,9 @@
     async deleteVenteLine(id) {
       this.db.ventes = this.db.ventes.filter(v => v.id !== String(id)); this.persist();
     },
-    async createVentesList() {}
+    async createVentesList() {},
+    ventesColumnsMissing() { return []; },
+    async ensureVentesColumns() {}
   };
 
   window.DataService = (cfg.clientId && !window.FORCE_DEMO) ? GraphService : DemoService;

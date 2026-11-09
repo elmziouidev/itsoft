@@ -164,6 +164,14 @@ label.field .req { color: var(--danger); }
 .chart .line { fill: none; stroke: var(--primary); stroke-width: 2.5; }
 .chart .area { fill: var(--primary); opacity: .1; stroke: none; }
 .chart .pt rect { stroke: none; }
+.chart .line-buys { stroke: var(--warning); stroke-width: 2; stroke-dasharray: 6 4; }
+.chart .pt circle.c-buys { stroke: var(--warning); }
+.chart .pt:hover circle.c-buys { fill: var(--warning); }
+.chart-legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12.5px; color: var(--muted); }
+.chart-legend span { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.chart-legend i { display: inline-block; width: 16px; height: 3px; border-radius: 2px; background: var(--primary); }
+.chart-legend i.lg-buys { background: repeating-linear-gradient(90deg, var(--warning) 0 5px, transparent 5px 8px); }
+.sum-bar { display: flex; flex-wrap: wrap; gap: 8px 22px; padding: 12px 20px; border-bottom: 1px solid var(--border); font-size: 14px; }
 .chart .pt circle { fill: var(--surface); stroke: var(--primary); stroke-width: 2; }
 .chart .pt:hover circle { fill: var(--primary); }
 .chart .val { fill: var(--text); font-weight: 600; }

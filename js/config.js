@@ -37,7 +37,8 @@ window.APP_CONFIG = {
   },
 
   // Colonnes affichées (dans cet ordre) dans le menu « Articles »
-  colonnesArticles: ["Id_article", "Modele", "fournisseur", "Quantite", "Prix", "Caractéristiques", "DATEe", "Nom_article"],
+  // (pas de colonne « fournisseur » : un article peut venir de plusieurs fournisseurs, voir le menu Achats)
+  colonnesArticles: ["Id_article", "Modele", "Quantite", "Prix", "Caractéristiques", "DATEe", "Nom_article"],
 
   // Liste des clients (proposés lors d'une vente ; les nouveaux clients y sont ajoutés)
   clientsList: "Tbl_Client",
