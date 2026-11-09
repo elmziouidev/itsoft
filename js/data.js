@@ -198,7 +198,36 @@
         const v = await this.getAll(`/sites/${this.siteId}/lists/${this.ventesListId}/items?$expand=fields&$top=500`);
         ventes = v.map(it => ({ ...it.fields, id: String(it.id) }));
       }
-      return { columns, articles, ventes, ventesReady: !!this.ventesListId, siteName: this.siteName };
+      let categories = null;
+      try { categories = await this.loadCategories(); } catch (e) { console.warn("Catégories indisponibles", e); }
+      return { columns, articles, ventes, categories, ventesReady: !!this.ventesListId, siteName: this.siteName };
+    },
+
+    /* ---- Liste des catégories (ex. Tbl_Calegorie / Nom_Categorie) ---- */
+    catPath(suffix = "") { return `/sites/${this.siteId}/lists/${this.categoriesListId}/items${suffix}`; },
+    catFields(name) {
+      const f = cfg.categoriesField || "Title";
+      const fields = { [f]: name };
+      if (f !== "Title") fields.Title = name;
+      return fields;
+    },
+    async loadCategories() {
+      if (!cfg.categoriesList) return null;
+      if (!this.categoriesListId) this.categoriesListId = await this.findList(cfg.categoriesList);
+      if (!this.categoriesListId) return null;
+      const f = cfg.categoriesField || "Title";
+      const its = await this.getAll(this.catPath(`?$expand=fields($select=${f})&$top=500`));
+      return its.map(i => ({ id: String(i.id), name: String((i.fields || {})[f] || "").replace(/\s*[\r\n]+\s*/g, " ").trim() }));
+    },
+    async createCategorie(name) {
+      const it = await this.call(this.catPath(), { method: "POST", body: JSON.stringify({ fields: this.catFields(name) }) });
+      return { id: String(it.id), name };
+    },
+    async updateCategorie(id, name) {
+      await this.call(this.catPath(`/${id}/fields`), { method: "PATCH", body: JSON.stringify(this.catFields(name)) });
+    },
+    async deleteCategorie(id) {
+      await this.call(this.catPath(`/${id}`), { method: "DELETE" });
     },
 
     async getArticle(id) {
@@ -245,7 +274,7 @@
   /* ---------------------------------------------------------------- */
   /*  Mode démo (localStorage) — reproduit la structure de Tbl_article */
   /* ---------------------------------------------------------------- */
-  const DEMO_KEY = "ventesit-demo-v3";
+  const DEMO_KEY = "ventesit-demo-v4";
   const DemoService = {
     mode: "demo",
     db: null,
@@ -270,7 +299,7 @@
       ];
       const articles = arts.map((a, i) => ({
         id: String(i + 1), Id_article: a[0], Title: a[1], fournisseur: a[2], Quantite: a[3], Prix: a[4],
-        Caract_x00e9_ristiques: a[5], DATEe: a[6] + "T12:00:00Z", Nom_articleLookupId: a[7]
+        Caract_x00e9_ristiques: a[5], DATEe: a[6] + "T12:00:00Z", Nom_article: cats.find(c => c.id === a[7]).label
       }));
       const ventes = [];
       let vid = 1, n = 1;
@@ -295,6 +324,7 @@
       }
       return {
         nextId: 100, nextVenteId: vid, articles, ventes,
+        categories: cats.map(c => ({ id: c.id, name: c.label })).concat([{ id: "5", name: "CHARGEUR" }]), nextCatId: 6,
         columns: [
           { name: "Id_article", displayName: "Id_article", type: "number" },
           { name: "Title", displayName: "Modele", type: "text", required: true },
@@ -303,7 +333,7 @@
           { name: "Prix", displayName: "Prix", type: "number", required: true },
           { name: "Caract_x00e9_ristiques", displayName: "Caractéristiques", type: "text" },
           { name: "DATEe", displayName: "DATEe", type: "dateTime" },
-          { name: "Nom_article", displayName: "Nom_article", type: "lookup", lookup: { listId: "demo", columnName: "Title", multi: false }, options: cats },
+          { name: "Nom_article", displayName: "Nom_article", type: "text" },
           { name: "Photo", displayName: "Photo", type: "text" }
         ]
       };
@@ -319,8 +349,12 @@
         if (!this.db) { this.db = this.seed(); this.persist(); }
       }
       const clone = x => JSON.parse(JSON.stringify(x));
-      return { columns: clone(this.db.columns), articles: this.db.articles.map(a => this.resolve(a)), ventes: clone(this.db.ventes), ventesReady: true, siteName: "Démo" };
+      return { columns: clone(this.db.columns), articles: this.db.articles.map(a => this.resolve(a)), ventes: clone(this.db.ventes), categories: clone(this.db.categories || []), ventesReady: true, siteName: "Démo" };
     },
+    async loadCategories() { return JSON.parse(JSON.stringify(this.db.categories || [])); },
+    async createCategorie(name) { const c = { id: String(this.db.nextCatId++), name }; this.db.categories.push(c); this.persist(); return { ...c }; },
+    async updateCategorie(id, name) { const c = this.db.categories.find(x => x.id === String(id)); if (c) c.name = name; this.persist(); },
+    async deleteCategorie(id) { this.db.categories = this.db.categories.filter(x => x.id !== String(id)); this.persist(); },
     async getArticle(id) { return this.resolve(this.db.articles.find(a => a.id === String(id))); },
     async createArticle(fields) {
       const a = { ...fields, id: String(this.db.nextId++) };

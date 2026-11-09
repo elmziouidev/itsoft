@@ -208,11 +208,22 @@
     if (s <= artSeuil(a)) return { cls: "warn", label: "Faible" };
     return { cls: "ok", label: "En stock" };
   }
-  function categories() {
+  /* Catégories utilisées par les articles ; avec all=true, ajoute celles de la liste des catégories */
+  function categories(all) {
     if (!state.map.categorie) return [];
     const col = findCol(state.map.categorie);
     if (col && col.type === "lookup" && col.options && col.options.length) return col.options.map(o => o.label);
-    return [...new Set(state.articles.map(a => F(a, "categorie")).filter(Boolean))].sort((x, y) => String(x).localeCompare(String(y), "fr"));
+    const m = new Map();
+    for (const a of state.articles) { const v = String(F(a, "categorie") || "").trim(); if (v && !m.has(v)) m.set(v, v); }
+    if (all) for (const c of state.categories || []) if (c.name && ![...m.keys()].some(k => norm(k) === norm(c.name))) m.set(c.name, c.name);
+    return [...m.values()].sort((x, y) => String(x).localeCompare(String(y), "fr"));
+  }
+  /* Liste de suggestions (datalist) pour la saisie de la catégorie */
+  function catDatalist() {
+    let dl = document.getElementById("dl-cats");
+    if (!dl) { dl = document.createElement("datalist"); dl.id = "dl-cats"; document.body.appendChild(dl); }
+    dl.innerHTML = categories(true).map(c => `<option value="${esc(c)}"></option>`).join("");
+    return "dl-cats";
   }
 
   function taxes(sum) {
@@ -300,6 +311,7 @@
     state.articles = res.articles;
     state.ventes = res.ventes;
     state.ventesReady = res.ventesReady;
+    state.categories = res.categories || null;
     state.siteName = res.siteName;
     computeMapping();
     // retirer du panier les articles disparus
@@ -314,7 +326,8 @@
     articles: { title: "Articles", render: viewArticles },
     ventes: { title: "Historique des ventes", render: viewVentes },
     parametres: { title: "Paramètres", render: viewParametres },
-    photos: { title: "Photos des articles", render: viewPhotos, nav: "articles" }
+    photos: { title: "Photos des articles", render: viewPhotos, nav: "articles" },
+    categories: { title: "Catégories", render: viewCategories, nav: "articles" }
   };
   function currentView() {
     const k = (location.hash.match(/^#\/(\w+)/) || [])[1];
@@ -727,6 +740,7 @@
           <div class="search">${ICON.search}<input class="input" id="art-q" type="search" placeholder="Rechercher…" value="${esc(f.q)}"></div>
           ${cats.length ? `<select class="input" id="art-cat" style="width:auto;flex:0 1 190px"><option value="">Toutes catégories</option>${cats.map(c => `<option ${f.cat === c ? "selected" : ""}>${esc(c)}</option>`).join("")}</select>` : ""}
           ${hasStock() ? `<select class="input" id="art-stock" style="width:auto;flex:0 1 160px"><option value="">Tout le stock</option><option value="low" ${f.stock === "low" ? "selected" : ""}>Stock faible</option><option value="out" ${f.stock === "out" ? "selected" : ""}>En rupture</option></select>` : ""}
+          ${state.map.categorie ? `<a class="btn" href="#/categories" title="Ajouter, renommer ou supprimer des catégories">${ICON.edit}<span class="hide-sm">Catégories</span></a>` : ""}
           ${state.map.photo ? `<a class="btn" href="#/photos" title="Rechercher des photos par catégorie">${ICON.search}<span class="hide-sm">Photos</span></a>` : ""}
           <button class="btn" id="art-export" title="Exporter en CSV">${ICON.download}<span class="hide-sm">Exporter</span></button>
           <button class="btn primary" id="art-new">${ICON.plus} Nouvel article</button>
@@ -787,7 +801,7 @@
         case "boolean":
           html = `<select class="cell-input"><option value="1" ${cur ? "selected" : ""}>Oui</option><option value="0" ${!cur ? "selected" : ""}>Non</option></select>`; break;
         default:
-          html = `<input class="cell-input" type="text" value="${esc(cur == null ? "" : cur)}">`;
+          html = `<input class="cell-input" type="text" value="${esc(cur == null ? "" : cur)}" ${col.name === state.map.categorie ? `list="${catDatalist()}"` : ""}>`;
       }
       td.classList.add("editing");
       td.innerHTML = html;
@@ -914,7 +928,7 @@
       case "note":
         return `<textarea class="input" id="${id}" name="${esc(col.name)}" rows="3" ${req}>${esc(v)}</textarea>`;
       default:
-        return `<input class="input" id="${id}" name="${esc(col.name)}" type="text" value="${esc(v)}" ${req}>`;
+        return `<input class="input" id="${id}" name="${esc(col.name)}" type="text" value="${esc(v)}" ${req} ${col.name === state.map.categorie ? `list="${catDatalist()}" autocomplete="off"` : ""}>`;
     }
   }
 
@@ -982,6 +996,174 @@
     };
     $("#art-save", m).addEventListener("click", save);
     $("#art-form", m).addEventListener("submit", e => { e.preventDefault(); save(); });
+  }
+
+  /* ============ Vue : catégories (ajout, renommage, fusion, suppression) ============ */
+  const cleanCat = s => String(s || "").replace(/\s*[\r\n]+\s*/g, " ").replace(/\s+/g, " ").trim();
+
+  async function runPool(list, fn, onStep, n = 4) {
+    let i = 0, done = 0, errors = 0;
+    const worker = async () => {
+      while (i < list.length) {
+        const x = list[i++];
+        try { await fn(x); } catch (e) { errors++; console.warn(e); }
+        done++; if (onStep) onStep(done, list.length);
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(n, list.length) }, worker));
+    return { done, errors };
+  }
+
+  function viewCategories(el) {
+    const catKey = state.map.categorie;
+    const catCol = catKey && findCol(catKey);
+    if (!catKey || !catCol || catCol.type === "lookup") {
+      el.innerHTML = `<div class="alert warn">${ICON.warn}<div class="grow">La colonne « Catégorie » des articles n'est pas une colonne texte modifiable. Vérifiez la correspondance dans Paramètres.</div></div>`;
+      return;
+    }
+    const listOK = Array.isArray(state.categories);
+    const f = state.filters.cats || (state.filters.cats = { q: "", empty: false });
+
+    const rows = () => {
+      const m = new Map();
+      for (const c of state.categories || []) {
+        const k = norm(c.name); if (!k) continue;
+        if (!m.has(k)) m.set(k, { name: c.name, items: [], ids: [] });
+        m.get(k).ids.push(c.id);
+      }
+      for (const a of state.articles) {
+        const v = cleanCat(F(a, "categorie")); if (!v) continue;
+        const k = norm(v);
+        if (!m.has(k)) m.set(k, { name: v, items: [], ids: [] });
+        m.get(k).items.push(a);
+      }
+      return [...m.values()].sort((x, y) => x.name.localeCompare(y.name, "fr"));
+    };
+    const findRow = name => rows().find(r => norm(r.name) === norm(name));
+    const reloadCats = async () => { if (listOK) state.categories = await DS.loadCategories(); };
+    const progress = (d, t, what) => { const p = $("#cat-progress"); if (p) p.textContent = `${what} ${d} / ${t}…`; };
+
+    /* Met la catégorie « name » sur les articles donnés */
+    const moveArticles = (items, name) => runPool(items.filter(a => F(a, "categorie") !== name),
+      async a => Object.assign(a, await DS.updateArticle(a.id, { [catKey]: name })), (d, t) => progress(d, t, "Mise à jour des articles"));
+
+    el.innerHTML = `
+      <div class="stack" style="gap:14px">
+        ${listOK ? "" : `<div class="alert warn">${ICON.warn}<div class="grow">La liste des catégories « ${esc(cfg.categoriesList || "")} » est introuvable : seules les catégories présentes dans les articles sont affichées, et l'ajout d'une catégorie vide est impossible.</div></div>`}
+        <div class="card">
+          <div class="card-head compact-head">
+            <form id="cat-add" class="row" style="flex:1 1 320px;gap:8px">
+              <input class="input" id="cat-new" placeholder="Nouvelle catégorie (ex. ÉCOUTEUR BT)" style="flex:1" ${listOK ? "" : "disabled"}>
+              <button class="btn primary" ${listOK ? "" : "disabled"}>${ICON.plus} Ajouter</button>
+            </form>
+            <div class="search" style="flex:0 1 240px">${ICON.search}<input class="input" id="cat-q" type="search" placeholder="Filtrer…" value="${esc(f.q)}"></div>
+            <label class="check" style="font-size:13px"><input type="checkbox" id="cat-empty" ${f.empty ? "checked" : ""}> Sans article uniquement</label>
+          </div>
+          <div id="cat-progress" class="muted" style="padding:0 16px;font-size:13px"></div>
+          <div id="cat-table"></div>
+        </div>
+      </div>`;
+
+    const draw = () => {
+      const q = norm(f.q);
+      const list = rows().filter(r => (!q || norm(r.name).includes(q)) && (!f.empty || !r.items.length));
+      const totalArts = list.reduce((t, r) => t + r.items.length, 0);
+      $("#cat-table").innerHTML = list.length ? `<div class="table-scroll"><table class="table responsive compact">
+        <thead><tr><th>Catégorie</th><th class="num">Articles</th>${hasStock() ? `<th class="num">Quantité</th>` : ""}${hasCA() ? `<th class="num">CA (Qté × Prix)</th>` : ""}${listOK ? `<th>Liste ${esc(cfg.categoriesList)}</th>` : ""}<th></th></tr></thead>
+        <tbody>${list.map(r => `<tr data-cat="${esc(r.name)}">
+          <td class="primary-cell" data-label="Catégorie"><span class="name-cell">${r.items[0] ? thumbHTML(r.items[0]) : `<span class="thumb neutral">${DEVICE_SVG.other}</span>`}<span>${esc(r.name)}</span></span></td>
+          <td class="num" data-label="Articles">${r.items.length ? int(r.items.length) : '<span class="muted">0</span>'}</td>
+          ${hasStock() ? `<td class="num" data-label="Quantité">${int(r.items.reduce((t, a) => t + artStock(a), 0))}</td>` : ""}
+          ${hasCA() ? `<td class="num" data-label="CA">${money(r.items.reduce((t, a) => t + artCA(a), 0))}</td>` : ""}
+          ${listOK ? `<td data-label="Liste">${r.ids.length === 1 ? '<span class="badge ok">Oui</span>' : r.ids.length > 1 ? `<span class="badge warn" title="Présente ${r.ids.length} fois">Doublon ×${r.ids.length}</span>` : `<button class="btn sm" data-addlist>${ICON.plus} Ajouter à la liste</button>`}</td>` : ""}
+          <td class="actions"><button class="btn sm icon ghost" data-rename title="Renommer ou fusionner" aria-label="Renommer">${ICON.edit}</button><button class="btn sm icon ghost danger" data-delcat title="Supprimer" aria-label="Supprimer">${ICON.trash}</button></td>
+        </tr>`).join("")}</tbody></table></div>
+        <div class="table-foot"><span>${int(list.length)} catégorie(s)</span><span>${int(totalArts)} article(s)</span><span class="muted hide-sm">Renommer vers le nom d'une catégorie existante = fusionner les deux.</span></div>`
+        : `<div class="empty">Aucune catégorie.</div>`;
+    };
+    draw();
+
+    async function addCategory(name) {
+      name = cleanCat(name);
+      if (!name) return;
+      const ex = findRow(name);
+      if (ex && ex.ids.length) return toast(`La catégorie « ${ex.name} » existe déjà.`, "bad");
+      try { await DS.createCategorie(name); await reloadCats(); toast(`Catégorie « ${name} » ajoutée.`, "ok"); draw(); }
+      catch (e) { toast(e.message, "bad"); }
+    }
+
+    function renameDialog(row) {
+      const others = rows().filter(r => r !== row && norm(r.name) !== norm(row.name)).map(r => r.name);
+      const m = openModal({
+        title: "Renommer la catégorie", size: "sm",
+        body: `<label class="field">Nouveau nom<input class="input" id="cat-rn" value="${esc(row.name)}" list="dl-cat-rn" autocomplete="off"></label>
+          <datalist id="dl-cat-rn">${others.map(o => `<option value="${esc(o)}"></option>`).join("")}</datalist>
+          <p class="muted" style="font-size:13px;margin:12px 0 0">${row.items.length} article(s) seront mis à jour. Si vous choisissez le nom d'une catégorie existante, les deux catégories seront <strong>fusionnées</strong>.</p>`,
+        foot: `<button class="btn" data-close>Annuler</button><button class="btn primary" id="cat-rn-ok">Renommer</button>`
+      });
+      const inp = $("#cat-rn", m);
+      inp.select();
+      const go = async () => {
+        const name = cleanCat(inp.value);
+        if (!name || name === row.name) return closeModal();
+        const target = rows().find(r => norm(r.name) === norm(name) && norm(r.name) !== norm(row.name));
+        if (target && !(await confirmBox("Fusionner", `« ${esc(row.name)} » sera fusionnée dans « ${esc(target.name)} » : ${row.items.length} article(s) déplacé(s). Continuer ?`, "Fusionner", false))) return;
+        closeModal();
+        const finalName = target ? target.name : name;
+        const r1 = await moveArticles(row.items, finalName);
+        try {
+          if (listOK) {
+            if (target && target.ids.length) for (const id of row.ids) await DS.deleteCategorie(id);
+            else if (row.ids.length) { await DS.updateCategorie(row.ids[0], finalName); for (const id of row.ids.slice(1)) await DS.deleteCategorie(id); }
+            else await DS.createCategorie(finalName);
+            await reloadCats();
+          }
+        } catch (e) { toast(e.message, "bad"); }
+        $("#cat-progress").textContent = "";
+        toast(r1.errors ? `${r1.errors} article(s) non mis à jour.` : (target ? "Catégories fusionnées." : "Catégorie renommée."), r1.errors ? "bad" : "ok");
+        draw();
+      };
+      $("#cat-rn-ok", m).addEventListener("click", go);
+      inp.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); go(); } });
+    }
+
+    function deleteDialog(row) {
+      const others = rows().filter(r => r !== row).map(r => r.name);
+      const n = row.items.length;
+      const m = openModal({
+        title: "Supprimer la catégorie", size: "sm",
+        body: n ? `<p style="margin:0 0 12px">« <strong>${esc(row.name)}</strong> » contient <strong>${n}</strong> article(s). Choisissez la catégorie vers laquelle les déplacer :</p>
+            <select class="input" id="cat-move"><option value="">— Choisir —</option>${others.map(o => `<option>${esc(o)}</option>`).join("")}</select>
+            <p class="muted" style="font-size:13px;margin:10px 0 0">Les articles ne sont pas supprimés.</p>`
+          : `<p style="margin:0">Supprimer « <strong>${esc(row.name)}</strong> »${listOK && row.ids.length ? ` de la liste ${esc(cfg.categoriesList)}` : ""} ? Aucun article n'utilise cette catégorie.</p>`,
+        foot: `<button class="btn" data-close>Annuler</button><button class="btn danger solid" id="cat-del-ok">Supprimer</button>`
+      });
+      $("#cat-del-ok", m).addEventListener("click", async () => {
+        let dest = "";
+        if (n) { dest = $("#cat-move", m).value; if (!dest) return toast("Choisissez une catégorie de destination.", "bad"); }
+        closeModal();
+        let r1 = { errors: 0 };
+        if (n) r1 = await moveArticles(row.items, dest);
+        try { if (listOK) { for (const id of row.ids) await DS.deleteCategorie(id); await reloadCats(); } }
+        catch (e) { toast(e.message, "bad"); }
+        $("#cat-progress").textContent = "";
+        toast(r1.errors ? `${r1.errors} article(s) non déplacé(s) : catégorie conservée.` : "Catégorie supprimée.", r1.errors ? "bad" : "ok");
+        draw();
+      });
+    }
+
+    $("#cat-add").addEventListener("submit", async e => { e.preventDefault(); const i = $("#cat-new"); await addCategory(i.value); i.value = ""; });
+    $("#cat-q").addEventListener("input", e => { f.q = e.target.value; draw(); });
+    el.onchange = e => { if (e.target.id === "cat-empty") { f.empty = e.target.checked; draw(); } };
+    el.onclick = async e => {
+      const tr = e.target.closest("tr[data-cat]");
+      if (!tr) return;
+      const row = findRow(tr.dataset.cat);
+      if (!row) return;
+      if (e.target.closest("[data-rename]")) return renameDialog(row);
+      if (e.target.closest("[data-delcat]")) return deleteDialog(row);
+      if (e.target.closest("[data-addlist]")) return addCategory(row.name);
+    };
   }
 
   /* ============ Vue : photos (recherche Wikimedia Commons) ============ */

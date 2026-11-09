@@ -39,6 +39,10 @@ window.APP_CONFIG = {
   // Colonnes affichées (dans cet ordre) dans le menu « Articles »
   colonnesArticles: ["Id_article", "Modele", "fournisseur", "Quantite", "Prix", "Caractéristiques", "DATEe", "Nom_article"],
 
+  // Liste des catégories (gérée depuis l'écran « Catégories ») et sa colonne contenant le nom
+  categoriesList: "Tbl_Calegorie",
+  categoriesField: "Nom_Categorie",
+
   // Relation Tbl_article → Tbl_categorie.
   // Utilisée seulement si « Nom_article » est une colonne Nombre contenant l'identifiant
   // de la catégorie ; si c'est une colonne « Recherche » SharePoint, elle est résolue automatiquement.
