@@ -275,6 +275,25 @@ table.table { width: 100%; border-collapse: collapse; }
 .seuil-input:focus { border-color: var(--primary); }
 #seuil-table tr.changed td { background: var(--warning-soft); }
 
+/* Panier de vente */
+.modal.cart { width: min(720px, 100%); }
+.cart-lines { display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden; }
+.cart-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto 96px 104px auto; align-items: center; gap: 10px; padding: 8px 10px; border-bottom: 1px solid var(--border); }
+.cart-row:last-child { border-bottom: 0; }
+.cart-name { display: flex; flex-direction: column; min-width: 0; font-size: 14px; }
+.cart-name strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cart-name .muted { font-size: 12px; }
+.cart-price .input { min-height: 32px; padding: 4px 8px; text-align: right; }
+.cart-sub { font-size: 14px; }
+.cart-add { position: relative; margin-top: 10px; }
+.cart-add svg { position: absolute; left: 11px; top: 50%; transform: translateY(-50%); color: var(--primary); width: 18px; height: 18px; }
+.cart-add .input { padding-left: 38px; border-style: dashed; }
+@media (max-width: 560px) {
+  .cart-row { grid-template-columns: auto minmax(0, 1fr) auto; grid-template-areas: "ico name rm" "qty price sub"; row-gap: 8px; }
+  .cart-row .thumb { grid-area: ico; } .cart-row .cart-name { grid-area: name; } .cart-row [data-rm] { grid-area: rm; }
+  .cart-row .qty { grid-area: qty; } .cart-row .cart-price { grid-area: price; } .cart-row .cart-sub { grid-area: sub; text-align: right; }
+}
+
 /* Vente rapide */
 .table.compact td.sellable { cursor: pointer; font-weight: 600; }
 .table.compact td.sellable:hover { color: var(--primary); background: var(--primary-soft); }

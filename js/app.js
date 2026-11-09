@@ -541,7 +541,7 @@
         </div>
         <div class="grid-2 even">
           <div class="card">
-            <div class="card-head"><h2>Dernières ventes et réparations</h2><div class="row" style="gap:6px"><button class="btn sm" data-repair>${ICON.plus} Réparation</button><a class="btn sm" href="#/ventes">Tout voir</a></div></div>
+            <div class="card-head"><h2>Dernières ventes et réparations</h2><div class="row" style="gap:6px"><button class="btn sm" data-newsale>${ICON.cart} Vente</button><button class="btn sm" data-repair>${ICON.plus} Réparation</button><a class="btn sm" href="#/ventes">Tout voir</a></div></div>
             ${sales.length ? `<div class="table-wrap"><table class="table responsive compact"><thead><tr><th>Date</th><th>Article(s)</th><th>Client</th><th class="num">Total</th></tr></thead><tbody>
               ${sales.slice(0, 8).map(s => `<tr class="clickable" data-sale="${esc(s.num)}"><td data-label="Date">${fmtDateTime(s.date)}</td>
                 <td class="primary-cell" data-label="Article(s)"><span class="ellipsis" style="display:block;max-width:260px">${esc(s.lines.map(l => (l.Quantite > 1 ? l.Quantite + " × " : "") + (l.Article || "")).join(", "))}</span></td>
@@ -561,6 +561,7 @@
       </div>`;
     el.onclick = e => {
       if (e.target.closest("[data-repair]")) return repairDialog();
+      if (e.target.closest("[data-newsale]")) return sellDialog(null);
       const tr = e.target.closest("[data-sale]");
       if (tr) return showSale(tr.dataset.sale);
       const th = e.target.closest("[data-thumb]");
@@ -620,22 +621,26 @@
       Math.random().toString(36).slice(2, 4).toUpperCase();
   }
 
-  function sellDialog(a) {
+  /* Vente avec panier : un ou plusieurs articles, un client, un seul ticket */
+  function sellDialog(first) {
     if (!state.ventesReady) return toast(`La liste « ${cfg.ventesList} » est introuvable : impossible d'enregistrer une vente.`, "bad");
-    const stockMax = hasStock() ? artStock(a) : Infinity;
-    if (hasStock() && stockMax <= 0) return toast(`« ${artName(a)} » est en rupture de stock.`, "bad");
+    if (first && hasStock() && artStock(first) <= 0) return toast(`« ${artName(first)} » est en rupture de stock.`, "bad");
     const clients = state.clients || [];
     const canAddClient = Array.isArray(state.clients);
     const defClient = cfg.clientParDefaut || "Client comptoir";
+    const lines = first ? [{ a: first, qty: 1, price: artPrice(first) }] : [];
+    // articles proposés : ceux en stock
+    const avail = () => state.articles.filter(x => !hasStock() || artStock(x) > 0);
+    const optLabel = x => `${artName(x)} — ${F(x, "categorie") || ""}${hasStock() ? ` (stock ${int(artStock(x))})` : ""}`;
     const m = openModal({
-      title: "Vendre", size: "sm",
+      title: "Vendre", size: "cart",
       body: `
-        <div class="sell-head">${thumbHTML(a, true)}<div style="min-width:0"><strong>${esc(artName(a))}</strong>
-          <div class="muted" style="font-size:13px">${esc(F(a, "categorie") || "")}${hasStock() ? ` · <strong>${int(stockMax)}</strong> en stock` : ""}</div></div></div>
-        <form id="sell-form" class="form-grid" style="margin-top:16px" novalidate>
-          <label class="field">Quantité
-            <span class="qty qty-lg"><button type="button" data-d="-1" aria-label="Diminuer">−</button><input id="sell-qty" type="number" min="1" ${isFinite(stockMax) ? `max="${stockMax}"` : ""} value="1" inputmode="numeric"><button type="button" data-d="1" aria-label="Augmenter">+</button></span></label>
-          <label class="field">Prix unitaire (${esc(cfg.devise)})<input class="input" id="sell-price" type="number" step="any" min="0" value="${artPrice(a)}" inputmode="decimal"></label>
+        <div class="cart-lines" id="cart-lines"></div>
+        <div class="cart-add">
+          ${ICON.plus}<input class="input" id="cart-search" list="dl-cart-arts" placeholder="Ajouter un article au panier (nom, catégorie)…" autocomplete="off">
+          <datalist id="dl-cart-arts"></datalist>
+        </div>
+        <form id="sell-form" class="form-grid" style="margin-top:14px" novalidate>
           <label class="field full">Client
             <input class="input" id="sell-client" list="dl-clients" placeholder="Rechercher ou saisir un client (vide = ${esc(defClient)})" autocomplete="off">
             <datalist id="dl-clients">${clients.map(c => `<option value="${esc(c.name)}">${esc(c.phone || "")}</option>`).join("")}</datalist></label>
@@ -649,38 +654,98 @@
         </form>`,
       foot: `<button class="btn" data-close>Annuler</button><button class="btn primary lg" id="sell-ok">${ICON.cart} Vendre</button>`
     });
-    const qtyI = $("#sell-qty", m), priceI = $("#sell-price", m), clientI = $("#sell-client", m);
-    const read = () => ({ qty: parseInt(qtyI.value, 10) || 0, price: parseFloat(String(priceI.value).replace(",", ".")) });
+    const clientI = $("#sell-client", m), searchI = $("#cart-search", m);
     const isNewClient = () => {
       const v = clientI.value.trim();
       return canAddClient && v && !clients.some(c => norm(c.name) === norm(v)) && norm(v) !== norm(defClient);
     };
-    const update = () => {
-      const { qty, price } = read();
-      const total = Math.max(0, qty) * (isNaN(price) ? 0 : price);
-      $("#sell-total", m).innerHTML = `<span class="grand">Total</span><span class="num grand">${money(total)}</span>`;
+    const fillOptions = () => {
+      const inCart = new Set(lines.map(l => l.a.id));
+      $("#dl-cart-arts", m).innerHTML = avail().filter(x => !inCart.has(x.id)).map(x => `<option value="${esc(optLabel(x))}"></option>`).join("");
+    };
+    const totals = () => {
+      const total = lines.reduce((t, l) => t + l.qty * l.price, 0);
+      let cost = 0, known = true;
+      for (const l of lines) { const lp = lastPurchase(l.a); if (lp) cost += (+lp.PrixAchat || 0) * l.qty; else known = false; }
+      const nb = lines.reduce((t, l) => t + l.qty, 0);
+      $("#sell-total", m).innerHTML = `<span class="muted">${int(lines.length)} article(s) · ${int(nb)} pièce(s)</span><span></span>
+        ${known && lines.length ? `<span class="muted">Bénéfice estimé</span><span class="num" style="color:var(--success)">${money(total - cost)}</span>` : ""}
+        <span class="grand">Total</span><span class="num grand">${money(total)}</span>`;
+      $("#sell-ok", m).disabled = !lines.length;
       $("#sell-new", m).hidden = !isNewClient();
     };
-    update();
-    m.querySelectorAll("[data-d]").forEach(b => b.addEventListener("click", () => {
-      let q = (parseInt(qtyI.value, 10) || 1) + parseInt(b.dataset.d, 10);
-      q = Math.max(1, Math.min(q, isFinite(stockMax) ? stockMax : q));
-      qtyI.value = q; update();
-    }));
-    [qtyI, priceI, clientI].forEach(i => i.addEventListener("input", update));
-    setTimeout(() => qtyI.select(), 60);
+    const drawLines = () => {
+      $("#cart-lines", m).innerHTML = lines.length ? lines.map((l, i) => {
+        const max = hasStock() ? artStock(l.a) : "";
+        return `<div class="cart-row" data-i="${i}">
+          ${thumbHTML(l.a)}
+          <div class="cart-name"><strong>${esc(artName(l.a))}</strong><span class="muted">${esc(F(l.a, "categorie") || "")}${hasStock() ? ` · stock ${int(max)}` : ""}</span></div>
+          <span class="qty"><button type="button" data-d="-1" aria-label="Diminuer">−</button><input type="number" min="1" ${max !== "" ? `max="${max}"` : ""} value="${l.qty}" data-qty inputmode="numeric" aria-label="Quantité"><button type="button" data-d="1" aria-label="Augmenter">+</button></span>
+          <span class="cart-price"><input class="input" type="number" step="any" min="0" value="${l.price}" data-price inputmode="decimal" aria-label="Prix unitaire"></span>
+          <strong class="num cart-sub">${money(l.qty * l.price)}</strong>
+          <button type="button" class="btn sm icon ghost danger" data-rm title="Retirer du panier" aria-label="Retirer">${ICON.close}</button>
+        </div>`;
+      }).join("") : `<div class="empty" style="padding:18px">Le panier est vide : ajoutez un article ci-dessous.</div>`;
+      fillOptions(); totals();
+    };
+    const addArticle = x => {
+      const ex = lines.find(l => l.a.id === x.id);
+      if (ex) {
+        if (hasStock() && ex.qty + 1 > artStock(x)) return toast(`Stock disponible pour « ${artName(x)} » : ${int(artStock(x))}.`, "bad");
+        ex.qty++;
+      } else lines.push({ a: x, qty: 1, price: artPrice(x) });
+      drawLines();
+    };
+    drawLines();
+
+    searchI.addEventListener("change", () => {
+      const v = searchI.value.trim();
+      if (!v) return;
+      const x = avail().find(y => optLabel(y) === v) || avail().find(y => norm(artName(y)) === norm(v));
+      if (!x) return toast("Article introuvable ou en rupture de stock.", "bad");
+      searchI.value = "";
+      addArticle(x);
+      searchI.focus();
+    });
+    $("#cart-lines", m).addEventListener("click", e => {
+      const row = e.target.closest(".cart-row"); if (!row) return;
+      const l = lines[+row.dataset.i];
+      if (e.target.closest("[data-rm]")) { lines.splice(+row.dataset.i, 1); return drawLines(); }
+      const d = e.target.closest("[data-d]");
+      if (d) {
+        let q = l.qty + +d.dataset.d;
+        if (hasStock() && q > artStock(l.a)) { toast(`Stock disponible : ${int(artStock(l.a))}.`, "bad"); q = artStock(l.a); }
+        l.qty = Math.max(1, q); drawLines();
+      }
+    });
+    $("#cart-lines", m).addEventListener("change", e => {
+      const row = e.target.closest(".cart-row"); if (!row) return;
+      const l = lines[+row.dataset.i];
+      if (e.target.matches("[data-qty]")) {
+        let q = Math.max(1, parseInt(e.target.value, 10) || 1);
+        if (hasStock() && q > artStock(l.a)) { toast(`Stock disponible : ${int(artStock(l.a))}.`, "bad"); q = artStock(l.a); }
+        l.qty = q;
+      }
+      if (e.target.matches("[data-price]")) l.price = Math.max(0, parseFloat(String(e.target.value).replace(",", ".")) || 0);
+      drawLines();
+    });
+    clientI.addEventListener("input", totals);
+    setTimeout(() => (lines.length ? clientI : searchI).focus(), 60);
 
     const submit = async () => {
-      const { qty, price } = read();
-      if (qty < 1) { qtyI.focus(); return toast("Quantité invalide.", "bad"); }
-      if (isFinite(stockMax) && qty > stockMax) { qtyI.focus(); return toast(`Stock disponible : ${int(stockMax)}.`, "bad"); }
-      if (isNaN(price) || price < 0) { priceI.focus(); return toast("Prix invalide.", "bad"); }
+      if (!lines.length) return toast("Le panier est vide.", "bad");
       const btn = $("#sell-ok", m);
       busy(btn, true, "Enregistrement…");
       try {
-        const fresh = await DS.getArticle(a.id);
-        const stockNow = +fresh[state.map.stock] || 0;
-        if (hasStock() && stockNow < qty) throw new Error(`Stock insuffisant : ${int(stockNow)} disponible(s).`);
+        // 1. vérification du stock réel de chaque article AVANT d'enregistrer quoi que ce soit
+        const fresh = {};
+        for (const l of lines) {
+          const f = await DS.getArticle(l.a.id);
+          const s = +f[state.map.stock] || 0;
+          if (hasStock() && s < l.qty) throw new Error(`Stock insuffisant pour « ${artName(l.a)} » : ${int(s)} disponible(s). Rien n'a été enregistré.`);
+          fresh[l.a.id] = s;
+        }
+        // 2. client
         const typed = clientI.value.trim();
         const known = clients.find(c => norm(c.name) === norm(typed));
         const clientName = known ? known.name : (typed || defClient);
@@ -688,20 +753,22 @@
           try { state.clients.push(await DS.createClient(clientName, $("#sell-phone", m).value.trim())); }
           catch (e) { toast("Client non ajouté à la liste : " + e.message, "bad"); }
         }
-        const d = new Date(), num = saleNumber(d);
-        const ref = F(a, "reference");
-        const lp = lastPurchase(a); // coût d'achat mémorisé pour calculer le bénéfice
-        const v = await DS.createVenteLine({
-          Title: num, ArticleId: parseInt(a.id, 10), Article: String(artName(a)), Reference: ref == null ? "" : String(ref),
-          Quantite: qty, PrixUnitaire: price, Montant: Math.round(qty * price * 100) / 100,
-          Client: clientName, ModePaiement: $("#sell-pay", m).value, Vendeur: Auth.userName(), DateVente: d.toISOString(),
-          TypeOperation: "Vente", Cout: lp ? Math.round((+lp.PrixAchat || 0) * qty * 100) / 100 : null
-        });
-        state.ventes.push(v);
-        if (hasStock()) Object.assign(a, await DS.updateArticle(a.id, { [state.map.stock]: stockNow - qty }));
+        // 3. une ligne par article, toutes sous le même numéro de vente
+        const d = new Date(), num = saleNumber(d), pay = $("#sell-pay", m).value;
+        for (const l of lines) {
+          const ref = F(l.a, "reference"), lp = lastPurchase(l.a);
+          const v = await DS.createVenteLine({
+            Title: num, ArticleId: parseInt(l.a.id, 10), Article: String(artName(l.a)), Reference: ref == null ? "" : String(ref),
+            Quantite: l.qty, PrixUnitaire: l.price, Montant: Math.round(l.qty * l.price * 100) / 100,
+            Client: clientName, ModePaiement: pay, Vendeur: Auth.userName(), DateVente: d.toISOString(),
+            TypeOperation: "Vente", Cout: lp ? Math.round((+lp.PrixAchat || 0) * l.qty * 100) / 100 : null
+          });
+          state.ventes.push(v);
+          if (hasStock()) Object.assign(l.a, await DS.updateArticle(l.a.id, { [state.map.stock]: fresh[l.a.id] - l.qty }));
+        }
         closeModal();
-        toast(`Vente ${num} enregistrée.`, "ok");
-        if (currentView() === "articles" && state.refreshArticle) state.refreshArticle(a); else render();
+        toast(`Vente ${num} enregistrée (${lines.length} article(s)).`, "ok");
+        if (currentView() === "articles" && state.refreshArticle) lines.forEach(l => state.refreshArticle(l.a)); else render();
         showSale(num);
       } catch (e) {
         busy(btn, false);
@@ -2158,7 +2225,8 @@
             <label class="row" style="gap:6px"><span class="muted" style="font-size:13px">Du</span><input class="input" id="v-from" type="date" value="${esc(f.from)}" style="width:auto"></label>
             <label class="row" style="gap:6px"><span class="muted" style="font-size:13px">au</span><input class="input" id="v-to" type="date" value="${esc(f.to)}" style="width:auto"></label>
             <button class="btn" id="v-export">${ICON.download}<span class="hide-sm">Exporter</span></button>
-            <button class="btn primary" id="v-repair">${ICON.plus} Réparation</button>
+            <button class="btn" id="v-repair">${ICON.plus} Réparation</button>
+            <button class="btn primary" id="v-sale">${ICON.cart} Nouvelle vente</button>
           </div>
           <div id="v-sum" class="sum-bar"></div>
           <div id="v-table"></div>
@@ -2196,6 +2264,7 @@
     };
     el.onclick = e => {
       if (e.target.closest("#v-repair")) return repairDialog();
+      if (e.target.closest("#v-sale")) return sellDialog(null);
       const tr = e.target.closest("[data-sale]");
       if (tr) return showSale(tr.dataset.sale);
       if (e.target.closest("#v-export")) {
