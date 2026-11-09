@@ -312,6 +312,7 @@
     state.ventes = res.ventes;
     state.ventesReady = res.ventesReady;
     state.categories = res.categories || null;
+    state.clients = res.clients || null;
     state.siteName = res.siteName;
     computeMapping();
     // retirer du panier les articles disparus
@@ -322,7 +323,6 @@
   /* ============ Routage ============ */
   const VIEWS = {
     tableau: { title: "Tableau de bord", render: viewDashboard },
-    caisse: { title: "Caisse", render: viewCaisse },
     articles: { title: "Articles", render: viewArticles },
     ventes: { title: "Historique des ventes", render: viewVentes },
     parametres: { title: "Paramètres", render: viewParametres },
@@ -444,175 +444,102 @@
       <text x="${pl}" y="11">max ${money(max)}</text>${bars}</svg>`;
   }
 
-  /* ============ Vue : caisse ============ */
-  function viewCaisse(el) {
-    const f = state.filters.caisse;
-    const cats = categories();
-    el.innerHTML = `
-      ${state.ventesReady ? "" : `<div style="margin-bottom:16px">${ventesMissingBanner()}</div>`}
-      <div class="pos">
-        <div class="stack" style="gap:14px">
-          <div class="search">${ICON.search}<input class="input" id="pos-q" type="search" placeholder="Rechercher un article (nom, référence, marque)…" value="${esc(f.q)}" autocomplete="off"></div>
-          ${cats.length ? `<div class="chips" id="pos-cats"><button class="chip ${f.cat ? "" : "active"}" data-cat="">Tous</button>${cats.map(c => `<button class="chip ${f.cat === c ? "active" : ""}" data-cat="${esc(c)}">${esc(c)}</button>`).join("")}</div>` : ""}
-          <div class="pos-products" id="pos-products"></div>
-        </div>
-        <aside class="card cart" id="cart" aria-label="Panier"></aside>
-      </div>
-      <button class="btn primary lg cart-fab" id="cart-fab"></button>`;
-
-    const renderProducts = () => {
-      const q = norm(f.q);
-      const list = state.articles.filter(a =>
-        (!f.cat || F(a, "categorie") === f.cat) &&
-        (!q || norm([artName(a), F(a, "reference"), F(a, "marque")].join(" ")).includes(q)));
-      $("#pos-products").innerHTML = list.length ? list.map(a => {
-        const st = stockStatus(a);
-        const out = hasStock() && artStock(a) <= 0;
-        return `<button class="product" data-add="${esc(a.id)}" ${out ? "disabled" : ""}>
-          <span class="product-top">${thumbHTML(a, true)}<span class="product-name">${esc(artName(a))}</span></span>
-          <span class="product-ref">${esc(F(a, "reference") != null ? F(a, "reference") : "")}${(F(a, "marque") || F(a, "fournisseur")) ? " · " + esc(F(a, "marque") || F(a, "fournisseur")) : ""}</span>
-          <span class="product-foot"><span class="product-price">${money(artPrice(a))}</span>${hasStock() ? `<span class="badge ${st.cls}">${int(artStock(a))}</span>` : ""}</span>
-        </button>`;
-      }).join("") : `<div class="empty" style="grid-column:1/-1">Aucun article trouvé.</div>`;
-    };
-    renderProducts();
-    renderCart();
-
-    $("#pos-q").addEventListener("input", e => { f.q = e.target.value; renderProducts(); });
-    el.onclick = e => {
-      const chip = e.target.closest("[data-cat]");
-      if (chip) { f.cat = chip.dataset.cat; $$("#pos-cats .chip").forEach(c => c.classList.toggle("active", c === chip)); renderProducts(); return; }
-      const add = e.target.closest("[data-add]");
-      if (add) { addToCart(add.dataset.add); return; }
-      if (e.target.closest("#cart-fab")) { $("#cart").classList.add("open"); return; }
-      const c = e.target.closest('[data-action="create-ventes"]');
-      if (c) createVentesList(c);
-    };
+  /* ============ Vente rapide : un article, une quantité, un client ============ */
+  function saleNumber(d) {
+    const p = n => String(n).padStart(2, "0");
+    return "V" + d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) + "-" + p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds()) +
+      Math.random().toString(36).slice(2, 4).toUpperCase();
   }
 
-  function addToCart(id) {
-    const a = state.articles.find(x => x.id === id);
-    if (!a) return;
-    const line = state.cart.find(l => l.id === id);
-    const max = hasStock() ? artStock(a) : Infinity;
-    if (line) {
-      if (line.qty + 1 > max) return toast(`Stock insuffisant pour « ${artName(a)} » (${int(max)} disponible).`, "bad");
-      line.qty++;
-    } else {
-      if (max < 1) return toast("Article en rupture de stock.", "bad");
-      state.cart.push({ id, qty: 1, price: artPrice(a) });
-    }
-    renderCart();
-  }
-
-  function cartTotals() {
-    const sum = state.cart.reduce((t, l) => t + l.qty * l.price, 0);
-    return { sum, ...taxes(sum) };
-  }
-
-  function renderCart() {
-    const box = $("#cart");
-    if (!box) return;
-    const t = cartTotals();
-    const count = state.cart.reduce((n, l) => n + l.qty, 0);
-    const wasOpen = box.classList.contains("open");
-    box.innerHTML = `
-      <div class="card-head"><h2>Panier <span class="muted">(${count})</span></h2>
-        <div class="row">${state.cart.length ? `<button class="btn sm ghost danger" data-clear>Vider</button>` : ""}<button class="btn sm icon ghost hide-desktop" data-close-cart aria-label="Fermer le panier">${ICON.close}</button></div></div>
-      <div class="cart-lines">
-        ${state.cart.length ? state.cart.map(l => {
-          const a = state.articles.find(x => x.id === l.id) || {};
-          return `<div class="cart-line" data-line="${esc(l.id)}">
-            <div class="name">${esc(artName(a))}</div>
-            <button class="btn sm icon ghost danger" data-remove aria-label="Retirer">${ICON.trash}</button>
-            <div class="qty"><button data-dec aria-label="Diminuer">−</button><input type="number" min="1" value="${l.qty}" data-qty aria-label="Quantité"><button data-inc aria-label="Augmenter">+</button></div>
-            <div class="num"><span class="muted" style="font-size:12px">${money(l.price)} ×${l.qty}</span><br><strong>${money(l.qty * l.price)}</strong></div>
-          </div>`;
-        }).join("") : `<div class="empty">Touchez un article pour l'ajouter au panier.</div>`}
-      </div>
-      <div class="cart-foot">
-        <div class="form-grid">
-          <label class="field">Client<input class="input" id="cart-client" placeholder="Client comptoir" value="${esc(state.cartClient || "")}"></label>
-          <label class="field">Paiement<select class="input" id="cart-pay">${cfg.modesPaiement.map(m => `<option ${state.cartPay === m ? "selected" : ""}>${esc(m)}</option>`).join("")}</select></label>
-        </div>
-        <div class="totals">
-          ${cfg.tva ? `<span class="muted">Total HT</span><span class="num">${money(t.ht)}</span><span class="muted">TVA ${cfg.tva} %</span><span class="num">${money(t.tva)}</span>` : ""}
-          <span class="grand">Total TTC</span><span class="num grand">${money(t.ttc)}</span>
-        </div>
-        <button class="btn primary lg block" id="btn-checkout" ${state.cart.length && state.ventesReady ? "" : "disabled"}>Valider la vente</button>
-      </div>`;
-    if (wasOpen) box.classList.add("open");
-    const fab = $("#cart-fab");
-    if (fab) { fab.innerHTML = `${ICON.cart} Panier (${count}) · ${money(t.ttc)}`; fab.hidden = !count; }
-
-    box.onclick = e => {
-      if (e.target.closest("[data-close-cart]")) { box.classList.remove("open"); return; }
-      if (e.target.closest("[data-clear]")) { state.cart = []; renderCart(); return; }
-      if (e.target.closest("#btn-checkout")) { checkout(e.target.closest("#btn-checkout")); return; }
-      const lineEl = e.target.closest("[data-line]");
-      if (!lineEl) return;
-      const line = state.cart.find(l => l.id === lineEl.dataset.line);
-      if (e.target.closest("[data-remove]")) { state.cart = state.cart.filter(l => l !== line); renderCart(); }
-      else if (e.target.closest("[data-inc]")) addToCart(line.id);
-      else if (e.target.closest("[data-dec]")) { line.qty--; if (line.qty < 1) state.cart = state.cart.filter(l => l !== line); renderCart(); }
+  function sellDialog(a) {
+    if (!state.ventesReady) return toast(`La liste « ${cfg.ventesList} » est introuvable : impossible d'enregistrer une vente.`, "bad");
+    const stockMax = hasStock() ? artStock(a) : Infinity;
+    if (hasStock() && stockMax <= 0) return toast(`« ${artName(a)} » est en rupture de stock.`, "bad");
+    const clients = state.clients || [];
+    const canAddClient = Array.isArray(state.clients);
+    const defClient = cfg.clientParDefaut || "Client comptoir";
+    const m = openModal({
+      title: "Vendre", size: "sm",
+      body: `
+        <div class="sell-head">${thumbHTML(a, true)}<div style="min-width:0"><strong>${esc(artName(a))}</strong>
+          <div class="muted" style="font-size:13px">${esc(F(a, "categorie") || "")}${hasStock() ? ` · <strong>${int(stockMax)}</strong> en stock` : ""}</div></div></div>
+        <form id="sell-form" class="form-grid" style="margin-top:16px" novalidate>
+          <label class="field">Quantité
+            <span class="qty qty-lg"><button type="button" data-d="-1" aria-label="Diminuer">−</button><input id="sell-qty" type="number" min="1" ${isFinite(stockMax) ? `max="${stockMax}"` : ""} value="1" inputmode="numeric"><button type="button" data-d="1" aria-label="Augmenter">+</button></span></label>
+          <label class="field">Prix unitaire (${esc(cfg.devise)})<input class="input" id="sell-price" type="number" step="any" min="0" value="${artPrice(a)}" inputmode="decimal"></label>
+          <label class="field full">Client
+            <input class="input" id="sell-client" list="dl-clients" placeholder="Rechercher ou saisir un client (vide = ${esc(defClient)})" autocomplete="off">
+            <datalist id="dl-clients">${clients.map(c => `<option value="${esc(c.name)}">${esc(c.phone || "")}</option>`).join("")}</datalist></label>
+          <div class="full" id="sell-new" hidden>
+            <div class="alert info" style="padding:10px 12px">${ICON.info}<div class="grow"><strong>Nouveau client</strong> : il sera ajouté à la liste ${esc(cfg.clientsList || "")}.
+              <input class="input" id="sell-phone" placeholder="Téléphone (facultatif)" style="margin-top:8px" inputmode="tel"></div></div>
+          </div>
+          <label class="field full">Paiement<select class="input" id="sell-pay">${cfg.modesPaiement.map(p => `<option>${esc(p)}</option>`).join("")}</select></label>
+          <div class="full totals" id="sell-total"></div>
+          <button type="submit" hidden></button>
+        </form>`,
+      foot: `<button class="btn" data-close>Annuler</button><button class="btn primary lg" id="sell-ok">${ICON.cart} Vendre</button>`
+    });
+    const qtyI = $("#sell-qty", m), priceI = $("#sell-price", m), clientI = $("#sell-client", m);
+    const read = () => ({ qty: parseInt(qtyI.value, 10) || 0, price: parseFloat(String(priceI.value).replace(",", ".")) });
+    const isNewClient = () => {
+      const v = clientI.value.trim();
+      return canAddClient && v && !clients.some(c => norm(c.name) === norm(v)) && norm(v) !== norm(defClient);
     };
-    box.onchange = e => {
-      if (e.target.id === "cart-client") state.cartClient = e.target.value;
-      if (e.target.id === "cart-pay") state.cartPay = e.target.value;
-      if (e.target.matches("[data-qty]")) {
-        const line = state.cart.find(l => l.id === e.target.closest("[data-line]").dataset.line);
-        const a = state.articles.find(x => x.id === line.id);
-        let q = Math.max(1, parseInt(e.target.value, 10) || 1);
-        if (hasStock() && q > artStock(a)) { q = artStock(a); toast(`Stock disponible : ${int(q)}.`, "bad"); }
-        line.qty = q; renderCart();
-      }
+    const update = () => {
+      const { qty, price } = read();
+      const t = taxes(Math.max(0, qty) * (isNaN(price) ? 0 : price));
+      $("#sell-total", m).innerHTML = (cfg.tva ? `<span class="muted">Total HT</span><span class="num">${money(t.ht)}</span><span class="muted">TVA ${cfg.tva} %</span><span class="num">${money(t.tva)}</span>` : "") +
+        `<span class="grand">Total TTC</span><span class="num grand">${money(t.ttc)}</span>`;
+      $("#sell-new", m).hidden = !isNewClient();
     };
-  }
+    update();
+    m.querySelectorAll("[data-d]").forEach(b => b.addEventListener("click", () => {
+      let q = (parseInt(qtyI.value, 10) || 1) + parseInt(b.dataset.d, 10);
+      q = Math.max(1, Math.min(q, isFinite(stockMax) ? stockMax : q));
+      qtyI.value = q; update();
+    }));
+    [qtyI, priceI, clientI].forEach(i => i.addEventListener("input", update));
+    setTimeout(() => qtyI.select(), 60);
 
-  async function checkout(btn) {
-    if (!state.cart.length) return;
-    const client = ($("#cart-client").value || "").trim() || "Client comptoir";
-    const pay = $("#cart-pay").value;
-    busy(btn, true, "Enregistrement…");
-    try {
-      // 1. Vérification du stock à jour sur SharePoint
-      const fresh = {};
-      for (const l of state.cart) {
-        const a = await DS.getArticle(l.id);
-        fresh[l.id] = a;
-        if (hasStock() && (+a[state.map.stock] || 0) < l.qty)
-          throw new Error(`Stock insuffisant pour « ${artName(a)} » : ${int(a[state.map.stock])} disponible(s).`);
-      }
-      // 2. Enregistrement des lignes et mise à jour du stock
-      const d = new Date();
-      const num = "V" + d.getFullYear() + String(d.getMonth() + 1).padStart(2, "0") + String(d.getDate()).padStart(2, "0") +
-        "-" + String(d.getHours()).padStart(2, "0") + String(d.getMinutes()).padStart(2, "0") + String(d.getSeconds()).padStart(2, "0") +
-        Math.random().toString(36).slice(2, 4).toUpperCase();
-      const created = [];
-      for (const l of state.cart) {
-        const a = fresh[l.id];
-        const v = await DS.createVenteLine({
-          Title: num, ArticleId: parseInt(a.id, 10), Article: artName(a), Reference: String(F(a, "reference") || ""),
-          Quantite: l.qty, PrixUnitaire: l.price, Montant: Math.round(l.qty * l.price * 100) / 100,
-          Client: client, ModePaiement: pay, Vendeur: Auth.userName(), DateVente: d.toISOString()
-        });
-        created.push(v);
-        if (hasStock()) {
-          const ns = (+a[state.map.stock] || 0) - l.qty;
-          await DS.updateArticle(a.id, { [state.map.stock]: ns });
-          const local = state.articles.find(x => x.id === a.id);
-          if (local) local[state.map.stock] = ns;
+    const submit = async () => {
+      const { qty, price } = read();
+      if (qty < 1) { qtyI.focus(); return toast("Quantité invalide.", "bad"); }
+      if (isFinite(stockMax) && qty > stockMax) { qtyI.focus(); return toast(`Stock disponible : ${int(stockMax)}.`, "bad"); }
+      if (isNaN(price) || price < 0) { priceI.focus(); return toast("Prix invalide.", "bad"); }
+      const btn = $("#sell-ok", m);
+      busy(btn, true, "Enregistrement…");
+      try {
+        const fresh = await DS.getArticle(a.id);
+        const stockNow = +fresh[state.map.stock] || 0;
+        if (hasStock() && stockNow < qty) throw new Error(`Stock insuffisant : ${int(stockNow)} disponible(s).`);
+        const typed = clientI.value.trim();
+        const known = clients.find(c => norm(c.name) === norm(typed));
+        const clientName = known ? known.name : (typed || defClient);
+        if (isNewClient()) {
+          try { state.clients.push(await DS.createClient(clientName, $("#sell-phone", m).value.trim())); }
+          catch (e) { toast("Client non ajouté à la liste : " + e.message, "bad"); }
         }
+        const d = new Date(), num = saleNumber(d);
+        const ref = F(a, "reference");
+        const v = await DS.createVenteLine({
+          Title: num, ArticleId: parseInt(a.id, 10), Article: String(artName(a)), Reference: ref == null ? "" : String(ref),
+          Quantite: qty, PrixUnitaire: price, Montant: Math.round(qty * price * 100) / 100,
+          Client: clientName, ModePaiement: $("#sell-pay", m).value, Vendeur: Auth.userName(), DateVente: d.toISOString()
+        });
+        state.ventes.push(v);
+        if (hasStock()) Object.assign(a, await DS.updateArticle(a.id, { [state.map.stock]: stockNow - qty }));
+        closeModal();
+        toast(`Vente ${num} enregistrée.`, "ok");
+        if (currentView() === "articles" && state.refreshArticle) state.refreshArticle(a); else render();
+        showSale(num);
+      } catch (e) {
+        busy(btn, false);
+        toast(e.message, "bad");
       }
-      state.ventes.push(...created);
-      state.cart = []; state.cartClient = "";
-      toast(`Vente ${num} enregistrée.`, "ok");
-      render();
-      showSale(num);
-    } catch (e) {
-      busy(btn, false);
-      toast(e.message, "bad");
-    }
+    };
+    $("#sell-ok", m).addEventListener("click", submit);
+    $("#sell-form", m).addEventListener("submit", e => { e.preventDefault(); submit(); });
   }
 
   /* ============ Détail / ticket de vente ============ */
@@ -710,8 +637,7 @@
     const shownCols = articleColumns();
     // colonnes du tableau : colonnes choisies + CA calculé juste après le prix
     const layout = [];
-    for (const c of shownCols) { layout.push(c); if (hasCA() && c.name === state.map.prix) layout.push(CA_COL); }
-    if (hasCA() && !layout.includes(CA_COL)) layout.push(CA_COL);
+    for (const c of shownCols) layout.push(c);
     const val = (a, c) => (c.virtual ? artCA(a) : a[c.name]);
     if (!f.sort || !layout.some(c => c.name === f.sort)) { f.sort = layout.length ? layout[0].name : ""; f.dir = 1; }
 
@@ -750,15 +676,16 @@
 
     const tdHTML = (a, c) => {
       if (c.virtual) return `<td class="num ca" data-label="${esc(c.displayName)}">${money(artCA(a))}</td>`;
-      const primary = c.name === state.map.designation;
-      return `<td class="editable ${primary ? "primary-cell" : ""} ${isNumCol(c) ? "num" : ""}" data-col="${esc(c.name)}" data-label="${esc(c.displayName)}" title="Cliquer pour modifier">${cellHTML(a, c)}</td>`;
+      // le nom de l'article ouvre la vente ; les autres cellules se modifient sur place
+      if (c.name === state.map.designation) return `<td class="sellable primary-cell" data-sell="${esc(a.id)}" data-label="${esc(c.displayName)}" title="Cliquer pour vendre cet article">${cellHTML(a, c)}</td>`;
+      return `<td class="editable ${isNumCol(c) ? "num" : ""}" data-col="${esc(c.name)}" data-label="${esc(c.displayName)}" title="Cliquer pour modifier">${cellHTML(a, c)}</td>`;
     };
     const rowInner = a => layout.map(c => tdHTML(a, c)).join("") +
-      `<td class="actions"><button class="btn sm icon ghost" data-edit="${esc(a.id)}" title="Formulaire complet" aria-label="Modifier dans un formulaire">${ICON.edit}</button><button class="btn sm icon ghost danger" data-del="${esc(a.id)}" title="Supprimer" aria-label="Supprimer">${ICON.trash}</button></td>`;
+      `<td class="actions"><button class="btn sm icon ghost sell-btn" data-sell="${esc(a.id)}" title="Vendre" aria-label="Vendre">${ICON.cart}</button><button class="btn sm icon ghost" data-edit="${esc(a.id)}" title="Modifier (formulaire complet)" aria-label="Modifier dans un formulaire">${ICON.edit}</button><button class="btn sm icon ghost danger" data-del="${esc(a.id)}" title="Supprimer" aria-label="Supprimer">${ICON.trash}</button></td>`;
     const footHTML = list => `<span>${int(list.length)} article(s) sur ${int(state.articles.length)}</span>` +
       (hasStock() ? `<span>Quantité totale : <strong>${int(list.reduce((t, a) => t + artStock(a), 0))}</strong></span>` : "") +
-      (hasCA() ? `<span>CA total : <strong>${money(list.reduce((t, a) => t + artCA(a), 0))}</strong></span>` : "") +
-      `<span class="muted hide-sm">Cliquez sur une cellule pour la modifier · Entrée = valider · Échap = annuler · Tab = cellule suivante</span>`;
+      (hasCA() ? `<span>Valeur du stock : <strong>${money(list.reduce((t, a) => t + artCA(a), 0))}</strong></span>` : "") +
+      `<span class="muted hide-sm">Cliquez sur un article pour le vendre · sur une autre cellule pour la modifier</span>`;
 
     const drawTable = () => {
       const list = apply();
@@ -776,6 +703,7 @@
       tr.innerHTML = rowInner(a);
       if (flashCol) tr.querySelectorAll(`td[data-col="${CSS.escape(flashCol)}"], td.ca`).forEach(td => td.classList.add("flash"));
     };
+    state.refreshArticle = a => { restoreRow(a, state.map.stock); refreshFoot(); };
 
     /* ---- Édition directe dans le tableau ---- */
     let editing = null;
@@ -880,6 +808,8 @@
     el.onclick = async e => {
       const th0 = e.target.closest("[data-thumb]");
       if (th0) { const a = state.articles.find(x => x.id === th0.dataset.thumb); if (a) return showPhoto(a); }
+      const sell = e.target.closest("[data-sell]");
+      if (sell) { const a = state.articles.find(x => x.id === sell.dataset.sell); if (a) return sellDialog(a); }
       const cell = e.target.closest("td.editable");
       if (cell && !cell.classList.contains("editing")) return startEdit(cell);
       const th = e.target.closest("[data-sort]");

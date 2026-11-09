@@ -39,6 +39,12 @@ window.APP_CONFIG = {
   // Colonnes affichées (dans cet ordre) dans le menu « Articles »
   colonnesArticles: ["Id_article", "Modele", "fournisseur", "Quantite", "Prix", "Caractéristiques", "DATEe", "Nom_article"],
 
+  // Liste des clients (proposés lors d'une vente ; les nouveaux clients y sont ajoutés)
+  clientsList: "Tbl_Client",
+  clientsField: "Nom_client",
+  clientsPhone: "Telephone_client",
+  clientParDefaut: "ANONYME",      // client enregistré si le champ Client est laissé vide
+
   // Liste des catégories (gérée depuis l'écran « Catégories ») et sa colonne contenant le nom
   categoriesList: "Tbl_Calegorie",
   categoriesField: "Nom_Categorie",

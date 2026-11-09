@@ -23,6 +23,8 @@
     { name: "DateVente", dateTime: { format: "dateTime" } }
   ];
 
+  const VENTE_FIELDS = VENTE_COLUMNS.map(c => c.name);
+
   const SYSTEM_COLUMNS = new Set([
     "ContentType", "Attachments", "Edit", "LinkTitle", "LinkTitleNoMenu", "DocIcon",
     "ItemChildCount", "FolderChildCount", "AppAuthor", "AppEditor", "ComplianceAssetId",
@@ -195,12 +197,51 @@
 
       let ventes = [];
       if (this.ventesListId) {
+        // les colonnes de la liste des ventes peuvent avoir des noms internes différents (ex. field_1 … field_10
+        // si la liste a été créée depuis un CSV) : on les retrouve par leur nom affiché
+        const vcols = await this.getAll(`/sites/${this.siteId}/lists/${this.ventesListId}/columns`);
+        this.vmap = { Title: "Title" };
+        for (const L of VENTE_FIELDS) {
+          const c = vcols.find(x => x.name === L) || vcols.find(x => norm(x.displayName) === norm(L));
+          this.vmap[L] = c ? c.name : L;
+        }
         const v = await this.getAll(`/sites/${this.siteId}/lists/${this.ventesListId}/items?$expand=fields&$top=500`);
-        ventes = v.map(it => ({ ...it.fields, id: String(it.id) }));
+        ventes = v.map(it => this.fromVente(it));
       }
-      let categories = null;
+      let categories = null, clients = null;
       try { categories = await this.loadCategories(); } catch (e) { console.warn("Catégories indisponibles", e); }
-      return { columns, articles, ventes, categories, ventesReady: !!this.ventesListId, siteName: this.siteName };
+      try { clients = await this.loadClients(); } catch (e) { console.warn("Clients indisponibles", e); }
+      return { columns, articles, ventes, categories, clients, ventesReady: !!this.ventesListId, siteName: this.siteName };
+    },
+
+    vmap: null,
+    fromVente(it) {
+      const f = it.fields || {}, out = { id: String(it.id), Created: f.Created };
+      for (const L of ["Title"].concat(VENTE_FIELDS)) out[L] = f[(this.vmap || {})[L] || L];
+      return out;
+    },
+    toVente(fields) {
+      const out = {};
+      for (const k of Object.keys(fields)) out[(this.vmap || {})[k] || k] = fields[k];
+      return out;
+    },
+
+    /* ---- Clients (ex. Tbl_Client / Nom_client) ---- */
+    async loadClients() {
+      if (!cfg.clientsList) return null;
+      if (!this.clientsListId) this.clientsListId = await this.findList(cfg.clientsList);
+      if (!this.clientsListId) return null;
+      const its = await this.getAll(`/sites/${this.siteId}/lists/${this.clientsListId}/items?$expand=fields&$top=500`);
+      const nf = cfg.clientsField || "Title", pf = cfg.clientsPhone || "";
+      return its.map(i => ({ id: String(i.id), name: String((i.fields || {})[nf] || "").trim(), phone: pf ? String((i.fields || {})[pf] || "") : "" }))
+        .filter(c => c.name);
+    },
+    async createClient(name, phone) {
+      const nf = cfg.clientsField || "Title", fields = { [nf]: name };
+      if (nf !== "Title") fields.Title = name;
+      if (phone && cfg.clientsPhone) fields[cfg.clientsPhone] = phone;
+      const it = await this.call(`/sites/${this.siteId}/lists/${this.clientsListId}/items`, { method: "POST", body: JSON.stringify({ fields }) });
+      return { id: String(it.id), name, phone: phone || "" };
     },
 
     /* ---- Liste des catégories (ex. Tbl_Calegorie / Nom_Categorie) ---- */
@@ -250,8 +291,8 @@
 
     async createVenteLine(fields) {
       const it = await this.call(`/sites/${this.siteId}/lists/${this.ventesListId}/items`,
-        { method: "POST", body: JSON.stringify({ fields }) });
-      return { ...it.fields, id: String(it.id) };
+        { method: "POST", body: JSON.stringify({ fields: this.toVente(fields) }) });
+      return this.fromVente(it);
     },
     async deleteVenteLine(id) {
       await this.call(`/sites/${this.siteId}/lists/${this.ventesListId}/items/${id}`, { method: "DELETE" });
@@ -349,8 +390,11 @@
         if (!this.db) { this.db = this.seed(); this.persist(); }
       }
       const clone = x => JSON.parse(JSON.stringify(x));
-      return { columns: clone(this.db.columns), articles: this.db.articles.map(a => this.resolve(a)), ventes: clone(this.db.ventes), categories: clone(this.db.categories || []), ventesReady: true, siteName: "Démo" };
+      if (!this.db.clients) this.db.clients = [{ id: "1", name: "ANONYME", phone: "" }, { id: "2", name: "Société Atlas", phone: "0522000000" }];
+      return { columns: clone(this.db.columns), articles: this.db.articles.map(a => this.resolve(a)), ventes: clone(this.db.ventes), categories: clone(this.db.categories || []), clients: clone(this.db.clients), ventesReady: true, siteName: "Démo" };
     },
+    async loadClients() { return JSON.parse(JSON.stringify(this.db.clients || [])); },
+    async createClient(name, phone) { const c = { id: String(Date.now()), name, phone: phone || "" }; this.db.clients.push(c); this.persist(); return { ...c }; },
     async loadCategories() { return JSON.parse(JSON.stringify(this.db.categories || [])); },
     async createCategorie(name) { const c = { id: String(this.db.nextCatId++), name }; this.db.categories.push(c); this.persist(); return { ...c }; },
     async updateCategorie(id, name) { const c = this.db.categories.find(x => x.id === String(id)); if (c) c.name = name; this.persist(); },
