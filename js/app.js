@@ -57,9 +57,93 @@
     ["categorie", ["categorie", "famille", "category", "rayon", "nomarticle", "type"], CAT],
     ["fournisseur", ["fournisseur", "supplier"], CAT],
     ["marque", ["marque", "brand", "fabricant"], CAT],
+    ["photo", ["photo", "image", "img", "picture", "urlphoto"], TXT],
     ["designation", ["modele", "designation", "libelle", "nom", "produit", "title"], TXT]
   ];
-  const FIELD_LABELS = { designation: "Désignation / Modèle", reference: "Référence", categorie: "Catégorie", fournisseur: "Fournisseur", marque: "Marque", prix: "Prix de vente", stock: "Stock (quantité)", seuil: "Seuil d'alerte" };
+  const FIELD_LABELS = { designation: "Désignation / Modèle", reference: "Référence", categorie: "Catégorie", fournisseur: "Fournisseur", marque: "Marque", prix: "Prix de vente", stock: "Stock (quantité)", seuil: "Seuil d'alerte", photo: "Photo (adresse de l'image)" };
+
+  /* ============ Vignettes : photo ou icône « appareil + marque » ============ */
+  const BRANDS = [ // [motif dans le modèle, marque, lettre, teinte]
+    [/\brealme\b/, "Realme", "R", 45], [/\b(honor)\b/, "Honor", "H", 215], [/\b(redmi|xiaomi|poco|mi \d)/, "Xiaomi", "X", 25],
+    [/\b(galaxy|samsung)\b/, "Samsung", "S", 225], [/\b(spark|camon|pova|tecno|pop ?\d)/, "Tecno", "T", 200],
+    [/\bitel\b/, "itel", "I", 350], [/\b(infinix|hot ?\d|smart ?\d)/, "Infinix", "I", 140], [/\b(zte|blade)\b/, "ZTE", "Z", 190],
+    [/\bvivo\b/, "vivo", "V", 230], [/\b(oppo|reno)\b/, "OPPO", "O", 160], [/\bnokia\b/, "Nokia", "N", 210],
+    [/\b(huawei|nova)\b/, "Huawei", "H", 0], [/\b(iphone|ipad|apple)\b/, "Apple", "A", 0], [/\b(motorola|moto)\b/, "Motorola", "M", 260],
+    [/\balcatel\b/, "Alcatel", "A", 205], [/\blenovo\b/, "Lenovo", "L", 0], [/\boraimo\b/, "Oraimo", "O", 95],
+    [/\boryx\b/, "Oryx", "O", 15], [/\byooface\b/, "Yooface", "Y", 285], [/\btp ?-?link\b/, "TP-Link", "T", 175],
+    [/\btenda\b/, "Tenda", "T", 20], [/\b(hp|dell|asus|acer|msi)\b/, "", "", 220]
+  ];
+  const DEVICE_SVG = {
+    mobile: '<svg viewBox="0 0 24 24"><rect x="7" y="2.5" width="10" height="19" rx="2.2"/><path d="M11 18.5h2"/></svg>',
+    tablet: '<svg viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M11 18h2"/></svg>',
+    phone: '<svg viewBox="0 0 24 24"><rect x="7" y="2.5" width="10" height="19" rx="2"/><path d="M9 6.5h6v4H9z"/><path d="M9.5 14h.01M12 14h.01M14.5 14h.01M9.5 17h.01M12 17h.01M14.5 17h.01"/></svg>',
+    laptop: '<svg viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="10" rx="1.5"/><path d="M3 19h18"/></svg>',
+    screen: '<svg viewBox="0 0 24 24"><rect x="6" y="2.5" width="12" height="19" rx="2"/><rect x="8.5" y="5" width="7" height="12" rx=".6"/></svg>',
+    cable: '<svg viewBox="0 0 24 24"><path d="M5 17c0-5 3-5 7-5s7 0 7-5"/><rect x="16.5" y="2" width="5" height="5" rx="1"/><rect x="2.5" y="17" width="5" height="5" rx="1"/></svg>',
+    charger: '<svg viewBox="0 0 24 24"><path d="M9 2v5M15 2v5"/><rect x="6" y="7" width="12" height="7" rx="2"/><path d="M12 14v3a3 3 0 0 0 3 3h3"/></svg>',
+    battery: '<svg viewBox="0 0 24 24"><rect x="3" y="7" width="16" height="10" rx="2"/><path d="M21 11v2M7 10v4M11 10v4"/></svg>',
+    audio: '<svg viewBox="0 0 24 24"><path d="M4 15v-3a8 8 0 0 1 16 0v3"/><rect x="3" y="14" width="4" height="7" rx="1.5"/><rect x="17" y="14" width="4" height="7" rx="1.5"/></svg>',
+    speaker: '<svg viewBox="0 0 24 24"><rect x="5" y="2" width="14" height="20" rx="2.5"/><circle cx="12" cy="14" r="4"/><path d="M12 6.5h.01"/></svg>',
+    memory: '<svg viewBox="0 0 24 24"><path d="M7 2h8l4 4v15a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1z"/><path d="M10 6v3M13 6v3M16 7v2"/></svg>',
+    network: '<svg viewBox="0 0 24 24"><path d="M2 9a15 15 0 0 1 20 0M5 12.5a10 10 0 0 1 14 0M8.5 16a5 5 0 0 1 7 0"/><path d="M12 19.5h.01"/></svg>',
+    mouse: '<svg viewBox="0 0 24 24"><rect x="6" y="3" width="12" height="18" rx="6"/><path d="M12 7v4"/></svg>',
+    keyboard: '<svg viewBox="0 0 24 24"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10"/></svg>',
+    gamepad: '<svg viewBox="0 0 24 24"><path d="M6 8h12a4 4 0 0 1 4 4v2a3 3 0 0 1-5.4 1.8L15 14H9l-1.6 1.8A3 3 0 0 1 2 14v-2a4 4 0 0 1 4-4z"/><path d="M7 11v2M6 12h2M16 11h.01M18 13h.01"/></svg>',
+    watch: '<svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="3"/><path d="M9 6l1-4h4l1 4M9 18l1 4h4l1-4M12 10v2l1.5 1"/></svg>',
+    radio: '<svg viewBox="0 0 24 24"><rect x="2" y="8" width="20" height="13" rx="2"/><path d="M6 8l12-5"/><circle cx="8" cy="14.5" r="2.5"/><path d="M14 13h4M14 16h4"/></svg>',
+    tv: '<svg viewBox="0 0 24 24"><rect x="2" y="7" width="20" height="12" rx="2"/><path d="m8 3 4 4 4-4"/></svg>',
+    mic: '<svg viewBox="0 0 24 24"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v4"/></svg>',
+    other: '<svg viewBox="0 0 24 24"><path d="M21 8 12 3 3 8v8l9 5 9-5z"/><path d="m3 8 9 5 9-5M12 13v8"/></svg>'
+  };
+  function deviceKind(a) {
+    const c = norm(F(a, "categorie"));
+    const rules = [
+      [/afficheur|ecran|lcd|display|incassable/, "screen"], [/smartphone|mobile/, "mobile"], [/tablet/, "tablet"],
+      [/chargeur|adaptateur/, "charger"], [/cable|flex|aux/, "cable"], [/batt|powerbank/, "battery"],
+      [/baf|hautparleur|speaker|enceinte/, "speaker"], [/casque|ecouteur|oraimo|airpod|kit/, "audio"],
+      [/carte|memoire|cleusb|flash/, "memory"], [/router|routeur|wifi|tenda|tplink|network|reseau/, "network"],
+      [/souri|mouse/, "mouse"], [/clavier|keyboard/, "keyboard"], [/manette|gamer|game/, "gamepad"],
+      [/watch|montre/, "watch"], [/radio/, "radio"], [/tvbox|tv/, "tv"], [/micro/, "mic"],
+      [/telephone|phone|gsm|fixe/, "phone"], [/pc|ordinateur|laptop|notebook/, "laptop"]
+    ];
+    for (const [re, kind] of rules) if (re.test(c)) return kind;
+    return "other";
+  }
+  function brandOf(a) {
+    // la marque indiquée dans la catégorie (ex. « AFFICHEUR SAMSUNG ») est prioritaire sur le modèle
+    for (const src of [F(a, "categorie"), artName(a)]) {
+      const s = String(src || "").toLowerCase();
+      for (const [re, label, letter, hue] of BRANDS) if (re.test(s)) return { label, letter: letter || s.trim()[0].toUpperCase(), hue };
+    }
+    const name = String(artName(a) || "").toLowerCase();
+    const first = name.trim()[0];
+    return { label: "", letter: first ? first.toUpperCase() : "?", hue: 220, unknown: true };
+  }
+  function photoUrl(a) {
+    const v = state.map.photo ? String(a[state.map.photo] || "").trim() : "";
+    return /^https?:\/\//i.test(v) ? v : "";
+  }
+  function thumbHTML(a, big) {
+    const kind = deviceKind(a), url = photoUrl(a);
+    const b = brandOf(a);
+    if (b.unknown) { // pas de marque reconnue : couleur selon le type d'article, sans lettre
+      const KH = { screen: 220, mobile: 220, phone: 200, tablet: 175, cable: 30, charger: 45, battery: 95, audio: 285, speaker: 265, memory: 150, network: 190, mouse: 330, keyboard: 330, gamepad: 0, watch: 250, radio: 20, tv: 205, mic: 310 };
+      b.hue = KH[kind] != null ? KH[kind] : 220; b.letter = ""; b.unknown = kind === "other";
+    }
+    const kindLabel = F(a, "categorie") || { mobile: "Smartphone", tablet: "Tablette", phone: "Téléphone", laptop: "Ordinateur" }[kind] || "Article";
+    const tip = [kindLabel, b.label && !norm(kindLabel).includes(norm(b.label)) ? b.label : ""].filter(Boolean).join(" · ") + (url ? " — cliquer pour agrandir" : "");
+    return `<span class="thumb ${big ? "big" : ""} ${b.unknown ? "neutral" : ""}" style="--h:${b.hue}" data-thumb="${esc(a.id)}" title="${esc(tip)}">
+      ${DEVICE_SVG[kind]}${b.letter ? `<span class="thumb-letter">${esc(b.letter)}</span>` : ""}
+      ${url ? `<img src="${esc(url)}" alt="" decoding="async" referrerpolicy="no-referrer" style="opacity:0" onload="this.style.opacity=1" onerror="this.remove()">` : ""}</span>`;
+  }
+  function showPhoto(a) {
+    const url = photoUrl(a);
+    const body = url
+      ? `<div style="text-align:center"><img src="${esc(url)}" alt="${esc(artName(a))}" referrerpolicy="no-referrer" style="max-width:100%;max-height:60vh;object-fit:contain;background:#fff;border-radius:8px"></div>
+         <p class="muted" style="font-size:12px;margin:12px 0 0;word-break:break-all">Source : <a href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(url)}</a></p>`
+      : `<div style="display:flex;gap:16px;align-items:center">${thumbHTML(a, true)}<p class="muted" style="margin:0">Aucune photo pour cet article.${state.map.photo ? ` Renseignez la colonne « ${esc(colLabel(state.map.photo))} » avec l'adresse d'une image.` : " Ajoutez une colonne « Photo » (texte) à la liste pour enregistrer l'adresse d'une image."}</p></div>`;
+    openModal({ title: artName(a), body, size: "sm" });
+  }
 
   /* Retrouve une colonne par nom interne OU nom affiché */
   function findCol(key) {
@@ -229,7 +313,8 @@
     caisse: { title: "Caisse", render: viewCaisse },
     articles: { title: "Articles", render: viewArticles },
     ventes: { title: "Historique des ventes", render: viewVentes },
-    parametres: { title: "Paramètres", render: viewParametres }
+    parametres: { title: "Paramètres", render: viewParametres },
+    photos: { title: "Photos des articles", render: viewPhotos, nav: "articles" }
   };
   function currentView() {
     const k = (location.hash.match(/^#\/(\w+)/) || [])[1];
@@ -240,7 +325,7 @@
     const k = currentView();
     $("#view-title").textContent = VIEWS[k].title;
     document.title = VIEWS[k].title + " · Gestion des ventes IT";
-    $$("#nav a").forEach(a => a.classList.toggle("active", a.dataset.view === k));
+    $$("#nav a").forEach(a => a.classList.toggle("active", a.dataset.view === (VIEWS[k].nav || k)));
     VIEWS[k].render($("#view"));
   }
 
@@ -371,7 +456,7 @@
         const st = stockStatus(a);
         const out = hasStock() && artStock(a) <= 0;
         return `<button class="product" data-add="${esc(a.id)}" ${out ? "disabled" : ""}>
-          <span class="product-name">${esc(artName(a))}</span>
+          <span class="product-top">${thumbHTML(a, true)}<span class="product-name">${esc(artName(a))}</span></span>
           <span class="product-ref">${esc(F(a, "reference") != null ? F(a, "reference") : "")}${(F(a, "marque") || F(a, "fournisseur")) ? " · " + esc(F(a, "marque") || F(a, "fournisseur")) : ""}</span>
           <span class="product-foot"><span class="product-price">${money(artPrice(a))}</span>${hasStock() ? `<span class="badge ${st.cls}">${int(artStock(a))}</span>` : ""}</span>
         </button>`;
@@ -593,6 +678,7 @@
   function cellHTML(a, c) {
     const v = a[c.name];
     const empty = '<span class="muted">—</span>';
+    if (c.name === state.map.designation) return `<span class="name-cell">${thumbHTML(a)}<span class="name-text">${v == null || v === "" ? empty : esc(v)}</span></span>`;
     if (c.name === state.map.prix) return v == null || v === "" ? empty : money(v);
     if (c.name === state.map.stock) { const st = stockStatus(a); return `<span class="badge ${st.cls}" title="${esc(st.label)}">${int(v)}</span>`; }
     if (v == null || v === "") return empty;
@@ -641,6 +727,7 @@
           <div class="search">${ICON.search}<input class="input" id="art-q" type="search" placeholder="Rechercher…" value="${esc(f.q)}"></div>
           ${cats.length ? `<select class="input" id="art-cat" style="width:auto;flex:0 1 190px"><option value="">Toutes catégories</option>${cats.map(c => `<option ${f.cat === c ? "selected" : ""}>${esc(c)}</option>`).join("")}</select>` : ""}
           ${hasStock() ? `<select class="input" id="art-stock" style="width:auto;flex:0 1 160px"><option value="">Tout le stock</option><option value="low" ${f.stock === "low" ? "selected" : ""}>Stock faible</option><option value="out" ${f.stock === "out" ? "selected" : ""}>En rupture</option></select>` : ""}
+          ${state.map.photo ? `<a class="btn" href="#/photos" title="Rechercher des photos par catégorie">${ICON.search}<span class="hide-sm">Photos</span></a>` : ""}
           <button class="btn" id="art-export" title="Exporter en CSV">${ICON.download}<span class="hide-sm">Exporter</span></button>
           <button class="btn primary" id="art-new">${ICON.plus} Nouvel article</button>
         </div>
@@ -777,6 +864,8 @@
       if (e.target.id === "art-stock") { f.stock = e.target.value; drawTable(); }
     };
     el.onclick = async e => {
+      const th0 = e.target.closest("[data-thumb]");
+      if (th0) { const a = state.articles.find(x => x.id === th0.dataset.thumb); if (a) return showPhoto(a); }
       const cell = e.target.closest("td.editable");
       if (cell && !cell.classList.contains("editing")) return startEdit(cell);
       const th = e.target.closest("[data-sort]");
@@ -893,6 +982,218 @@
     };
     $("#art-save", m).addEventListener("click", save);
     $("#art-form", m).addEventListener("submit", e => { e.preventDefault(); save(); });
+  }
+
+  /* ============ Vue : photos (recherche Wikimedia Commons) ============ */
+  // Mots-clés de recherche par catégorie (en anglais : meilleurs résultats sur Commons). Modifiables à l'écran.
+  const PHOTO_QUERIES = {
+    afficheurhuawei: "Huawei smartphone", fficheurhuawei: "Huawei smartphone", afficheurinfinix: "Infinix smartphone",
+    afficheuriphone: "iPhone front", afficheuritel: "itel mobile phone", afficheuroppo: "Oppo smartphone",
+    afficheurrealme: "Realme smartphone", afficheurredmi: "Redmi smartphone", afficheursamsung: "Samsung Galaxy A smartphone",
+    afficheurtecno: "Tecno smartphone", afficheurvivo: "Vivo smartphone",
+    bafbleutout: "Bluetooth speaker", battrie: "mobile phone battery", cable: "USB cable", cable15: "USB cable",
+    cableastro10m: "HDMI cable", cableastro20m: "HDMI cable", cableastro5m: "HDMI cable", cableburnlush3m: "USB charging cable",
+    cablenetwork15m: "Ethernet cable", cabletpciphone: "Lightning cable", cableaux: "3.5 mm audio cable",
+    cartememoire: "microSD card", casque: "headphones", casquebt: "wireless headphones", casquegamer: "gaming headset",
+    chargeur: "USB phone charger", chargeurvoiture: "USB car charger", clavier: "computer keyboard", clewifibt: "USB WiFi adapter",
+    ecouteur: "earphones", ecouteurbt: "wireless earbuds", flexdecharge: "flexible flat cable",
+    incassable: "tempered glass screen protector", manette: "gamepad", micro: "microphone", oraimo: "wireless earbuds", oryx: "mobile phone accessories", cc: "phone accessories",
+    pochette: "phone case", powerbank: "power bank", radio: "portable radio", routertenda: "Tenda router",
+    routertplink: "TP-Link router", sourie: "computer mouse", support: "phone holder", supporttel: "phone stand",
+    supportvoiture: "car phone holder", tendeuse: "hair clipper", tvbox: "Android TV box", watch: "smartwatch",
+    telephone: "feature phone", yooface: "phone accessories"
+  };
+  const cleanModel = s => String(s || "").split("/")[0].replace(/\b\d+\s*(go|gb|g|to|tb)\b/gi, "").replace(/[+]/g, " plus").replace(/\s+/g, " ").trim();
+
+  function photoGroups() {
+    const groups = new Map();
+    for (const a of state.articles) {
+      const cat = String(F(a, "categorie") || "").trim() || "(sans catégorie)";
+      const perModel = /^smartphone$/.test(norm(cat));
+      const label = perModel ? (cleanModel(artName(a)) || artName(a)) : cat;
+      const key = (perModel ? "m:" : "c:") + norm(label);
+      if (!groups.has(key)) {
+        const brand = brandOf(a);
+        const isTab = /tablet/.test(norm(label));
+        const brandWord = isTab ? "android tablet" : (brand.label || label.split(" ")[0] || "").toLowerCase();
+        groups.set(key, {
+          key, label, perModel, items: [],
+          query: perModel ? label : (PHOTO_QUERIES[norm(cat)] || cat),
+          fallback: perModel ? (isTab ? brandWord : brandWord + " smartphone") : "",
+          must: perModel && !isTab ? norm(brandWord) : "" // le nom du fichier doit contenir la marque
+        });
+      }
+      groups.get(key).items.push(a);
+    }
+    return [...groups.values()].sort((x, y) => (x.perModel - y.perModel) || x.label.localeCompare(y.label, "fr"));
+  }
+
+  async function commonsSearch(q, n = 8) {
+    const url = "https://commons.wikimedia.org/w/api.php?action=query&format=json&origin=*&generator=search&gsrnamespace=6" +
+      `&gsrlimit=${n}&gsrsearch=${encodeURIComponent(q + " filetype:bitmap")}&prop=imageinfo&iiprop=url|extmetadata&iiurlwidth=320` +
+      "&iiextmetadatafilter=LicenseShortName|Artist";
+    const res = await fetch(url);
+    if (!res.ok) throw new Error("Wikimedia Commons indisponible (" + res.status + ")");
+    const j = await res.json();
+    const pages = Object.values((j.query && j.query.pages) || {}).sort((a, b) => a.index - b.index);
+    return pages.map(p => {
+      const ii = (p.imageinfo && p.imageinfo[0]) || {};
+      const meta = ii.extmetadata || {};
+      const file = p.title.replace(/^File:/, "");
+      return {
+        thumb: ii.thumburl || ii.url, file,
+        // adresse courte et permanente (redirige vers la vignette 320 px)
+        url: "https://commons.wikimedia.org/wiki/Special:FilePath/" + encodeURIComponent(file.replace(/ /g, "_")) + "?width=320",
+        license: (meta.LicenseShortName && meta.LicenseShortName.value) || "",
+        artist: ((meta.Artist && meta.Artist.value) || "").replace(/<[^>]+>/g, "").trim()
+      };
+    }).filter(x => x.thumb);
+  }
+
+  function viewPhotos(el) {
+    if (!state.map.photo) {
+      el.innerHTML = `<div class="alert warn">${ICON.warn}<div class="grow"><strong>Aucune colonne « Photo » trouvée dans ${esc(cfg.articlesList)}.</strong><br>
+        Ajoutez une colonne « Une ligne de texte » nommée <code>Photo</code> dans SharePoint, puis actualisez.</div></div>`;
+      return;
+    }
+    const groups = photoGroups();
+    const P = state.photoUI || (state.photoUI = { choices: {}, results: {}, queries: {}, replace: false, filter: "todo" });
+    const photoOf = a => String(a[state.map.photo] || "").trim();
+    const todoCount = g => g.items.filter(a => !photoOf(a)).length;
+    const chosenCount = () => Object.values(P.choices).filter(Boolean).length;
+
+    el.innerHTML = `
+      <div class="stack" style="gap:14px">
+        <div class="alert info">${ICON.info}<div class="grow">
+          Une photo par <strong>catégorie</strong> (et par <strong>modèle</strong> pour les smartphones), proposée depuis
+          <a href="https://commons.wikimedia.org" target="_blank" rel="noopener">Wikimedia Commons</a> (images libres de droits).
+          Cliquez sur l'image qui convient, puis <strong>Enregistrer</strong> : l'adresse est écrite dans la colonne « ${esc(colLabel(state.map.photo))} » de chaque article du groupe.
+          <div class="muted" style="font-size:12.5px;margin-top:4px">Si aucune image ne convient, modifiez les mots-clés (en anglais de préférence) et relancez la recherche, ou collez l'adresse d'une image.</div>
+        </div></div>
+        <div class="card"><div class="card-head compact-head">
+          <select class="input" id="ph-filter" style="width:auto;flex:0 1 230px">
+            <option value="todo" ${P.filter === "todo" ? "selected" : ""}>Groupes sans photo</option>
+            <option value="all" ${P.filter === "all" ? "selected" : ""}>Tous les groupes</option>
+          </select>
+          <label class="check" style="font-size:13px"><input type="checkbox" id="ph-replace" ${P.replace ? "checked" : ""}> Remplacer les photos existantes</label>
+          <span class="spacer"></span>
+          <button class="btn" id="ph-searchall">${ICON.search} Rechercher tout</button>
+          <button class="btn primary" id="ph-save">Enregistrer (<span id="ph-count">${chosenCount()}</span>)</button>
+        </div>
+        <div id="ph-progress" class="muted" style="padding:6px 16px;font-size:13px"></div>
+        <div id="ph-list"></div></div>
+      </div>`;
+
+    const visible = () => groups.filter(g => P.filter === "all" || todoCount(g) > 0);
+    const cardHTML = g => {
+      const res = P.results[g.key];
+      const chosen = P.choices[g.key];
+      const current = g.items.map(photoOf).find(Boolean);
+      const q = P.queries[g.key] != null ? P.queries[g.key] : g.query;
+      return `<div class="ph-group" data-key="${esc(g.key)}">
+        <div class="ph-head">
+          ${thumbHTML(g.items[0], true)}
+          <div class="ph-title"><strong>${esc(g.label)}</strong>
+            <span class="muted">${g.perModel ? "Smartphone · " : ""}${g.items.length} article(s)${todoCount(g) < g.items.length ? ` · ${g.items.length - todoCount(g)} avec photo` : ""}</span></div>
+          <div class="ph-search"><input class="input" data-q value="${esc(q)}" aria-label="Mots-clés"><button class="btn sm" data-search>${ICON.search}</button></div>
+        </div>
+        <div class="ph-cands">
+          ${res === "loading" ? `<span class="muted"><span class="spinner"></span> Recherche…</span>`
+            : res && res.error ? `<span class="muted">${esc(res.error)}</span>`
+            : res ? (res.length ? res.map(r => `<button class="ph-cand ${chosen === r.url ? "on" : ""}" data-pick="${esc(r.url)}" title="${esc(r.file + (r.license ? " — " + r.license : "") + (r.artist ? " — " + r.artist : ""))}"><img src="${esc(r.thumb)}" alt="" referrerpolicy="no-referrer"></button>`).join("") : `<span class="muted">Aucune image trouvée — essayez d'autres mots-clés.</span>`)
+            : `<span class="muted">Pas encore recherché.</span>`}
+          ${current && !chosen ? `<span class="ph-current" title="Photo actuelle"><img src="${esc(current)}" alt="" referrerpolicy="no-referrer"></span>` : ""}
+        </div>
+        <div class="ph-foot">
+          <input class="input" data-url placeholder="… ou collez l'adresse d'une image (https://…)" value="${chosen && !(res && res.some && res.some(r => r.url === chosen)) ? esc(chosen) : ""}">
+          ${chosen ? `<button class="btn sm ghost" data-clear>Annuler le choix</button>` : ""}
+        </div>
+      </div>`;
+    };
+    const draw = () => {
+      const list = visible();
+      $("#ph-list").innerHTML = list.length ? list.map(cardHTML).join("") : `<div class="empty">Tous les articles ont une photo. Choisissez « Tous les groupes » pour les modifier.</div>`;
+      $("#ph-count").textContent = chosenCount();
+    };
+    const redraw = key => {
+      const g = groups.find(x => x.key === key), node = $(`.ph-group[data-key="${CSS.escape(key)}"]`);
+      if (g && node) node.outerHTML = cardHTML(g);
+      $("#ph-count").textContent = chosenCount();
+    };
+    async function search(g) {
+      P.results[g.key] = "loading"; redraw(g.key);
+      const q = P.queries[g.key] != null ? P.queries[g.key] : g.query;
+      try {
+        const ok = x => !g.must || q !== g.query || norm(x.file).includes(g.must);
+        let r = (await commonsSearch(q, g.must ? 16 : 8)).filter(ok);
+        if (r.length < 3 && g.fallback && q === g.query) {
+          const seen = new Set(r.map(x => x.file));
+          r = r.concat((await commonsSearch(g.fallback, 16)).filter(x => ok(x) && !seen.has(x.file)));
+        }
+        P.results[g.key] = r.slice(0, 8);
+      } catch (e) { P.results[g.key] = { error: e.message }; }
+      redraw(g.key);
+    }
+    draw();
+
+    el.onclick = async e => {
+      const card = e.target.closest(".ph-group");
+      const g = card && groups.find(x => x.key === card.dataset.key);
+      if (g && e.target.closest("[data-search]")) { P.queries[g.key] = card.querySelector("[data-q]").value.trim(); return search(g); }
+      if (g && e.target.closest("[data-pick]")) {
+        const u = e.target.closest("[data-pick]").dataset.pick;
+        P.choices[g.key] = P.choices[g.key] === u ? "" : u; return redraw(g.key);
+      }
+      if (g && e.target.closest("[data-clear]")) { P.choices[g.key] = ""; return redraw(g.key); }
+      if (e.target.closest("#ph-searchall")) {
+        const btn = e.target.closest("#ph-searchall"); btn.disabled = true;
+        const todo = visible().filter(x => !Array.isArray(P.results[x.key]));
+        let i = 0;
+        const worker = async () => { while (i < todo.length) { const g2 = todo[i++]; $("#ph-progress").textContent = `Recherche ${i} / ${todo.length}…`; await search(g2); } };
+        await Promise.all([worker(), worker(), worker()]);
+        $("#ph-progress").textContent = `Recherche terminée (${todo.length} groupe(s)). Cliquez sur l'image qui convient pour chaque groupe.`;
+        btn.disabled = false; return;
+      }
+      if (e.target.closest("#ph-save")) {
+        const jobs = [];
+        for (const g2 of groups) {
+          const u = P.choices[g2.key];
+          if (!u) continue;
+          if (u.length > 255) { toast(`Adresse trop longue pour « ${g2.label} » (255 caractères max).`, "bad"); continue; }
+          for (const a of g2.items) if (P.replace || !photoOf(a)) jobs.push([a, u]);
+        }
+        if (!jobs.length) return toast("Aucun choix à enregistrer.", "bad");
+        if (!(await confirmBox("Enregistrer les photos", `${jobs.length} article(s) vont recevoir une photo dans SharePoint. Continuer ?`, "Enregistrer", false))) return;
+        const btn = $("#ph-save"); busy(btn, true, "Enregistrement…");
+        let done = 0, errors = 0, k = 0;
+        const worker = async () => {
+          while (k < jobs.length) {
+            const [a, u] = jobs[k++];
+            try { Object.assign(a, await DS.updateArticle(a.id, { [state.map.photo]: u })); } catch (err) { errors++; console.warn(err); }
+            done++; $("#ph-progress").textContent = `Enregistrement ${done} / ${jobs.length}…`;
+          }
+        };
+        await Promise.all([worker(), worker(), worker(), worker()]);
+        P.choices = {};
+        toast(errors ? `${done - errors} photo(s) enregistrée(s), ${errors} erreur(s).` : `${done} photo(s) enregistrée(s).`, errors ? "bad" : "ok");
+        $("#ph-progress").textContent = "";
+        return viewPhotos(el);
+      }
+    };
+    el.onchange = e => {
+      if (e.target.id === "ph-filter") { P.filter = e.target.value; draw(); }
+      if (e.target.id === "ph-replace") P.replace = e.target.checked;
+      const card = e.target.closest(".ph-group");
+      if (card && e.target.matches("[data-q]")) P.queries[card.dataset.key] = e.target.value.trim();
+      if (card && e.target.matches("[data-url]")) {
+        const v = e.target.value.trim();
+        if (v && !/^https?:\/\//i.test(v)) return toast("L'adresse doit commencer par https://", "bad");
+        P.choices[card.dataset.key] = v; redraw(card.dataset.key);
+      }
+    };
+    el.onkeydown = e => {
+      if (e.key === "Enter" && e.target.matches("[data-q]")) { e.preventDefault(); e.target.closest(".ph-group").querySelector("[data-search]").click(); }
+    };
   }
 
   /* ============ Vue : historique des ventes ============ */

@@ -245,7 +245,7 @@
   /* ---------------------------------------------------------------- */
   /*  Mode démo (localStorage) — reproduit la structure de Tbl_article */
   /* ---------------------------------------------------------------- */
-  const DEMO_KEY = "ventesit-demo-v2";
+  const DEMO_KEY = "ventesit-demo-v3";
   const DemoService = {
     mode: "demo",
     db: null,
@@ -303,7 +303,8 @@
           { name: "Prix", displayName: "Prix", type: "number", required: true },
           { name: "Caract_x00e9_ristiques", displayName: "Caractéristiques", type: "text" },
           { name: "DATEe", displayName: "DATEe", type: "dateTime" },
-          { name: "Nom_article", displayName: "Nom_article", type: "lookup", lookup: { listId: "demo", columnName: "Title", multi: false }, options: cats }
+          { name: "Nom_article", displayName: "Nom_article", type: "lookup", lookup: { listId: "demo", columnName: "Title", multi: false }, options: cats },
+          { name: "Photo", displayName: "Photo", type: "text" }
         ]
       };
     },

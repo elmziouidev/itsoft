@@ -169,6 +169,46 @@ table.table { width: 100%; border-collapse: collapse; }
 .table th.sortable { cursor: pointer; user-select: none; }
 .table th.sortable:hover { color: var(--text); }
 
+/* Vignettes articles : photo, ou icône « appareil + marque » */
+.thumb {
+  --h: 220; position: relative; display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0;
+  width: 28px; height: 28px; border-radius: 7px; cursor: zoom-in; overflow: visible;
+  background: hsl(var(--h) 75% 94%); color: hsl(var(--h) 55% 30%);
+}
+.thumb svg { width: 17px; height: 17px; stroke-width: 1.8; }
+.thumb.neutral { background: var(--surface-2); color: var(--muted); }
+.thumb-letter {
+  position: absolute; right: -3px; bottom: -3px; min-width: 13px; height: 13px; padding: 0 2px; border-radius: 4px;
+  font-size: 9px; font-weight: 700; line-height: 13px; text-align: center; background: hsl(var(--h) 55% 30%); color: #fff;
+}
+.thumb.neutral .thumb-letter { background: var(--muted); }
+.thumb img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #fff; border-radius: inherit; box-shadow: 0 0 0 1px var(--border); }
+.thumb.big { width: 46px; height: 46px; border-radius: 10px; }
+.thumb.big svg { width: 26px; height: 26px; }
+.thumb.big .thumb-letter { min-width: 16px; height: 16px; line-height: 16px; font-size: 10.5px; }
+.name-cell { display: inline-flex; align-items: center; gap: 9px; }
+.product-top { display: flex; align-items: center; gap: 10px; }
+.product-top .thumb { cursor: inherit; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .thumb:not(.neutral) { background: hsl(var(--h) 35% 22%); color: hsl(var(--h) 70% 82%); } }
+:root[data-theme="dark"] .thumb:not(.neutral) { background: hsl(var(--h) 35% 22%); color: hsl(var(--h) 70% 82%); }
+
+/* Écran Photos */
+.ph-group { padding: 12px 16px; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 10px; }
+.ph-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.ph-title { display: flex; flex-direction: column; min-width: 160px; flex: 1; font-size: 14px; }
+.ph-title .muted { font-size: 12.5px; }
+.ph-search { display: flex; gap: 6px; flex: 1 1 280px; max-width: 420px; }
+.ph-search .input { min-height: 34px; }
+.ph-cands { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; min-height: 40px; }
+.ph-cand, .ph-current { width: 92px; height: 92px; padding: 0; border-radius: 8px; border: 2px solid var(--border); background: #fff; cursor: pointer; overflow: hidden; }
+.ph-cand img, .ph-current img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.ph-cand:hover { border-color: var(--primary); }
+.ph-cand.on { border-color: var(--success); box-shadow: 0 0 0 3px var(--success-soft); }
+.ph-current { cursor: default; border-style: dashed; }
+.ph-foot { display: flex; gap: 8px; align-items: center; }
+.ph-foot .input { min-height: 32px; font-size: 13px; max-width: 520px; }
+@media (max-width: 560px) { .ph-cand, .ph-current { width: 74px; height: 74px; } }
+
 /* Tableau des articles : compact, en-tête figé, édition directe */
 .table-scroll { overflow: auto; max-height: calc(100vh - 215px); }
 .table-scroll thead th { position: sticky; top: 0; z-index: 2; box-shadow: inset 0 -1px 0 var(--border); }

@@ -32,7 +32,8 @@ window.APP_CONFIG = {
     marque: "",
     prix: "Prix",
     stock: "Quantite",
-    seuil: ""
+    seuil: "",
+    photo: "Photo"           // colonne « Une ligne de texte » contenant l'adresse (https://…) de la photo
   },
 
   // Colonnes affichées (dans cet ordre) dans le menu « Articles »
