@@ -11,8 +11,8 @@
  *  tenantId : "ID de l'annuaire (locataire)" de votre organisation.
  */
 window.APP_CONFIG = {
-  clientId: "",
-  tenantId: "",
+  clientId: "1842f7d7-b52e-469c-805c-c18fd559e329",
+  tenantId: "72182bf9-410a-4e42-b9f0-4f740b3959e9",
 
   // Site SharePoint contenant les données
   siteHost: "ecolesuperieurederabat.sharepoint.com",
@@ -36,7 +36,7 @@ window.APP_CONFIG = {
   },
 
   // Paramètres commerciaux
-  nomEntreprise: "Magasin Informatique",
+  nomEntreprise: "ITSoft",
   devise: "MAD",
   tva: 20,                 // en %, mettre 0 pour désactiver
   prixIncluentTVA: false,  // true si les prix de Tbl_article sont TTC
