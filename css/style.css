@@ -291,7 +291,7 @@ table.table { width: 100%; border-collapse: collapse; }
 .btn.buy-btn:hover { filter: brightness(1.08); }
 .rcv-btn.in-cart { background: var(--warning-soft); }
 .rcv-btn { position: relative; }
-.rcv-head, .rcv-row { grid-template-columns: auto minmax(0, 1fr) auto 92px 104px 96px auto; }
+.rcv-head, .cart-row.rcv-row { grid-template-columns: 30px minmax(0, 1fr) 112px 92px 92px 100px 32px; }
 .rcv-head { display: grid; gap: 10px; padding: 6px 10px; font-size: 11px; text-transform: uppercase; letter-spacing: .03em; color: var(--muted); background: var(--surface-2); border-bottom: 1px solid var(--border); }
 .modal.cart:has(.rcv-row) { width: min(820px, 100%); }
 .cart-bar-ico { position: relative; display: inline-flex; color: var(--primary); }
@@ -306,7 +306,7 @@ table.table { width: 100%; border-collapse: collapse; }
 @media print { .cart-dock { display: none !important; } }
 @media (max-width: 560px) {
   .rcv-head { display: none; }
-  .rcv-row { grid-template-columns: auto minmax(0, 1fr) auto; grid-template-areas: "ico name rm" "qty price sell" ". . sub"; row-gap: 8px; }
+  .cart-row.rcv-row { grid-template-columns: auto minmax(0, 1fr) auto; grid-template-areas: "ico name rm" "qty price sell" ". . sub"; row-gap: 8px; }
   .rcv-row .rcv-sell { grid-area: sell; }
 }
 

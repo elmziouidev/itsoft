@@ -640,7 +640,6 @@
     if (ex) ex.qty++; else state.cart.push({ id, qty: 1, price: artPrice(a) });
     cartSave(); renderCartBar();
     if (currentView() === "articles" && state.refreshArticle) state.refreshArticle(a, true);
-    if (!silent) toast(`« ${artName(a)} » ajouté au panier (${cartQty(id)}).`, "ok");
     return true;
   }
   function cartClear() {
@@ -758,7 +757,16 @@
         l.qty = q;
       }
       if (e.target.matches("[data-price]")) l.price = Math.max(0, parseFloat(String(e.target.value).replace(",", ".")) || 0);
-      changed(l.id); drawLines();
+      changed(l.id); if (e.target.matches("[data-qty]")) drawLines(); else totals();
+    });
+    // mise à jour en direct pendant la saisie (sans redessiner les lignes, pour garder le curseur)
+    $("#cart-lines", m).addEventListener("input", e => {
+      const row = e.target.closest(".cart-row"); if (!row) return;
+      const { l } = cartLines()[+row.dataset.i];
+      if (e.target.matches("[data-qty]")) { const q = parseInt(e.target.value, 10); if (q > 0) l.qty = q; }
+      if (e.target.matches("[data-price]")) { const v = parseFloat(String(e.target.value).replace(",", ".")); l.price = isNaN(v) ? 0 : Math.max(0, v); }
+      row.querySelector(".cart-sub").textContent = money(l.qty * l.price);
+      totals(); cartSave(); renderCartBar();
     });
     clientI.addEventListener("input", totals);
     setTimeout(() => clientI.focus(), 60);
@@ -1837,7 +1845,6 @@
     else { const lp = lastPurchase(a); state.pcart.push({ id, qty: q, price: lp ? +lp.PrixAchat : "", sell: "" }); }
     pcartSave(); renderCartBar();
     if (currentView() === "articles" && state.refreshArticle) state.refreshArticle(a, true);
-    if (!silent) toast(`« ${artName(a)} » ajouté au bon de réception (${pcartQty(id)}).`, "ok");
   }
   function pcartClear() {
     const ids = state.pcart.map(l => l.id);
@@ -1904,7 +1911,20 @@
       if (e.target.matches("[data-qty]")) l.qty = Math.max(1, parseInt(e.target.value, 10) || 1);
       if (e.target.matches("[data-price]")) l.price = e.target.value === "" ? "" : Math.max(0, num(e.target.value) || 0);
       if (e.target.matches("[data-sell]")) l.sell = e.target.value === "" ? "" : Math.max(0, num(e.target.value) || 0);
-      changed(l.id); drawLines();
+      changed(l.id); if (e.target.matches("[data-qty]")) drawLines(); else totals();
+    });
+
+    // mise à jour en direct pendant la saisie (sans redessiner les lignes, pour garder le curseur)
+    $("#rcv-lines", m).addEventListener("input", e => {
+      const row = e.target.closest(".rcv-row"); if (!row) return;
+      const { l, a } = pcartLines()[+row.dataset.i];
+      if (e.target.matches("[data-qty]")) { const q = parseInt(e.target.value, 10); if (q > 0) l.qty = q; }
+      if (e.target.matches("[data-price]")) l.price = e.target.value === "" ? "" : Math.max(0, num(e.target.value) || 0);
+      if (e.target.matches("[data-sell]")) l.sell = e.target.value === "" ? "" : Math.max(0, num(e.target.value) || 0);
+      row.querySelector(".cart-sub").textContent = money(l.qty * (num(l.price) || 0));
+      const info = row.querySelector(".cart-name .muted");
+      if (info && hasStock()) info.textContent = `${F(a, "categorie") || ""} · stock ${int(artStock(a))} → ${int(artStock(a) + l.qty)}`;
+      totals(); pcartSave(); renderCartBar();
     });
 
     const submit = async () => {
@@ -2275,7 +2295,7 @@
       if (e.target.closest("[data-addall]")) {
         let n = 0;
         $$("tr[data-i]", card).forEach(r => { const q = parseInt(r.querySelector("[data-q]").value, 10) || 0; if (q > 0) { pcartAdd(g.items[+r.dataset.i].a, q, true); n++; } });
-        return toast(`${n} article(s) de ${g.sup} ajouté(s) au bon de réception.`, "ok");
+        return n;
       }
       if (e.target.closest("[data-print]")) {
         const qtys = $$("tr[data-i]", card).map(r => parseInt(r.querySelector("[data-q]").value, 10) || 0);
