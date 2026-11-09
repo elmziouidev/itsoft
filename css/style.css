@@ -231,7 +231,7 @@ table.table { width: 100%; border-collapse: collapse; }
 .tabs { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 .tab { padding: 8px 14px; border-radius: 999px; border: 1px solid var(--border); background: var(--surface); color: var(--text); font: inherit; font-weight: 600; cursor: pointer; }
 .tab.on { background: var(--primary); border-color: var(--primary); color: var(--primary-ink); }
-.rcv-btn { font-size: 15px; }
+.btn.rcv-btn, .table.compact .btn.sm.rcv-btn { font-size: 22px; line-height: 1; padding: 0; }
 .sugg-list { display: flex; flex-direction: column; }
 .sugg { display: flex; align-items: center; gap: 10px; padding: 8px 16px; border-top: 1px solid var(--border); flex-wrap: wrap; }
 .sugg-names { display: flex; gap: 6px; flex-wrap: wrap; flex: 1 1 260px; }
