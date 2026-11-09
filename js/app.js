@@ -672,13 +672,16 @@
     dock.innerHTML = (ps.length ? `<div class="cart-bar buy">
         <span class="cart-bar-ico">📦<span class="cart-badge">${int(pnb)}</span></span>
         <span class="cart-bar-txt"><strong>Bon de réception</strong><span>${int(ps.length)} article(s) · ${money(ptot)}</span></span>
-        <button class="btn sm ghost" data-pcart-clear title="Vider le bon de réception">Vider</button>
-        <button class="btn buy-btn" data-pcart-open>Valider la réception</button></div>` : "") +
+        <button class="btn sm ghost cart-clear" data-pcart-clear title="Vider le bon de réception" aria-label="Vider le bon de réception">${ICON.trash}<span class="lbl">Vider</span></button>
+        <button class="btn buy-btn" data-pcart-open><span class="lbl-l">Valider la réception</span><span class="lbl-s">Réceptionner</span></button></div>` : "") +
       (ls.length ? `<div class="cart-bar">
         <span class="cart-bar-ico">${ICON.cart}<span class="cart-badge">${int(nb)}</span></span>
         <span class="cart-bar-txt"><strong>Panier</strong><span>${int(ls.length)} article(s) · ${money(tot)}</span></span>
-        <button class="btn sm ghost" data-cart-clear title="Vider le panier">Vider</button>
-        <button class="btn primary" data-cart-open>Valider la vente</button></div>` : "");
+        <button class="btn sm ghost cart-clear" data-cart-clear title="Vider le panier" aria-label="Vider le panier">${ICON.trash}<span class="lbl">Vider</span></button>
+        <button class="btn primary" data-cart-open><span class="lbl-l">Valider la vente</span><span class="lbl-s">Vendre</span></button></div>` : "");
+    // réserve la place des barres en bas de page pour qu'elles ne cachent pas les dernières lignes
+    document.body.classList.toggle("has-dock", !dock.hidden);
+    requestAnimationFrame(() => document.documentElement.style.setProperty("--dock-h", (dock.hidden ? 0 : dock.offsetHeight) + "px"));
   }
 
   /* Fenêtre de validation du panier : quantités, prix, client, paiement */
