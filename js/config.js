@@ -48,6 +48,10 @@ window.APP_CONFIG = {
   // Liste des catégories (gérée depuis l'écran « Catégories ») et sa colonne contenant le nom
   categoriesList: "Tbl_Calegorie",
   categoriesField: "Nom_Categorie",
+  categoriesSeuilField: "Seuil_alerte", // colonne Nombre de la liste des catégories : seuil de stock faible
+
+  // Afficher la section technique « Colonnes de Tbl_article » dans Paramètres
+  afficherColonnes: false,
 
   // Relation Tbl_article → Tbl_categorie.
   // Utilisée seulement si « Nom_article » est une colonne Nombre contenant l'identifiant

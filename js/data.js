@@ -257,8 +257,30 @@
       if (!this.categoriesListId) this.categoriesListId = await this.findList(cfg.categoriesList);
       if (!this.categoriesListId) return null;
       const f = cfg.categoriesField || "Title";
-      const its = await this.getAll(this.catPath(`?$expand=fields($select=${f})&$top=500`));
-      return its.map(i => ({ id: String(i.id), name: String((i.fields || {})[f] || "").replace(/\s*[\r\n]+\s*/g, " ").trim() }));
+      if (this.catSeuilField === undefined) { // colonne « seuil d'alerte » de la liste des catégories (facultative)
+        const cols = await this.getAll(`/sites/${this.siteId}/lists/${this.categoriesListId}/columns?$select=name,displayName`);
+        const want = cfg.categoriesSeuilField || "Seuil_alerte";
+        const c = cols.find(x => x.name === want) || cols.find(x => norm(x.displayName) === norm(want));
+        this.catSeuilField = c ? c.name : null;
+      }
+      const sel = [f, this.catSeuilField].filter(Boolean).join(",");
+      const its = await this.getAll(this.catPath(`?$expand=fields($select=${sel})&$top=500`));
+      return its.map(i => {
+        const fl = i.fields || {}, s = this.catSeuilField ? fl[this.catSeuilField] : null;
+        return { id: String(i.id), name: String(fl[f] || "").replace(/\s*[\r\n]+\s*/g, " ").trim(), seuil: s == null || s === "" ? null : +s };
+      });
+    },
+    catSeuilField: undefined,
+    hasCatSeuil() { return !!this.catSeuilField; },
+    async setCategorieSeuil(id, value) {
+      await this.call(this.catPath(`/${id}/fields`), { method: "PATCH", body: JSON.stringify({ [this.catSeuilField]: value }) });
+    },
+    async createSeuilColumn() {
+      const name = cfg.categoriesSeuilField || "Seuil_alerte";
+      await this.call(`/sites/${this.siteId}/lists/${this.categoriesListId}/columns`, {
+        method: "POST", body: JSON.stringify({ name, displayName: name, number: { decimalPlaces: "none", minimum: 0 } })
+      }, ["Sites.Manage.All"]);
+      this.catSeuilField = name;
     },
     async createCategorie(name) {
       const it = await this.call(this.catPath(), { method: "POST", body: JSON.stringify({ fields: this.catFields(name) }) });
@@ -396,6 +418,9 @@
     async loadClients() { return JSON.parse(JSON.stringify(this.db.clients || [])); },
     async createClient(name, phone) { const c = { id: String(Date.now()), name, phone: phone || "" }; this.db.clients.push(c); this.persist(); return { ...c }; },
     async loadCategories() { return JSON.parse(JSON.stringify(this.db.categories || [])); },
+    hasCatSeuil() { return true; },
+    async setCategorieSeuil(id, value) { const c = this.db.categories.find(x => x.id === String(id)); if (c) c.seuil = value; this.persist(); },
+    async createSeuilColumn() {},
     async createCategorie(name) { const c = { id: String(this.db.nextCatId++), name }; this.db.categories.push(c); this.persist(); return { ...c }; },
     async updateCategorie(id, name) { const c = this.db.categories.find(x => x.id === String(id)); if (c) c.name = name; this.persist(); },
     async deleteCategorie(id) { this.db.categories = this.db.categories.filter(x => x.id !== String(id)); this.persist(); },

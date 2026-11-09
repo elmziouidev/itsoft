@@ -192,6 +192,11 @@ table.table { width: 100%; border-collapse: collapse; }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .thumb:not(.neutral) { background: hsl(var(--h) 35% 22%); color: hsl(var(--h) 70% 82%); } }
 :root[data-theme="dark"] .thumb:not(.neutral) { background: hsl(var(--h) 35% 22%); color: hsl(var(--h) 70% 82%); }
 
+/* Seuils par catégorie */
+.seuil-input { width: 90px; min-width: 0; text-align: right; border-color: var(--border); }
+.seuil-input:focus { border-color: var(--primary); }
+#seuil-table tr.changed td { background: var(--warning-soft); }
+
 /* Vente rapide */
 .table.compact td.sellable { cursor: pointer; font-weight: 600; }
 .table.compact td.sellable:hover { color: var(--primary); background: var(--primary-soft); }

@@ -199,7 +199,22 @@
   const artPrice = a => +F(a, "prix") || 0;
   const hasStock = () => !!state.map.stock;
   const artStock = a => +F(a, "stock") || 0;
-  const artSeuil = a => (state.map.seuil && F(a, "seuil") != null && F(a, "seuil") !== "") ? +F(a, "seuil") : cfg.seuilAlerteDefaut;
+  /* Seuil de stock faible : colonne « seuil » de l'article, sinon seuil de sa catégorie, sinon seuil par défaut */
+  let _seuilCache = { src: null, map: new Map() };
+  function catSeuilOf(cat) {
+    if (!cat || !state.categories) return null;
+    if (_seuilCache.src !== state.categories) {
+      _seuilCache = { src: state.categories, map: new Map() };
+      for (const c of state.categories) if (c.seuil != null && c.seuil !== "" && !isNaN(c.seuil)) _seuilCache.map.set(norm(c.name), +c.seuil);
+    }
+    const v = _seuilCache.map.get(norm(cat));
+    return v == null ? null : v;
+  }
+  const artSeuil = a => {
+    if (state.map.seuil && F(a, "seuil") != null && F(a, "seuil") !== "") return +F(a, "seuil");
+    const cs = catSeuilOf(F(a, "categorie"));
+    return cs != null ? cs : cfg.seuilAlerteDefaut;
+  };
   const colLabel = name => (state.columns.find(c => c.name === name) || {}).displayName || name;
   function stockStatus(a) {
     if (!hasStock()) return { cls: "", label: "—" };
@@ -1370,6 +1385,47 @@
   }
 
   /* ============ Vue : paramètres ============ */
+  const lowBadge = n => n ? `<span class="badge warn">${int(n)}</span>` : `<span class="badge ok">0</span>`;
+
+  /* Section « Seuils d'alerte de stock par catégorie » */
+  function seuilsSectionHTML() {
+    if (!hasStock() || !state.map.categorie) return "";
+    const head = `<div class="card-head"><h2>Seuils d'alerte de stock par catégorie</h2>
+      <span class="muted" style="font-size:13px">Stock faible si quantité ≤ seuil · vide = seuil par défaut (${int(cfg.seuilAlerteDefaut)})</span></div>`;
+    if (!Array.isArray(state.categories))
+      return `<div class="card">${head}<div class="card-pad"><div class="alert warn">${ICON.warn}<div class="grow">La liste des catégories « ${esc(cfg.categoriesList || "")} » est introuvable.</div></div></div></div>`;
+    if (!DS.hasCatSeuil()) {
+      const col = cfg.categoriesSeuilField || "Seuil_alerte";
+      return `<div class="card">${head}<div class="card-pad"><div class="alert info">${ICON.info}<div class="grow">
+        Pour enregistrer un seuil par catégorie, la liste <strong>${esc(cfg.categoriesList)}</strong> a besoin d'une colonne <strong>Nombre</strong> nommée <code>${esc(col)}</code>.
+        <ol style="margin:8px 0 0;padding-left:18px;font-size:13.5px"><li>Ouvrez la liste ${esc(cfg.categoriesList)} sur SharePoint.</li><li><strong>+ Ajouter une colonne → Nombre</strong>, nom : <code>${esc(col)}</code>, puis Enregistrer.</li><li>Revenez ici et cliquez sur Actualiser (↻).</li></ol>
+        <button class="btn primary" id="seuil-col" style="margin-top:10px">Créer la colonne automatiquement</button>
+        <div class="muted" style="font-size:12.5px;margin-top:6px">La création automatique demande l'autorisation « Sites.Manage.All » : Microsoft peut vous demander de vous reconnecter.</div>
+      </div></div></div></div>`;
+    }
+    const cats = categories(true);
+    const rows = cats.map(name => {
+      const arts = state.articles.filter(a => norm(F(a, "categorie")) === norm(name));
+      const cs = catSeuilOf(name);
+      const eff = cs != null ? cs : cfg.seuilAlerteDefaut;
+      return `<tr data-cat="${esc(name)}">
+        <td class="primary-cell" data-label="Catégorie">${esc(name)}</td>
+        <td class="num" data-label="Articles">${int(arts.length)}</td>
+        <td class="num" data-label="Stock total">${int(arts.reduce((t, a) => t + artStock(a), 0))}</td>
+        <td class="num" data-label="Seuil"><input class="cell-input seuil-input" type="number" min="0" step="1" data-seuil value="${cs != null ? cs : ""}" placeholder="${int(cfg.seuilAlerteDefaut)}" aria-label="Seuil pour ${esc(name)}"></td>
+        <td class="num" data-label="Articles en alerte" data-low>${lowBadge(arts.filter(a => artStock(a) <= eff).length)}</td>
+      </tr>`;
+    }).join("");
+    return `<div class="card">${head}
+      <div class="card-head compact-head" style="border-top:0">
+        <div class="search" style="flex:0 1 260px">${ICON.search}<input class="input" id="seuil-q" type="search" placeholder="Filtrer les catégories…"></div>
+        <span class="spacer"></span><button class="btn primary" id="seuil-save" disabled>Enregistrer les seuils</button>
+      </div>
+      <div class="table-scroll" style="max-height:420px"><table class="table responsive compact" id="seuil-table">
+        <thead><tr><th>Catégorie</th><th class="num">Articles</th><th class="num">Stock total</th><th class="num">Seuil</th><th class="num">Articles en alerte</th></tr></thead>
+        <tbody>${rows}</tbody></table></div></div>`;
+  }
+
   function viewParametres(el) {
     const theme = store.get("ventesit-theme", "auto");
     const opts = (k) => {
@@ -1395,7 +1451,8 @@
             </div>
           </div>
         </div>
-        <div class="card">
+        ${seuilsSectionHTML()}
+        <div class="card" ${cfg.afficherColonnes ? "" : "hidden"}>
           <div class="card-head"><h2>Colonnes de « ${esc(cfg.articlesList)} »</h2><span class="muted" style="font-size:13px">Détection automatique, modifiable</span></div>
           <div class="card-pad">
             <form id="map-form" class="form-grid">
@@ -1413,9 +1470,48 @@
             <option value="dark" ${theme === "dark" ? "selected" : ""}>Sombre</option></select></label></div>
         </div>
       </div>`;
+    const seuilFilter = () => {
+      const q = norm(($("#seuil-q") || {}).value || "");
+      $$("#seuil-table tbody tr").forEach(tr => { tr.hidden = q && !norm(tr.dataset.cat).includes(q); });
+    };
+    el.oninput = e => {
+      if (e.target.id === "seuil-q") seuilFilter();
+      if (e.target.matches("[data-seuil]")) {
+        const tr = e.target.closest("tr");
+        const v = e.target.value === "" ? cfg.seuilAlerteDefaut : +e.target.value;
+        const arts = state.articles.filter(a => norm(F(a, "categorie")) === norm(tr.dataset.cat));
+        tr.querySelector("[data-low]").innerHTML = lowBadge(arts.filter(a => artStock(a) <= v).length);
+        tr.classList.toggle("changed", e.target.value !== e.target.defaultValue);
+        $("#seuil-save").disabled = !$$("#seuil-table tr.changed").length;
+      }
+    };
     el.onclick = async e => {
       const c = e.target.closest('[data-action="create-ventes"]');
       if (c) return createVentesList(c);
+      if (e.target.closest("#seuil-col")) {
+        const b = e.target.closest("#seuil-col"); busy(b, true, "Création…");
+        try { await DS.createSeuilColumn(); state.categories = await DS.loadCategories(); toast("Colonne créée.", "ok"); return viewParametres(el); }
+        catch (err) { busy(b, false); return toast("Création impossible : " + err.message + " — ajoutez la colonne manuellement.", "bad"); }
+      }
+      if (e.target.closest("#seuil-save")) {
+        const b = e.target.closest("#seuil-save");
+        const rows = $$("#seuil-table tr.changed");
+        if (!rows.length) return;
+        busy(b, true, "Enregistrement…");
+        let errors = 0;
+        for (const tr of rows) {
+          const inp = tr.querySelector("[data-seuil]");
+          const v = inp.value === "" ? null : Math.max(0, parseInt(inp.value, 10) || 0);
+          try {
+            let cat = (state.categories || []).find(x => norm(x.name) === norm(tr.dataset.cat));
+            if (!cat) cat = await DS.createCategorie(tr.dataset.cat); // catégorie absente de la liste : on l'ajoute
+            await DS.setCategorieSeuil(cat.id, v);
+          } catch (err) { errors++; console.warn(err); }
+        }
+        state.categories = await DS.loadCategories();
+        toast(errors ? `${errors} seuil(s) non enregistré(s).` : `${rows.length} seuil(s) enregistré(s).`, errors ? "bad" : "ok");
+        return viewParametres(el);
+      }
       if (e.target.closest("#btn-logout")) return Auth.logout();
       if (e.target.closest("#btn-demo-reset")) {
         if (!(await confirmBox("Réinitialiser", "Toutes les données démo de ce navigateur seront remplacées par le jeu d'exemple.", "Réinitialiser"))) return;
