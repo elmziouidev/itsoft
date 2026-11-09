@@ -51,6 +51,7 @@
     ventes: [],
     ventesReady: false,
     map: {},
+    pcart: (() => { try { return (JSON.parse(localStorage.getItem("itsoft-bon-reception")) || []).map(l => ({ id: String(l.id), qty: +l.qty || 1, price: l.price === "" || l.price == null ? "" : +l.price, sell: l.sell === "" || l.sell == null ? "" : +l.sell })); } catch (_) { return []; } })(),
     cart: (() => { try { return (JSON.parse(localStorage.getItem("itsoft-panier")) || []).map(l => ({ id: String(l.id), qty: +l.qty || 1, price: +l.price || 0 })); } catch (_) { return []; } })(),
     filters: { articles: { q: "", cat: "", stock: "" }, caisse: { q: "", cat: "" }, ventes: { q: "", from: "", to: "" } }
   };
@@ -648,22 +649,32 @@
     if (currentView() === "articles" && state.refreshArticle) ids.forEach(id => { const a = artById(id); if (a) state.refreshArticle(a, true); });
   }
   /* Barre flottante : visible dès que le panier contient un article */
+  /* Barres flottantes : panier de vente et bon de réception (visibles dès qu'ils contiennent un article) */
   function renderCartBar() {
-    let bar = document.getElementById("cart-bar");
-    if (!bar) {
-      bar = document.createElement("div"); bar.id = "cart-bar"; bar.className = "cart-bar"; document.body.appendChild(bar);
-      bar.addEventListener("click", async e => {
+    let dock = document.getElementById("cart-dock");
+    if (!dock) {
+      dock = document.createElement("div"); dock.id = "cart-dock"; dock.className = "cart-dock"; document.body.appendChild(dock);
+      dock.addEventListener("click", async e => {
         if (e.target.closest("[data-cart-open]")) return sellDialog(null);
-        if (e.target.closest("[data-cart-clear]") && await confirmBox("Vider le panier", "Retirer tous les articles du panier ?", "Vider", true)) cartClear();
+        if (e.target.closest("[data-cart-clear]") && await confirmBox("Vider le panier", "Retirer tous les articles du panier de vente ?", "Vider", true)) cartClear();
+        if (e.target.closest("[data-pcart-open]")) return receiveDialog(null);
+        if (e.target.closest("[data-pcart-clear]") && await confirmBox("Vider le bon de réception", "Retirer tous les articles du bon de réception ?", "Vider", true)) pcartClear();
       });
     }
-    const ls = cartLines();
+    const ls = cartLines(), ps = pcartLines();
     const nb = ls.reduce((t, x) => t + x.l.qty, 0), tot = ls.reduce((t, x) => t + x.l.qty * x.l.price, 0);
-    bar.hidden = !ls.length || !state.loaded;
-    bar.innerHTML = `<span class="cart-bar-ico">${ICON.cart}<span class="cart-badge">${int(nb)}</span></span>
-      <span class="cart-bar-txt"><strong>Panier</strong><span>${int(ls.length)} article(s) · ${money(tot)}</span></span>
-      <button class="btn sm ghost" data-cart-clear title="Vider le panier">Vider</button>
-      <button class="btn primary" data-cart-open>Valider la vente</button>`;
+    const pnb = ps.reduce((t, x) => t + x.l.qty, 0), ptot = ps.reduce((t, x) => t + x.l.qty * (+x.l.price || 0), 0);
+    dock.hidden = !state.loaded || (!ls.length && !ps.length);
+    dock.innerHTML = (ps.length ? `<div class="cart-bar buy">
+        <span class="cart-bar-ico">📦<span class="cart-badge">${int(pnb)}</span></span>
+        <span class="cart-bar-txt"><strong>Bon de réception</strong><span>${int(ps.length)} article(s) · ${money(ptot)}</span></span>
+        <button class="btn sm ghost" data-pcart-clear title="Vider le bon de réception">Vider</button>
+        <button class="btn buy-btn" data-pcart-open>Valider la réception</button></div>` : "") +
+      (ls.length ? `<div class="cart-bar">
+        <span class="cart-bar-ico">${ICON.cart}<span class="cart-badge">${int(nb)}</span></span>
+        <span class="cart-bar-txt"><strong>Panier</strong><span>${int(ls.length)} article(s) · ${money(tot)}</span></span>
+        <button class="btn sm ghost" data-cart-clear title="Vider le panier">Vider</button>
+        <button class="btn primary" data-cart-open>Valider la vente</button></div>` : "");
   }
 
   /* Fenêtre de validation du panier : quantités, prix, client, paiement */
@@ -1058,7 +1069,7 @@
       return `<td class="editable ${isNumCol(c) ? "num" : ""}" data-col="${esc(c.name)}" data-label="${esc(colTitle(c))}" title="Cliquer pour modifier">${cellHTML(a, c)}</td>`;
     };
     const rowInner = a => layout.map(c => tdHTML(a, c)).join("") +
-      `<td class="actions"><button class="btn sm icon ghost sell-btn ${cartQty(a.id) ? "in-cart" : ""}" data-addcart="${esc(a.id)}" title="Ajouter au panier" aria-label="Ajouter au panier">${ICON.cartPlus}${cartQty(a.id) ? `<span class="cart-badge">${cartQty(a.id)}</span>` : ""}</button><button class="btn sm icon ghost rcv-btn" data-rcv="${esc(a.id)}" title="Réceptionner un achat (entrée en stock)" aria-label="Réceptionner un achat">📦</button><button class="btn sm icon ghost" data-edit="${esc(a.id)}" title="Modifier (formulaire complet)" aria-label="Modifier dans un formulaire">${ICON.edit}</button><button class="btn sm icon ghost danger" data-del="${esc(a.id)}" title="Supprimer" aria-label="Supprimer">${ICON.trash}</button></td>`;
+      `<td class="actions"><button class="btn sm icon ghost sell-btn ${cartQty(a.id) ? "in-cart" : ""}" data-addcart="${esc(a.id)}" title="Ajouter au panier" aria-label="Ajouter au panier">${ICON.cartPlus}${cartQty(a.id) ? `<span class="cart-badge">${cartQty(a.id)}</span>` : ""}</button><button class="btn sm icon ghost rcv-btn ${pcartQty(a.id) ? "in-cart" : ""}" data-rcv="${esc(a.id)}" title="Ajouter au bon de réception (entrée en stock)" aria-label="Ajouter au bon de réception">📦${pcartQty(a.id) ? `<span class="cart-badge buy">${pcartQty(a.id)}</span>` : ""}</button><button class="btn sm icon ghost" data-edit="${esc(a.id)}" title="Modifier (formulaire complet)" aria-label="Modifier dans un formulaire">${ICON.edit}</button><button class="btn sm icon ghost danger" data-del="${esc(a.id)}" title="Supprimer" aria-label="Supprimer">${ICON.trash}</button></td>`;
     const footHTML = list => `<span>${int(list.length)} article(s) sur ${int(state.articles.length)}</span>` +
       (hasStock() ? `<span>Quantité totale : <strong>${int(list.reduce((t, a) => t + artStock(a), 0))}</strong></span>` : "") +
       (hasCA() ? `<span>Valeur du stock : <strong>${money(list.reduce((t, a) => t + artCA(a), 0))}</strong></span>` : "") +
@@ -1266,7 +1277,7 @@
       const sell = e.target.closest("[data-sell]");
       if (sell) { const a = state.articles.find(x => x.id === sell.dataset.sell); if (a) return sellDialog(a); }
       const rcv = e.target.closest("[data-rcv]");
-      if (rcv) { const a = state.articles.find(x => x.id === rcv.dataset.rcv); if (a) return receiveDialog(a); }
+      if (rcv) { const a = state.articles.find(x => x.id === rcv.dataset.rcv); if (a) return pcartAdd(a); }
       const cell = e.target.closest("td.editable");
       if (cell && !cell.classList.contains("editing")) return startEdit(cell);
       if (e.target.closest("#col-reset")) { store.set(COL_ORDER_KEY, null); try { localStorage.removeItem(COL_ORDER_KEY); } catch (_) {} return viewArticles(el); }
@@ -1811,70 +1822,123 @@
     try { state.fournisseurs.push(await DS.createFournisseur(name)); } catch (e) { console.warn(e); }
   }
 
-  /* ============ Réceptionner un achat (depuis Articles ou « À commander ») ============ */
-  async function receiveDialog(a, presetQty) {
+  /* ============ Bon de réception : panier d'achat rempli depuis Articles ou « À commander » ============ */
+  const PCART_KEY = "itsoft-bon-reception";
+  const pcartSave = () => { try { localStorage.setItem(PCART_KEY, JSON.stringify(state.pcart)); } catch (_) {} };
+  const pcartQty = id => { const l = state.pcart.find(x => x.id === String(id)); return l ? l.qty : 0; };
+  function pcartLines() {
+    state.pcart = state.pcart.filter(l => artById(l.id));
+    return state.pcart.map(l => ({ l, a: artById(l.id) }));
+  }
+  function pcartAdd(a, qty, silent) {
+    const id = String(a.id), q = Math.max(1, parseInt(qty, 10) || 1);
+    const ex = state.pcart.find(l => l.id === id);
+    if (ex) ex.qty += q;
+    else { const lp = lastPurchase(a); state.pcart.push({ id, qty: q, price: lp ? +lp.PrixAchat : "", sell: "" }); }
+    pcartSave(); renderCartBar();
+    if (currentView() === "articles" && state.refreshArticle) state.refreshArticle(a, true);
+    if (!silent) toast(`« ${artName(a)} » ajouté au bon de réception (${pcartQty(id)}).`, "ok");
+  }
+  function pcartClear() {
+    const ids = state.pcart.map(l => l.id);
+    state.pcart = []; pcartSave(); renderCartBar();
+    if (currentView() === "articles" && state.refreshArticle) ids.forEach(id => { const a = artById(id); if (a) state.refreshArticle(a, true); });
+  }
+
+  /* Validation du bon : fournisseur et date communs, prix d'achat par article */
+  async function receiveDialog(first, presetQty) {
+    if (first && !state.pcart.some(l => l.id === String(first.id))) pcartAdd(first, presetQty || 1, true);
     if (!(await ensureAchatsList())) return;
-    const last = lastPurchase(a);
-    const defSup = (last && last.Fournisseur) || cleanSup(F(a, "fournisseur")) || "";
+    const firstLine = pcartLines()[0];
+    const lp0 = firstLine && lastPurchase(firstLine.a);
+    const defSup = (lp0 && lp0.Fournisseur) || (firstLine && cleanSup(F(firstLine.a, "fournisseur"))) || "";
     const dateCol = findCol("DATEe");
     const m = openModal({
-      title: "Réceptionner un achat", size: "sm",
+      title: "Bon de réception", size: "cart",
       body: `
-        <div class="sell-head">${thumbHTML(a, true)}<div style="min-width:0"><strong>${esc(artName(a))}</strong>
-          <div class="muted" style="font-size:13px">${esc(F(a, "categorie") || "")}${hasStock() ? ` · stock actuel <strong>${int(artStock(a))}</strong>` : ""}</div></div></div>
-        <form id="rcv-form" class="form-grid" style="margin-top:16px" novalidate>
-          <label class="field">Quantité reçue
-            <span class="qty qty-lg"><button type="button" data-d="-1" aria-label="Diminuer">−</button><input id="rcv-qty" type="number" min="1" value="${presetQty || 1}" inputmode="numeric"><button type="button" data-d="1" aria-label="Augmenter">+</button></span></label>
-          <label class="field">Prix d'achat unitaire (${esc(cfg.devise)})<input class="input" id="rcv-price" type="number" step="any" min="0" value="${last ? +last.PrixAchat : ""}" placeholder="${last ? "" : "ex. 80"}" inputmode="decimal"></label>
-          <label class="field full">Fournisseur<input class="input" id="rcv-sup" list="${supDatalist()}" value="${esc(defSup)}" placeholder="Nom du fournisseur" autocomplete="off"></label>
-          <label class="field">Date<input class="input" id="rcv-date" type="date" value="${dayKey(new Date())}"></label>
-          <label class="field">Nouveau prix de vente <span class="muted" style="font-weight:400">(facultatif)</span><input class="input" id="rcv-sell" type="number" step="any" min="0" placeholder="${artPrice(a)}" inputmode="decimal"></label>
+        <div class="cart-lines" id="rcv-lines"></div>
+        <form id="rcv-form" class="form-grid" style="margin-top:14px" novalidate>
+          <label class="field">Fournisseur<input class="input" id="rcv-sup" list="${supDatalist()}" value="${esc(defSup)}" placeholder="Nom du fournisseur" autocomplete="off"></label>
+          <label class="field">Date de réception<input class="input" id="rcv-date" type="date" value="${dayKey(new Date())}"></label>
           <div class="full totals" id="rcv-total"></div>
           <button type="submit" hidden></button>
-        </form>
-        ${last ? `<p class="muted" style="font-size:12.5px;margin:10px 0 0">Dernier achat : ${fmtDate(last.DateAchat)} · ${int(last.Quantite)} × ${money(last.PrixAchat)} chez ${esc(last.Fournisseur || "—")}</p>` : ""}`,
-      foot: `<button class="btn" data-close>Annuler</button><button class="btn primary lg" id="rcv-ok">${ICON.download} Enregistrer l'achat</button>`
+        </form>`,
+      foot: `<button class="btn" data-close>Continuer</button><button class="btn primary lg" id="rcv-ok">${ICON.download} Enregistrer la réception</button>`
     });
-    const qtyI = $("#rcv-qty", m), priceI = $("#rcv-price", m);
-    const update = () => {
-      const q = parseInt(qtyI.value, 10) || 0, p = parseFloat(String(priceI.value).replace(",", "."));
-      $("#rcv-total", m).innerHTML = `<span class="grand">Montant de l'achat</span><span class="num grand">${money(q * (isNaN(p) ? 0 : p))}</span>` +
-        (hasStock() ? `<span class="muted">Stock après réception</span><span class="num">${int(artStock(a) + q)}</span>` : "");
+    const num = x => { const n = parseFloat(String(x).replace(",", ".")); return isNaN(n) ? null : n; };
+    const totals = () => {
+      const ps = pcartLines();
+      const tot = ps.reduce((t, x) => t + x.l.qty * (num(x.l.price) || 0), 0), nb = ps.reduce((t, x) => t + x.l.qty, 0);
+      $("#rcv-total", m).innerHTML = `<span class="muted">${int(ps.length)} article(s) · ${int(nb)} pièce(s) reçue(s)</span><span></span>
+        <span class="grand">Montant de l'achat</span><span class="num grand">${money(tot)}</span>`;
+      $("#rcv-ok", m).disabled = !ps.length;
     };
-    update();
-    m.querySelectorAll("[data-d]").forEach(b => b.addEventListener("click", () => { qtyI.value = Math.max(1, (parseInt(qtyI.value, 10) || 1) + +b.dataset.d); update(); }));
-    [qtyI, priceI].forEach(i => i.addEventListener("input", update));
-    setTimeout(() => qtyI.select(), 60);
+    const drawLines = () => {
+      const ps = pcartLines();
+      $("#rcv-lines", m).innerHTML = ps.length ? `<div class="rcv-head"><span></span><span>Article</span><span>Qté reçue</span><span>Prix d'achat</span><span>Nouveau prix vente</span><span class="num">Montant</span><span></span></div>` +
+        ps.map(({ l, a }, i) => `<div class="cart-row rcv-row" data-i="${i}">
+          ${thumbHTML(a)}
+          <div class="cart-name"><strong>${esc(artName(a))}</strong><span class="muted">${esc(F(a, "categorie") || "")}${hasStock() ? ` · stock ${int(artStock(a))} → ${int(artStock(a) + l.qty)}` : ""}</span></div>
+          <span class="qty"><button type="button" data-d="-1" aria-label="Diminuer">−</button><input type="number" min="1" value="${l.qty}" data-qty inputmode="numeric" aria-label="Quantité reçue"><button type="button" data-d="1" aria-label="Augmenter">+</button></span>
+          <span class="cart-price"><input class="input" type="number" step="any" min="0" value="${l.price === "" ? "" : esc(l.price)}" placeholder="Prix" data-price inputmode="decimal" aria-label="Prix d'achat unitaire"></span>
+          <span class="cart-price rcv-sell"><input class="input" type="number" step="any" min="0" value="${l.sell === "" ? "" : esc(l.sell)}" placeholder="${artPrice(a)}" data-sell inputmode="decimal" aria-label="Nouveau prix de vente (facultatif)" title="Facultatif : laissez vide pour garder ${money(artPrice(a))}"></span>
+          <strong class="num cart-sub">${money(l.qty * (num(l.price) || 0))}</strong>
+          <button type="button" class="btn sm icon ghost danger" data-rm title="Retirer du bon" aria-label="Retirer">${ICON.close}</button>
+        </div>`).join("")
+        : `<div class="empty" style="padding:22px">Le bon de réception est vide.<br><span style="font-size:13px">Ajoutez des articles depuis la page Articles (bouton 📦) ou depuis Achats → À commander.</span>
+            <div style="margin-top:12px"><a class="btn" href="#/articles" data-close>Aller aux articles</a></div></div>`;
+      totals();
+    };
+    const changed = id => { pcartSave(); renderCartBar(); const a = artById(id); if (a && currentView() === "articles" && state.refreshArticle) state.refreshArticle(a, true); };
+    drawLines();
+    $("#rcv-lines", m).addEventListener("click", e => {
+      const row = e.target.closest(".rcv-row"); if (!row) return;
+      const { l } = pcartLines()[+row.dataset.i];
+      if (e.target.closest("[data-rm]")) { state.pcart = state.pcart.filter(x => x !== l); changed(l.id); return drawLines(); }
+      const d = e.target.closest("[data-d]");
+      if (d) { l.qty = Math.max(1, l.qty + +d.dataset.d); changed(l.id); drawLines(); }
+    });
+    $("#rcv-lines", m).addEventListener("change", e => {
+      const row = e.target.closest(".rcv-row"); if (!row) return;
+      const { l } = pcartLines()[+row.dataset.i];
+      if (e.target.matches("[data-qty]")) l.qty = Math.max(1, parseInt(e.target.value, 10) || 1);
+      if (e.target.matches("[data-price]")) l.price = e.target.value === "" ? "" : Math.max(0, num(e.target.value) || 0);
+      if (e.target.matches("[data-sell]")) l.sell = e.target.value === "" ? "" : Math.max(0, num(e.target.value) || 0);
+      changed(l.id); drawLines();
+    });
+
     const submit = async () => {
-      const qty = parseInt(qtyI.value, 10) || 0;
-      const price = parseFloat(String(priceI.value).replace(",", "."));
+      const ps = pcartLines();
+      if (!ps.length) return toast("Le bon de réception est vide.", "bad");
       const sup = cleanSup($("#rcv-sup", m).value);
-      const sell = $("#rcv-sell", m).value === "" ? null : parseFloat(String($("#rcv-sell", m).value).replace(",", "."));
-      if (qty < 1) { qtyI.focus(); return toast("Quantité invalide.", "bad"); }
-      if (isNaN(price) || price < 0) { priceI.focus(); return toast("Saisissez le prix d'achat unitaire.", "bad"); }
       if (!sup) { $("#rcv-sup", m).focus(); return toast("Indiquez le fournisseur.", "bad"); }
-      if (sell !== null && (isNaN(sell) || sell < 0)) return toast("Prix de vente invalide.", "bad");
-      const btn = $("#rcv-ok", m);
-      busy(btn, true, "Enregistrement…");
+      const missing = ps.find(x => x.l.price === "" || num(x.l.price) === null);
+      if (missing) return toast(`Saisissez le prix d'achat de « ${artName(missing.a)} ».`, "bad");
+      const btn = $("#rcv-ok", m); busy(btn, true, "Enregistrement…");
       try {
         const known = supplierNames().find(n => supKey(n) === supKey(sup)) || sup;
         await ensureSupplier(known);
         const dRaw = $("#rcv-date", m).value;
         const d = dRaw ? new Date(dRaw + "T" + new Date().toTimeString().slice(0, 8)) : new Date();
-        const line = await DS.createAchatLine({
-          Title: "A" + saleNumber(d).slice(1), ArticleId: parseInt(a.id, 10), Article: String(artName(a)), Fournisseur: known,
-          Quantite: qty, PrixAchat: price, Montant: Math.round(qty * price * 100) / 100, DateAchat: d.toISOString(), Utilisateur: Auth.userName()
-        });
-        state.achats.push(line);
-        const fresh = await DS.getArticle(a.id);
-        const upd = {};
-        if (hasStock()) upd[state.map.stock] = (+fresh[state.map.stock] || 0) + qty;
-        if (dateCol) upd[dateCol.name] = d.toISOString();
-        if (sell !== null && state.map.prix) upd[state.map.prix] = sell;
-        Object.assign(a, await DS.updateArticle(a.id, upd));
+        const numero = "A" + saleNumber(d).slice(1);
+        for (const { l, a } of ps) {
+          const price = num(l.price) || 0;
+          const line = await DS.createAchatLine({
+            Title: numero, ArticleId: parseInt(a.id, 10), Article: String(artName(a)), Fournisseur: known,
+            Quantite: l.qty, PrixAchat: price, Montant: Math.round(l.qty * price * 100) / 100, DateAchat: d.toISOString(), Utilisateur: Auth.userName()
+          });
+          state.achats.push(line);
+          const fresh = await DS.getArticle(a.id), upd = {};
+          if (hasStock()) upd[state.map.stock] = (+fresh[state.map.stock] || 0) + l.qty;
+          if (dateCol) upd[dateCol.name] = d.toISOString();
+          if (l.sell !== "" && num(l.sell) !== null && state.map.prix) upd[state.map.prix] = num(l.sell);
+          Object.assign(a, await DS.updateArticle(a.id, upd));
+        }
         closeModal();
-        toast(`Achat enregistré : +${qty} « ${artName(a)} ».`, "ok");
-        if (currentView() === "articles" && state.refreshArticle) state.refreshArticle(a); else render();
+        const nbArts = ps.length;
+        pcartClear();
+        toast(`Réception enregistrée : ${nbArts} article(s) chez ${known}.`, "ok");
+        if (currentView() === "articles" && state.refreshArticle) ps.forEach(x => state.refreshArticle(x.a)); else render();
       } catch (e) { busy(btn, false); toast(e.message, "bad"); }
     };
     $("#rcv-ok", m).addEventListener("click", submit);
@@ -2083,6 +2147,7 @@
           <button class="tab ${f.tab === "cmd" ? "on" : ""}" data-tab="cmd" role="tab">À commander</button>
           <span class="spacer"></span>
           <a class="btn" href="#/fournisseurs">${ICON.edit}<span class="hide-sm">Fournisseurs</span></a>
+          <button class="btn primary" data-open-bon>📦 Bon de réception</button>
         </div>
         <div id="ach-body"></div>
       </div>`;
@@ -2091,6 +2156,7 @@
     el.onclick = e => {
       const t = e.target.closest("[data-tab]");
       if (t) { f.tab = t.dataset.tab; return viewAchats(el); }
+      if (e.target.closest("[data-open-bon]")) return receiveDialog(null);
       if (body._click) body._click(e);
     };
     el.oninput = e => { if (body._input) body._input(e); };
@@ -2183,10 +2249,10 @@
     const list = [...groups.values()].sort((x, y) => y.items.length - x.items.length || x.sup.localeCompare(y.sup, "fr"));
     body.innerHTML = list.length ? `
       <div class="alert info">${ICON.info}<div class="grow"><strong>${int(need.length)}</strong> article(s) en rupture ou sous leur seuil, chez <strong>${list.length}</strong> fournisseur(s).
-        Ajustez les quantités, imprimez le bon de commande du fournisseur, puis, à la livraison, cliquez sur 📦 pour réceptionner.</div></div>
+        Ajustez les quantités et imprimez le bon de commande du fournisseur. À la livraison, ajoutez les articles au bon de réception (📦) puis validez-le depuis la barre en bas de l'écran.</div></div>
       ${list.map((g, gi) => `<div class="card cmd-group" data-g="${gi}">
         <div class="card-head compact-head"><h2>${esc(g.sup)} <span class="muted" style="font-weight:400">· ${g.items.length} article(s)</span></h2>
-          <span class="spacer"></span><button class="btn sm" data-print>${ICON.print} Bon de commande</button></div>
+          <span class="spacer"></span><button class="btn sm" data-addall title="Ajouter tous les articles de ce fournisseur au bon de réception">📦 Tout ajouter au bon</button><button class="btn sm" data-print>${ICON.print} Bon de commande</button></div>
         <div class="table-wrap"><table class="table responsive compact"><thead><tr><th>Article</th><th>Catégorie</th><th class="num">Stock</th><th class="num">Seuil</th><th class="num">À commander</th><th class="num">Dernier prix d'achat</th><th></th></tr></thead>
         <tbody>${g.items.map((x, i) => `<tr data-i="${i}">
           <td class="primary-cell" data-label="Article"><span class="name-cell">${thumbHTML(x.a)}<span>${esc(artName(x.a))}</span></span></td>
@@ -2195,7 +2261,7 @@
           <td class="num" data-label="Seuil">${int(artSeuil(x.a))}</td>
           <td class="num" data-label="À commander"><input class="cell-input seuil-input" type="number" min="0" step="1" data-q value="${x.sugg}"></td>
           <td class="num" data-label="Dernier prix">${x.last ? money(x.last.PrixAchat) : '<span class="muted">—</span>'}</td>
-          <td class="actions"><button class="btn sm" data-rcv title="Réceptionner la livraison">📦 Réceptionner</button></td></tr>`).join("")}</tbody></table></div></div>`).join("")}`
+          <td class="actions"><button class="btn sm" data-rcv title="Ajouter au bon de réception avec la quantité indiquée">📦 Ajouter au bon</button></td></tr>`).join("")}</tbody></table></div></div>`).join("")}`
       : `<div class="card card-pad"><div class="empty">Aucun article à commander : tous les stocks sont au-dessus de leur seuil.</div></div>`;
     body._click = e => {
       const card = e.target.closest(".cmd-group");
@@ -2204,7 +2270,12 @@
       const tr = e.target.closest("tr[data-i]");
       if (tr && e.target.closest("[data-rcv]")) {
         const x = g.items[+tr.dataset.i];
-        return receiveDialog(x.a, parseInt(tr.querySelector("[data-q]").value, 10) || 1);
+        return pcartAdd(x.a, parseInt(tr.querySelector("[data-q]").value, 10) || 1);
+      }
+      if (e.target.closest("[data-addall]")) {
+        let n = 0;
+        $$("tr[data-i]", card).forEach(r => { const q = parseInt(r.querySelector("[data-q]").value, 10) || 0; if (q > 0) { pcartAdd(g.items[+r.dataset.i].a, q, true); n++; } });
+        return toast(`${n} article(s) de ${g.sup} ajouté(s) au bon de réception.`, "ok");
       }
       if (e.target.closest("[data-print]")) {
         const qtys = $$("tr[data-i]", card).map(r => parseInt(r.querySelector("[data-q]").value, 10) || 0);
