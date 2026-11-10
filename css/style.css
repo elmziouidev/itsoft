@@ -599,7 +599,26 @@ body.has-dock .view { padding-bottom: calc(var(--dock-h, 0px) + 40px); }
 
 /* Lignes libres : « Article non classé » et « Service » (prix saisi à la vente) */
 .svc-ico.divers { --h: 32; }
-.free-row td { background: color-mix(in srgb, var(--primary, #2563eb) 4%, transparent); }
+.free-row { --fr-bg: #FFF1DF; --fr-line: #F0A04B; --fr-fg: #8A4B08; }
+.free-row[data-free="service"] { --fr-bg: #F4EAFB; --fr-line: #A66CD6; --fr-fg: #5B2A86; }
+:root[data-theme="dark"] .free-row { --fr-bg: #3A2814; --fr-line: #C77A2A; --fr-fg: #FAC775; }
+:root[data-theme="dark"] .free-row[data-free="service"] { --fr-bg: #2E2040; --fr-line: #9B6BCB; --fr-fg: #DCC4F2; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .free-row { --fr-bg: #3A2814; --fr-line: #C77A2A; --fr-fg: #FAC775; }
+  :root:not([data-theme="light"]) .free-row[data-free="service"] { --fr-bg: #2E2040; --fr-line: #9B6BCB; --fr-fg: #DCC4F2; }
+}
+.table .free-row td { background: var(--fr-bg); box-shadow: inset 0 -1px 0 var(--fr-line); }
+.table .free-row td:first-child { box-shadow: inset 4px 0 0 var(--fr-line), inset 0 -1px 0 var(--fr-line); }
+.free-row .name-text strong { color: var(--fr-fg); }
+.table .free-row:hover td { filter: brightness(0.97); }
+/* figées sous l'en-tête pendant le défilement (ordinateur et tablette) */
+@media (min-width: 641px) {
+  .table-scroll .free-row td { position: sticky; top: var(--fr-top, 36px); z-index: 1; }
+}
+@media (max-width: 640px) {
+  .table.responsive .free-row { background: var(--fr-bg); border-left: 4px solid var(--fr-line); }
+  .table.responsive .free-row td { background: transparent; box-shadow: none; }
+}
 .free-row .sellable { cursor: pointer; }
 .add-free { display: flex; gap: 8px; flex-wrap: wrap; }
 .add-free .add-svc { flex: 1 1 180px; }

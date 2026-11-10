@@ -1343,7 +1343,14 @@
         <div class="table-foot" id="art-foot">${footHTML(list)}</div>`
         : `<div class="empty">Aucun article ne correspond aux critères.</div>`;
       setupMore();
+      pinFree();
     };
+    /* position des lignes figées : juste sous l'en-tête, l'une sous l'autre */
+    const pinFree = () => requestAnimationFrame(() => {
+      const th = $("#art-table thead"); if (!th) return;
+      let top = th.offsetHeight;
+      $$("#art-table tr.free-row").forEach(tr => { tr.style.setProperty("--fr-top", top + "px"); top += tr.offsetHeight; });
+    });
     const refreshFoot = () => { const ft = $("#art-foot"); if (ft) ft.innerHTML = footHTML(apply()); };
     const rowEl = id => $(`#art-table tr[data-id="${CSS.escape(String(id))}"]`);
     const restoreRow = (a, flashCol) => {
@@ -2888,7 +2895,6 @@
             <label class="row" style="gap:6px"><span class="muted" style="font-size:13px">Du</span><input class="input" id="v-from" type="date" value="${esc(f.from)}" style="width:auto"></label>
             <label class="row" style="gap:6px"><span class="muted" style="font-size:13px">au</span><input class="input" id="v-to" type="date" value="${esc(f.to)}" style="width:auto"></label>
             <button class="btn" id="v-export">${ICON.download}<span class="hide-sm">Exporter</span></button>
-            <button class="btn primary" id="v-repair">${ICON.plus} Réparation</button>
           </div>
           <div id="v-sum" class="sum-bar"></div>
           <div id="v-table"></div>
@@ -2926,7 +2932,6 @@
       if (e.target.id === "v-to") { f.to = e.target.value; draw(); }
     };
     el.onclick = e => {
-      if (e.target.closest("#v-repair")) return repairDialog();
       if (e.target.closest("#v-sale")) return sellDialog(null);
       const pb = e.target.closest("[data-print-sale]");
       if (pb) { const s = saleByNum(pb.dataset.printSale); if (s) printSale(s); return; }
