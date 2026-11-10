@@ -86,6 +86,24 @@ a { color: var(--primary); }
 .nv-ach  { --ico-bg: #FAEEDA; --ico-fg: #633806; }
 .nv-ven  { --ico-bg: #EAF3DE; --ico-fg: #27500A; }
 .nv-par  { --ico-bg: #F1EFE8; --ico-fg: #444441; }
+.nv-cre  { --ico-bg: #FBEAF0; --ico-fg: #72243E; }
+:root[data-theme="dark"] .nv-cre { --ico-bg: #72243E; --ico-fg: #F4C0D1; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .nv-cre { --ico-bg: #72243E; --ico-fg: #F4C0D1; } }
+
+/* Ventes par échéances */
+.credit-box { border: 1px dashed color-mix(in srgb, var(--primary) 45%, var(--border)); border-radius: var(--radius-sm); padding: 12px; background: var(--primary-soft); }
+.credit-box .input { background: var(--surface); }
+.credit-preview { margin-top: 10px; font-size: 13px; }
+.credit-dates { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.credit-dates span { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 1px 7px; font-size: 12px; }
+.credit-sum { display: grid; grid-template-columns: auto auto; gap: 2px 14px; font-size: 13.5px; align-items: baseline; }
+.credit-sum span { color: var(--muted); }
+.credit-sum strong { text-align: right; }
+.credit-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; flex-wrap: wrap; }
+.credit-h3 { font-size: 14px; margin: 16px 0 6px; }
+.progress { height: 8px; border-radius: 999px; background: var(--surface-2); border: 1px solid var(--border); overflow: hidden; margin-top: 12px; }
+.progress span { display: block; height: 100%; background: linear-gradient(90deg, #0f6e56, #2fb37f); border-radius: inherit; }
+.progress.sm { height: 6px; margin-top: 0; width: 90px; display: inline-block; vertical-align: middle; margin-right: 6px; }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) .nv-dash { --ico-bg: #3C3489; --ico-fg: #CECBF6; }
   :root:not([data-theme="light"]) .nv-art  { --ico-bg: #0C447C; --ico-fg: #B5D4F4; }
@@ -349,6 +367,9 @@ body.has-dock .view { padding-bottom: calc(var(--dock-h, 0px) + 40px); }
 
 /* Panier de vente */
 .modal.cart { width: min(720px, 100%); }
+.modal { max-width: 100%; min-width: 0; }
+.modal-body { min-width: 0; }
+.modal-body .table-wrap { max-width: 100%; overflow-x: auto; }
 .cart-lines { display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden; }
 .cart-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto 96px 104px auto; align-items: center; gap: 10px; padding: 8px 10px; border-bottom: 1px solid var(--border); }
 .cart-row:last-child { border-bottom: 0; }

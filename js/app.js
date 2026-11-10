@@ -421,6 +421,9 @@
     state.fournisseurs = res.fournisseurs || null;
     state.achats = res.achats || [];
     state.achatsReady = !!res.achatsReady;
+    state.credits = res.credits || [];
+    state.versements = res.versements || [];
+    state.creditsReady = !!res.creditsReady;
     state.siteName = res.siteName;
     computeMapping();
     // retirer du panier les articles disparus
@@ -437,7 +440,8 @@
     photos: { title: "Photos des articles", render: viewPhotos, nav: "articles" },
     categories: { title: "Catégories", render: viewCategories, nav: "articles" },
     achats: { title: "Achats", render: viewAchats },
-    fournisseurs: { title: "Fournisseurs", render: viewFournisseurs, nav: "achats" }
+    fournisseurs: { title: "Fournisseurs", render: viewFournisseurs, nav: "achats" },
+    credits: { title: "Ventes par échéances", render: viewCredits }
   };
   function currentView() {
     const k = (location.hash.match(/^#\/(\w+)/) || [])[1];
@@ -685,7 +689,7 @@
   }
 
   /* Fenêtre de validation du panier : quantités, prix, client, paiement */
-  function sellDialog(first) {
+  function sellDialog(first, opts) {
     if (!state.ventesReady) return toast(`La liste « ${cfg.ventesList} » est introuvable : impossible d'enregistrer une vente.`, "bad");
     if (first && !state.cart.some(l => l.id === String(first.id)) && !cartAdd(first, true)) return;
     const clients = state.clients || [];
@@ -703,7 +707,17 @@
             <div class="alert info" style="padding:10px 12px">${ICON.info}<div class="grow"><strong>Nouveau client</strong> : il sera ajouté à la liste ${esc(cfg.clientsList || "")}.
               <input class="input" id="sell-phone" placeholder="Téléphone (facultatif)" style="margin-top:8px" inputmode="tel"></div></div>
           </div>
-          <label class="field full">Paiement<select class="input" id="sell-pay">${cfg.modesPaiement.map(p => `<option>${esc(p)}</option>`).join("")}</select></label>
+          <label class="field full">Paiement<select class="input" id="sell-pay">${cfg.modesPaiement.map(p => `<option>${esc(p)}</option>`).join("")}<option value="__credit__" ${opts && opts.credit ? "selected" : ""}>Par échéances (crédit)</option></select></label>
+          <div class="full credit-box" id="sell-credit" hidden>
+            <div class="form-grid">
+              <label class="field">Acompte versé aujourd'hui (${esc(cfg.devise)})<input class="input" id="cr-apport" type="number" step="any" min="0" value="0" inputmode="decimal"></label>
+              <label class="field">Nombre d'échéances<input class="input" id="cr-nb" type="number" min="1" max="60" step="1" value="3" inputmode="numeric"></label>
+              <label class="field">Périodicité<select class="input" id="cr-per">${Object.entries(PERIODES).map(([k, v]) => `<option value="${k}">${v}</option>`).join("")}</select></label>
+              <label class="field">1re échéance<input class="input" id="cr-start" type="date" value="${dayKey(addPeriod(new Date(), "mensuelle", 1))}"></label>
+              <label class="field full">Téléphone du client<input class="input" id="cr-tel" placeholder="Pour rappeler les échéances" inputmode="tel"></label>
+            </div>
+            <div class="credit-preview" id="cr-preview"></div>
+          </div>
           <div class="full totals" id="sell-total"></div>
           <button type="submit" hidden></button>
         </form>`,
@@ -776,12 +790,49 @@
       row.querySelector(".cart-sub").textContent = money(l.qty * l.price);
       totals(); cartSave(); renderCartBar();
     });
+    // ---- vente par échéances : affichage des champs et aperçu de l'échéancier ----
+    const payI = $("#sell-pay", m);
+    const isCredit = () => payI.value === "__credit__";
+    const creditPreview = () => {
+      if (!isCredit()) return;
+      const total = cartLines().reduce((t, x) => t + x.l.qty * x.l.price, 0);
+      const apport = Math.max(0, parseFloat(String($("#cr-apport", m).value).replace(",", ".")) || 0);
+      const nb = Math.max(1, parseInt($("#cr-nb", m).value, 10) || 1);
+      const start = $("#cr-start", m).value ? new Date($("#cr-start", m).value + "T12:00:00") : new Date();
+      const sch = schedule(total, apport, nb, $("#cr-per", m).value, start);
+      $("#cr-preview", m).innerHTML = apport > total ? `<span style="color:var(--danger)">L'acompte dépasse le total.</span>`
+        : `<strong>${int(nb)} échéance(s) de ${money(sch[0] ? sch[0].amount : 0)}</strong>${sch.length > 1 && sch[sch.length - 1].amount !== sch[0].amount ? ` (dernière : ${money(sch[sch.length - 1].amount)})` : ""} · reste à financer ${money(Math.max(0, total - apport))}
+          <div class="credit-dates">${sch.slice(0, 12).map(e => `<span>${fmtDate(e.date)}</span>`).join("")}${sch.length > 12 ? "<span>…</span>" : ""}</div>`;
+    };
+    const syncCredit = () => {
+      $("#sell-credit", m).hidden = !isCredit();
+      $("#sell-ok", m).innerHTML = isCredit() ? `${ICON.cart} Vendre à crédit` : `${ICON.cart} Vendre`;
+      const known = clients.find(c => norm(c.name) === norm(clientI.value.trim()));
+      if (known && known.phone && !$("#cr-tel", m).value) $("#cr-tel", m).value = known.phone;
+      creditPreview();
+    };
+    payI.addEventListener("change", syncCredit);
+    ["#cr-apport", "#cr-nb", "#cr-per", "#cr-start"].forEach(s => { $(s, m).addEventListener("input", creditPreview); $(s, m).addEventListener("change", creditPreview); });
+    $("#cart-lines", m).addEventListener("input", creditPreview);
+    $("#cart-lines", m).addEventListener("click", () => setTimeout(creditPreview, 0));
+    clientI.addEventListener("change", syncCredit);
+    syncCredit();
     clientI.addEventListener("input", totals);
     setTimeout(() => clientI.focus(), 60);
 
     const submit = async () => {
       const ls = cartLines();
       if (!ls.length) return toast("Le panier est vide.", "bad");
+      // vente par échéances : contrôles et préparation des listes SharePoint
+      const credit = isCredit();
+      const totalCart = Math.round(ls.reduce((t, x) => t + x.l.qty * x.l.price, 0) * 100) / 100;
+      const apport = credit ? Math.max(0, parseFloat(String($("#cr-apport", m).value).replace(",", ".")) || 0) : 0;
+      if (credit) {
+        const typedC = clientI.value.trim();
+        if (!typedC || norm(typedC) === norm(defClient)) { clientI.focus(); return toast("Indiquez le nom du client pour une vente par échéances.", "bad"); }
+        if (apport > totalCart) return toast("L'acompte ne peut pas dépasser le total.", "bad");
+        if (!(await ensureCreditLists())) return;
+      }
       const btn = $("#sell-ok", m);
       busy(btn, true, "Enregistrement…");
       try {
@@ -802,7 +853,7 @@
           catch (e) { toast("Client non ajouté à la liste : " + e.message, "bad"); }
         }
         // 3. une ligne par article, toutes sous le même numéro de vente
-        const d = new Date(), num = saleNumber(d), pay = $("#sell-pay", m).value;
+        const d = new Date(), num = saleNumber(d), pay = credit ? "Échéances" : $("#sell-pay", m).value;
         for (const { l, a } of ls) {
           const ref = F(a, "reference"), lp = lastPurchase(a);
           const v = await DS.createVenteLine({
@@ -814,11 +865,30 @@
           state.ventes.push(v);
           if (hasStock()) Object.assign(a, await DS.updateArticle(a.id, { [state.map.stock]: fresh[a.id] - l.qty }));
         }
+        // dossier de crédit + acompte
+        let creditNum = null;
+        if (credit) {
+          creditNum = "C" + num.slice(1);
+          const nb = Math.max(1, parseInt($("#cr-nb", m).value, 10) || 1);
+          const startV = $("#cr-start", m).value;
+          const c = await DS.createCredit({
+            Title: creditNum, Client: clientName, Telephone: $("#cr-tel", m).value.trim(),
+            Articles: JSON.stringify(ls.map(({ l, a }) => ({ id: a.id, name: String(artName(a)), qty: l.qty, price: l.price }))),
+            MontantTotal: totalCart, Apport: apport, NbEcheances: nb, Periodicite: PERIODES[$("#cr-per", m).value],
+            DateDebut: (startV ? new Date(startV + "T12:00:00") : addPeriod(d, "mensuelle", 1)).toISOString(),
+            Statut: apport >= totalCart ? "Soldé" : "En cours", NumVente: num, Utilisateur: Auth.userName()
+          });
+          state.credits.push(c);
+          if (apport > 0) state.versements.push(await DS.createVersement({
+            Title: creditNum, CreditNum: creditNum, Client: clientName, Montant: apport, DateVersement: d.toISOString(),
+            ModePaiement: "Acompte", Note: "Acompte à la signature", Utilisateur: Auth.userName()
+          }));
+        }
         closeModal();
         cartClear();
-        toast(`Vente ${num} enregistrée (${ls.length} article(s)).`, "ok");
+        toast(credit ? `Vente à crédit ${num} enregistrée.` : `Vente ${num} enregistrée (${ls.length} article(s)).`, "ok");
         if (currentView() === "articles" && state.refreshArticle) ls.forEach(x => state.refreshArticle(x.a)); else render();
-        showSale(num);
+        if (credit) creditDetail(creditNum); else showSale(num);
       } catch (e) {
         busy(btn, false);
         toast(e.message, "bad");
@@ -2346,6 +2416,276 @@
           </tbody></table>${tot ? `<div class="totals"><strong class="grand">Total estimé</strong><strong class="num grand">${money(tot)}</strong></div>` : ""}</div>`;
         window.print();
       }
+    };
+  }
+
+  /* ============ Crédits : ventes payées par échéances ============ */
+  const PERIODES = { mensuelle: "Mensuelle", quinzaine: "Toutes les 2 semaines", hebdo: "Hebdomadaire" };
+  const perKey = s => { const n = norm(s); return n.includes("hebdo") ? "hebdo" : (n.includes("2semaines") || n.includes("quinz")) ? "quinzaine" : "mensuelle"; };
+  function addPeriod(d, per, k) {
+    const x = new Date(d);
+    if (per === "hebdo") x.setDate(x.getDate() + 7 * k);
+    else if (per === "quinzaine") x.setDate(x.getDate() + 14 * k);
+    else { const day = x.getDate(); x.setDate(1); x.setMonth(x.getMonth() + k); x.setDate(Math.min(day, new Date(x.getFullYear(), x.getMonth() + 1, 0).getDate())); }
+    return x;
+  }
+  /* Échéancier : (total − acompte) réparti en n échéances égales, la dernière absorbe l'arrondi */
+  function schedule(total, apport, n, per, start) {
+    const fin = Math.max(0, Math.round((total - apport) * 100) / 100);
+    n = Math.max(1, n | 0);
+    const base = Math.floor(fin / n * 100) / 100;
+    return Array.from({ length: n }, (_, k) => ({
+      k: k + 1, date: addPeriod(start, per, k),
+      amount: k === n - 1 ? Math.round((fin - base * (n - 1)) * 100) / 100 : base
+    }));
+  }
+  /* Situation d'un dossier : versements affectés aux échéances dans l'ordre */
+  function creditInfo(c) {
+    const total = +c.MontantTotal || 0, apport = +c.Apport || 0, n = +c.NbEcheances || 1, per = perKey(c.Periodicite);
+    const vs = (state.versements || []).filter(v => v.CreditNum === c.Title).sort((a, b) => new Date(a.DateVersement) - new Date(b.DateVersement));
+    const paid = Math.round(vs.reduce((t, v) => t + (+v.Montant || 0), 0) * 100) / 100;
+    const sch = schedule(total, apport, n, per, c.DateDebut || c.Created || new Date());
+    let pool = paid - Math.min(apport, paid); // l'acompte ne compte pas pour les échéances
+    const today = dayKey(new Date());
+    for (const e of sch) {
+      const cov = Math.max(0, Math.min(e.amount, Math.round(pool * 100) / 100));
+      pool -= cov; e.paid = cov;
+      e.status = cov >= e.amount - 0.005 ? "payee" : dayKey(e.date) < today ? "retard" : cov > 0 ? "partielle" : "avenir";
+    }
+    const reste = Math.max(0, Math.round((total - paid) * 100) / 100);
+    const next = sch.find(e => e.status !== "payee") || null;
+    const late = sch.filter(e => e.status === "retard");
+    let articles = [];
+    try { articles = JSON.parse(c.Articles || "[]"); } catch (_) { articles = c.Articles ? [{ name: String(c.Articles), qty: 1, price: total }] : []; }
+    return { c, total, apport, n, per, vs, paid, reste, sch, next, late, lateAmt: late.reduce((t, e) => t + e.amount - e.paid, 0), articles, solde: reste <= 0.005 };
+  }
+  const creditByNum = num => (state.credits || []).find(c => c.Title === num);
+  const ECH_BADGE = { payee: '<span class="badge ok">Payée</span>', retard: '<span class="badge bad">En retard</span>', partielle: '<span class="badge warn">Partielle</span>', avenir: '<span class="badge">À venir</span>' };
+
+  function ensureCreditLists() {
+    if (state.creditsReady) return Promise.resolve(true);
+    return confirmBox("Activer les ventes par échéances",
+      `L'application va créer sur SharePoint les listes <strong>${esc(cfg.creditsList)}</strong> (dossiers) et <strong>${esc(cfg.versementsList)}</strong> (versements). Une seule fois. Continuer ?`, "Créer les listes", false)
+      .then(async ok => {
+        if (!ok) return false;
+        try { await DS.createCreditLists(); state.creditsReady = true; toast("Listes des crédits créées.", "ok"); return true; }
+        catch (e) { toast("Création impossible : " + e.message, "bad"); return false; }
+      });
+  }
+
+  /* Enregistrer un versement d'un client */
+  function versementDialog(num, onDone) {
+    const c = creditByNum(num); if (!c) return;
+    const info = creditInfo(c);
+    const sugg = info.next ? Math.min(info.reste, Math.round((info.next.amount - info.next.paid) * 100) / 100) : info.reste;
+    const m = openModal({
+      title: "Versement — " + c.Client, size: "sm",
+      body: `<div class="credit-sum"><span>Reste à payer</span><strong>${money(info.reste)}</strong>
+          ${info.next ? `<span>Prochaine échéance</span><strong>${fmtDate(info.next.date)} · ${money(info.next.amount - info.next.paid)}</strong>` : ""}
+          ${info.late.length ? `<span>En retard</span><strong style="color:var(--danger)">${info.late.length} échéance(s) · ${money(info.lateAmt)}</strong>` : ""}</div>
+        <form id="vs-form" class="form-grid" style="margin-top:14px" novalidate>
+          <label class="field">Montant versé (${esc(cfg.devise)})<input class="input" id="vs-amount" type="number" step="any" min="0" value="${sugg}" inputmode="decimal"></label>
+          <label class="field">Date<input class="input" id="vs-date" type="date" value="${dayKey(new Date())}"></label>
+          <label class="field">Mode<select class="input" id="vs-mode">${cfg.modesPaiement.map(p => `<option>${esc(p)}</option>`).join("")}</select></label>
+          <label class="field">Note <span class="muted" style="font-weight:400">(facultatif)</span><input class="input" id="vs-note"></label>
+          <button type="submit" hidden></button></form>`,
+      foot: `<button class="btn" data-close>Annuler</button><button class="btn primary" id="vs-ok">${ICON.plus} Enregistrer le versement</button>`
+    });
+    setTimeout(() => $("#vs-amount", m).select(), 60);
+    const go = async () => {
+      const amt = Math.round((parseFloat(String($("#vs-amount", m).value).replace(",", ".")) || 0) * 100) / 100;
+      if (amt <= 0) return toast("Saisissez le montant versé.", "bad");
+      if (amt > info.reste + 0.005 && !(await confirmBox("Montant supérieur au reste", `Le versement (${money(amt)}) dépasse le reste à payer (${money(info.reste)}). L'enregistrer quand même ?`, "Enregistrer", false, "Corriger"))) return;
+      const btn = $("#vs-ok", m); if (btn) busy(btn, true, "Enregistrement…");
+      try {
+        const dv = $("#vs-date", m) ? $("#vs-date", m).value : "";
+        const d = dv ? new Date(dv + "T" + new Date().toTimeString().slice(0, 8)) : new Date();
+        state.versements.push(await DS.createVersement({
+          Title: c.Title, CreditNum: c.Title, Client: c.Client, Montant: amt, DateVersement: d.toISOString(),
+          ModePaiement: $("#vs-mode", m) ? $("#vs-mode", m).value : "", Note: $("#vs-note", m) ? $("#vs-note", m).value.trim() : "", Utilisateur: Auth.userName()
+        }));
+        const after = creditInfo(c);
+        const statut = after.solde ? "Soldé" : "En cours";
+        if (c.Statut !== statut) { await DS.updateCredit(c.id, { Statut: statut }); c.Statut = statut; }
+        closeModal();
+        toast(after.solde ? `Crédit de ${c.Client} soldé.` : `Versement de ${money(amt)} enregistré · reste ${money(after.reste)}.`, "ok");
+        if (onDone) onDone(); else render();
+      } catch (e) { const b = $("#vs-ok"); if (b) busy(b, false); toast(e.message, "bad"); }
+    };
+    $("#vs-ok", m).addEventListener("click", go);
+    $("#vs-form", m).addEventListener("submit", e => { e.preventDefault(); go(); });
+  }
+
+  function creditHTML(info) {
+    const c = info.c;
+    return `<div class="receipt"><h2>${esc(cfg.nomEntreprise)} — Vente par échéances</h2>
+      <div class="meta"><span class="muted">Dossier</span><strong>${esc(c.Title)}</strong><span class="muted">Client</span><span>${esc(c.Client)}${c.Telephone ? " · " + esc(c.Telephone) : ""}</span>
+        <span class="muted">Vente</span><span>${esc(c.NumVente || "—")}</span><span class="muted">Échéances</span><span>${int(info.n)} · ${esc(c.Periodicite || "")}</span></div>
+      <table><thead><tr><th>Article</th><th class="num">Qté</th><th class="num">P.U.</th><th class="num">Montant</th></tr></thead><tbody>
+        ${info.articles.map(a => `<tr><td>${esc(a.name)}</td><td class="num">${int(a.qty)}</td><td class="num">${money(a.price)}</td><td class="num">${money(a.qty * a.price)}</td></tr>`).join("")}</tbody></table>
+      <div class="totals"><span>Total</span><span class="num">${money(info.total)}</span><span>Acompte</span><span class="num">${money(info.apport)}</span>
+        <span>Déjà payé</span><span class="num">${money(info.paid)}</span><strong class="grand">Reste à payer</strong><strong class="num grand">${money(info.reste)}</strong></div>
+      <h3 style="margin:16px 0 6px">Échéancier</h3>
+      <table><thead><tr><th>N°</th><th>Date</th><th class="num">Montant</th><th class="num">Payé</th><th>État</th></tr></thead><tbody>
+        ${info.sch.map(e => `<tr><td>${e.k}</td><td>${fmtDate(e.date)}</td><td class="num">${money(e.amount)}</td><td class="num">${money(e.paid)}</td><td>${{ payee: "Payée", retard: "En retard", partielle: "Partielle", avenir: "À venir" }[e.status]}</td></tr>`).join("")}</tbody></table>
+      ${info.vs.length ? `<h3 style="margin:16px 0 6px">Versements reçus</h3><table><thead><tr><th>Date</th><th>Mode</th><th class="num">Montant</th></tr></thead><tbody>
+        ${info.vs.map(v => `<tr><td>${fmtDate(v.DateVersement)}</td><td>${esc(v.ModePaiement || "")}${v.Note ? " · " + esc(v.Note) : ""}</td><td class="num">${money(v.Montant)}</td></tr>`).join("")}</tbody></table>` : ""}
+    </div>`;
+  }
+
+  /* Détail d'un dossier : articles, échéancier, versements */
+  function creditDetail(num) {
+    const c = creditByNum(num); if (!c) return;
+    const info = creditInfo(c);
+    const pct = info.total ? Math.min(100, Math.round(info.paid / info.total * 100)) : 100;
+    const m = openModal({
+      title: "Crédit " + c.Title, size: "cart",
+      body: `<div class="credit-head">
+          <div><div class="muted" style="font-size:12.5px">Client</div><strong style="font-size:16px">${esc(c.Client)}</strong>${c.Telephone ? `<div class="muted" style="font-size:13px">${esc(c.Telephone)}</div>` : ""}</div>
+          <div class="credit-sum">
+            <span>Total</span><strong>${money(info.total)}</strong><span>Payé</span><strong style="color:var(--success)">${money(info.paid)}</strong>
+            <span>Reste</span><strong style="color:${info.solde ? "var(--success)" : "var(--danger)"}">${money(info.reste)}</strong></div></div>
+        <div class="progress"><span style="width:${pct}%"></span></div>
+        <h3 class="credit-h3">Articles demandés</h3>
+        <div class="table-wrap"><table class="table compact"><thead><tr><th>Article</th><th class="num">Qté</th><th class="num">P.U.</th><th class="num">Montant</th></tr></thead><tbody>
+          ${info.articles.map(a => `<tr><td>${esc(a.name)}</td><td class="num">${int(a.qty)}</td><td class="num">${money(a.price)}</td><td class="num">${money(a.qty * a.price)}</td></tr>`).join("")}</tbody></table></div>
+        <h3 class="credit-h3">Échéancier · ${int(info.n)} × ${esc(c.Periodicite || "")}${info.apport ? ` · acompte ${money(info.apport)}` : ""}</h3>
+        <div class="table-wrap"><table class="table compact"><thead><tr><th>N°</th><th>Date</th><th class="num">Montant</th><th class="num">Payé</th><th>État</th></tr></thead><tbody>
+          ${info.sch.map(e => `<tr><td>${e.k}</td><td>${fmtDate(e.date)}</td><td class="num">${money(e.amount)}</td><td class="num">${money(e.paid)}</td><td>${ECH_BADGE[e.status]}</td></tr>`).join("")}</tbody></table></div>
+        <h3 class="credit-h3">Versements reçus (${info.vs.length})</h3>
+        ${info.vs.length ? `<div class="table-wrap"><table class="table compact"><thead><tr><th>Date</th><th>Mode</th><th>Note</th><th class="num">Montant</th><th></th></tr></thead><tbody>
+          ${info.vs.map(v => `<tr><td>${fmtDate(v.DateVersement)}</td><td>${esc(v.ModePaiement || "")}</td><td class="muted">${esc(v.Note || "")}</td><td class="num"><strong>${money(v.Montant)}</strong></td>
+            <td class="actions"><button class="btn sm icon ghost danger" data-del-vs="${esc(v.id)}" title="Supprimer ce versement" aria-label="Supprimer">${ICON.trash}</button></td></tr>`).join("")}</tbody></table></div>`
+          : `<div class="empty" style="padding:14px">Aucun versement.</div>`}`,
+      foot: `<button class="btn danger" data-del-credit>${ICON.trash} Supprimer le dossier</button><span class="spacer"></span>
+        <button class="btn" data-print-credit>${ICON.print} Imprimer</button>${info.solde ? "" : `<button class="btn primary" data-add-vs>${ICON.plus} Versement</button>`}`
+    });
+    m.querySelector("[data-print-credit]").addEventListener("click", () => { $("#print-area").innerHTML = creditHTML(creditInfo(c)); window.print(); });
+    const addVs = m.querySelector("[data-add-vs]");
+    if (addVs) addVs.addEventListener("click", () => { closeModal(); versementDialog(num, () => { render(); creditDetail(num); }); });
+    m.addEventListener("click", async e => {
+      const dv = e.target.closest("[data-del-vs]");
+      if (dv) {
+        const v = state.versements.find(x => x.id === dv.dataset.delVs);
+        if (!v || !(await confirmBox("Supprimer le versement", `Supprimer le versement de <strong>${money(v.Montant)}</strong> du ${fmtDate(v.DateVersement)} ?`, "Supprimer", true, "Garder"))) return creditDetail(num);
+        try {
+          await DS.deleteVersement(v.id);
+          state.versements = state.versements.filter(x => x !== v);
+          if (c.Statut === "Soldé") { await DS.updateCredit(c.id, { Statut: "En cours" }); c.Statut = "En cours"; }
+          toast("Versement supprimé.", "ok");
+        } catch (err) { toast(err.message, "bad"); }
+        render(); return creditDetail(num);
+      }
+      if (e.target.closest("[data-del-credit]")) {
+        closeModal();
+        if (!(await confirmBox("Supprimer le dossier", `Le dossier <strong>${esc(c.Title)}</strong> de ${esc(c.Client)} et ses ${info.vs.length} versement(s) seront supprimés.<br><span class="muted" style="font-size:13px">La vente ${esc(c.NumVente || "")} reste enregistrée : annulez-la depuis le menu Ventes si nécessaire.</span>`, "Supprimer le dossier", true, "Garder le dossier"))) return;
+        try {
+          for (const v of info.vs) { await DS.deleteVersement(v.id); state.versements = state.versements.filter(x => x !== v); }
+          await DS.deleteCredit(c.id); state.credits = state.credits.filter(x => x !== c);
+          toast("Dossier supprimé.", "ok");
+        } catch (err) { toast(err.message, "bad"); }
+        render();
+      }
+    });
+  }
+
+  /* ---- Vue : crédits ---- */
+  function viewCredits(el) {
+    const f = state.filters.credits || (state.filters.credits = { tab: "dossiers", q: "", st: "encours" });
+    if (!state.creditsReady) {
+      el.innerHTML = `<div class="card card-pad" style="max-width:760px"><div class="alert info">${ICON.info}<div class="grow">
+        <strong>Ventes par échéances</strong><br>Suivez les clients qui paient en plusieurs fois : articles demandés, échéancier, versements, retards.
+        <ol style="margin:10px 0 0;padding-left:18px;font-size:13.5px"><li>Ajoutez les articles au panier depuis <a href="#/articles">Articles</a> (🛒).</li>
+        <li>Dans le panier, choisissez le paiement <strong>« Par échéances (crédit) »</strong> : acompte, nombre d'échéances, périodicité.</li>
+        <li>Enregistrez ensuite chaque versement du client ici.</li></ol>
+        <button class="btn primary" id="cr-activate" style="margin-top:12px">Activer les ventes par échéances</button></div></div></div>`;
+      el.onclick = async e => { if (e.target.closest("#cr-activate") && await ensureCreditLists()) render(); };
+      return;
+    }
+    const infos = (state.credits || []).map(creditInfo).sort((a, b) => (a.solde - b.solde) || ((a.next ? +a.next.date : 9e15) - (b.next ? +b.next.date : 9e15)));
+    const active = infos.filter(i => !i.solde);
+    const now = new Date(), monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59);
+    const encours = active.reduce((t, i) => t + i.reste, 0);
+    const lateInfos = active.filter(i => i.late.length);
+    const dueMonth = active.reduce((t, i) => t + i.sch.filter(e => e.status !== "payee" && e.date <= monthEnd).reduce((u, e) => u + e.amount - e.paid, 0), 0);
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+    const recuMois = (state.versements || []).filter(v => new Date(v.DateVersement) >= monthStart).reduce((t, v) => t + (+v.Montant || 0), 0);
+    el.innerHTML = `
+      <div class="stack">
+        <div class="kpis kpis-grad">
+          <div class="card kpi g-total"><div class="kpi-label">Encours clients</div><div class="kpi-value">${money(encours)}</div><div class="kpi-sub">reste à encaisser · ${int(active.length)} dossier(s) en cours</div></div>
+          <div class="card kpi g-out"><div class="kpi-label">Échéances en retard</div><div class="kpi-value">${money(lateInfos.reduce((t, i) => t + i.lateAmt, 0))}</div><div class="kpi-sub">${int(lateInfos.length)} client(s) en retard</div></div>
+          <div class="card kpi g-buys"><div class="kpi-label">À encaisser ce mois</div><div class="kpi-value">${money(dueMonth)}</div><div class="kpi-sub">échéances jusqu'au ${fmtDate(monthEnd)}, retards inclus</div></div>
+          <div class="card kpi g-profit"><div class="kpi-label">Encaissé ce mois</div><div class="kpi-value">${money(recuMois)}</div><div class="kpi-sub">versements et acomptes reçus</div></div>
+        </div>
+        <div class="tabs">
+          <button class="tab ${f.tab === "dossiers" ? "on" : ""}" data-tab="dossiers">Dossiers clients</button>
+          <button class="tab ${f.tab === "echeances" ? "on" : ""}" data-tab="echeances">Échéancier</button>
+          <span class="spacer"></span>
+          <button class="btn primary" id="cr-new">${ICON.plus} Nouvelle vente à crédit</button>
+        </div>
+        <div class="card" id="cr-body"></div>
+      </div>`;
+    const body = $("#cr-body");
+    const drawDossiers = () => {
+      const q = norm(f.q);
+      const list = infos.filter(i => (f.st === "tous" || (f.st === "encours" && !i.solde) || (f.st === "retard" && i.late.length && !i.solde) || (f.st === "soldes" && i.solde))
+        && (!q || norm([i.c.Client, i.c.Telephone, i.c.Title, i.articles.map(a => a.name).join(" ")].join(" ")).includes(q)));
+      $("#cr-list").innerHTML = list.length ? `<div class="table-wrap"><table class="table responsive compact">
+        <thead><tr><th>Client</th><th>Articles</th><th class="num">Total</th><th class="num">Payé</th><th class="num">Reste</th><th>Progression</th><th>Prochaine échéance</th><th></th></tr></thead>
+        <tbody>${list.map(i => {
+          const pct = i.total ? Math.min(100, Math.round(i.paid / i.total * 100)) : 100;
+          return `<tr class="clickable" data-credit="${esc(i.c.Title)}">
+            <td class="primary-cell" data-label="Client"><span style="display:flex;flex-direction:column"><span>${esc(i.c.Client)}</span>${i.c.Telephone ? `<span class="muted" style="font-size:12px;font-weight:400">${esc(i.c.Telephone)}</span>` : ""}</span></td>
+            <td data-label="Articles"><span class="ellipsis" style="display:block;max-width:240px">${esc(i.articles.map(a => (a.qty > 1 ? a.qty + " × " : "") + a.name).join(", "))}</span></td>
+            <td class="num" data-label="Total">${money(i.total)}</td><td class="num" data-label="Payé">${money(i.paid)}</td>
+            <td class="num" data-label="Reste"><strong style="color:${i.solde ? "var(--success)" : "var(--text)"}">${money(i.reste)}</strong></td>
+            <td data-label="Progression"><div class="progress sm"><span style="width:${pct}%"></span></div><span class="muted" style="font-size:11.5px">${pct} %</span></td>
+            <td data-label="Prochaine échéance">${i.solde ? '<span class="badge ok">Soldé</span>' : i.next ? `${fmtDate(i.next.date)} · ${money(i.next.amount - i.next.paid)} ${i.late.length ? `<span class="badge bad">${i.late.length} en retard</span>` : ""}` : "—"}</td>
+            <td class="actions">${i.solde ? "" : `<button class="btn sm row-act" data-vs="${esc(i.c.Title)}" title="Enregistrer un versement">${ICON.plus}<span>Versement</span></button>`}</td></tr>`;
+        }).join("")}</tbody></table></div>
+        <div class="table-foot"><span>${int(list.length)} dossier(s)</span><span>Reste à encaisser : <strong>${money(list.reduce((t, i) => t + i.reste, 0))}</strong></span></div>`
+        : `<div class="empty">Aucun dossier pour ces critères.</div>`;
+    };
+    const drawEcheances = () => {
+      const rows = [];
+      for (const i of active) for (const e of i.sch) if (e.status !== "payee") rows.push({ i, e });
+      rows.sort((a, b) => a.e.date - b.e.date);
+      body.innerHTML = rows.length ? `<div class="table-wrap"><table class="table responsive compact">
+        <thead><tr><th>Date</th><th>Client</th><th>Échéance</th><th class="num">Montant dû</th><th>État</th><th></th></tr></thead>
+        <tbody>${rows.map(({ i, e }) => `<tr class="clickable" data-credit="${esc(i.c.Title)}">
+          <td data-label="Date"><strong>${fmtDate(e.date)}</strong></td>
+          <td class="primary-cell" data-label="Client">${esc(i.c.Client)}${i.c.Telephone ? ` <span class="muted" style="font-size:12px;font-weight:400">${esc(i.c.Telephone)}</span>` : ""}</td>
+          <td data-label="Échéance">${e.k} / ${i.n}</td><td class="num" data-label="Montant dû">${money(e.amount - e.paid)}</td>
+          <td data-label="État">${ECH_BADGE[e.status]}</td>
+          <td class="actions"><button class="btn sm row-act" data-vs="${esc(i.c.Title)}" title="Enregistrer un versement">${ICON.plus}<span>Versement</span></button></td></tr>`).join("")}</tbody></table></div>
+        <div class="table-foot"><span>${int(rows.length)} échéance(s) à encaisser</span><span>Total : <strong>${money(rows.reduce((t, r) => t + r.e.amount - r.e.paid, 0))}</strong></span></div>`
+        : `<div class="empty">Aucune échéance à encaisser.</div>`;
+    };
+    if (f.tab === "echeances") drawEcheances();
+    else {
+      body.innerHTML = `<div class="card-head compact-head">
+          <div class="search" style="flex:1 1 220px">${ICON.search}<input class="input" id="cr-q" type="search" placeholder="Client, téléphone, article…" value="${esc(f.q)}"></div>
+          <select class="input" id="cr-st" style="width:auto;flex:0 1 190px">
+            <option value="encours" ${f.st === "encours" ? "selected" : ""}>En cours</option><option value="retard" ${f.st === "retard" ? "selected" : ""}>En retard</option>
+            <option value="soldes" ${f.st === "soldes" ? "selected" : ""}>Soldés</option><option value="tous" ${f.st === "tous" ? "selected" : ""}>Tous les dossiers</option></select></div>
+        <div id="cr-list"></div>`;
+      drawDossiers();
+      $("#cr-q").addEventListener("input", e => { f.q = e.target.value; drawDossiers(); });
+    }
+    el.onchange = e => { if (e.target.id === "cr-st") { f.st = e.target.value; drawDossiers(); } };
+    el.onclick = e => {
+      const t = e.target.closest("[data-tab]");
+      if (t) { f.tab = t.dataset.tab; return viewCredits(el); }
+      if (e.target.closest("#cr-new")) {
+        if (cartLines().length) return sellDialog(null, { credit: true });
+        location.hash = "#/articles";
+        return toast("Ajoutez les articles demandés au panier (🛒), puis validez en choisissant « Par échéances ».", "");
+      }
+      const vs = e.target.closest("[data-vs]");
+      if (vs) return versementDialog(vs.dataset.vs);
+      const tr = e.target.closest("[data-credit]");
+      if (tr) return creditDetail(tr.dataset.credit);
     };
   }
 

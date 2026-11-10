@@ -40,6 +40,33 @@
   ];
   const ACHAT_FIELDS = ACHAT_COLUMNS.map(c => c.name);
 
+  /* Crédits (ventes payées par échéances) et versements des clients */
+  const CREDIT_COLUMNS = [
+    { name: "Client", text: {} },
+    { name: "Telephone", text: {} },
+    { name: "Articles", text: { allowMultipleLines: true } },       // détail des articles (JSON)
+    { name: "MontantTotal", number: { decimalPlaces: "two" } },
+    { name: "Apport", number: { decimalPlaces: "two" } },           // acompte versé à la signature
+    { name: "NbEcheances", number: { decimalPlaces: "none" } },
+    { name: "Periodicite", text: {} },                               // Mensuelle, Toutes les 2 semaines, Hebdomadaire
+    { name: "DateDebut", dateTime: { format: "dateTime" } },         // date de la 1re échéance
+    { name: "Statut", text: {} },                                    // En cours, Soldé
+    { name: "NumVente", text: {} },
+    { name: "Note", text: { allowMultipleLines: true } },
+    { name: "Utilisateur", text: {} }
+  ];
+  const CREDIT_FIELDS = CREDIT_COLUMNS.map(c => c.name);
+  const VERS_COLUMNS = [
+    { name: "CreditNum", text: {} },
+    { name: "Client", text: {} },
+    { name: "Montant", number: { decimalPlaces: "two" } },
+    { name: "DateVersement", dateTime: { format: "dateTime" } },
+    { name: "ModePaiement", text: {} },
+    { name: "Note", text: {} },
+    { name: "Utilisateur", text: {} }
+  ];
+  const VERS_FIELDS = VERS_COLUMNS.map(c => c.name);
+
   const SYSTEM_COLUMNS = new Set([
     "ContentType", "Attachments", "Edit", "LinkTitle", "LinkTitleNoMenu", "DocIcon",
     "ItemChildCount", "FolderChildCount", "AppAuthor", "AppEditor", "ComplianceAssetId",
@@ -198,17 +225,61 @@
 
       const soft = (p, def, what) => p.catch(e => { console.warn(what + " indisponibles", e); return def; });
       // toutes les listes sont chargées en parallèle
-      const [art, ventes, categories, clients, fournisseurs, achats] = await Promise.all([
+      const [art, ventes, categories, clients, fournisseurs, achats, credits, versements] = await Promise.all([
         this.loadArticles(),
         this.loadVentes(),
         soft(this.loadCategories(), null, "Catégories"),
         soft(this.loadClients(), null, "Clients"),
         soft(this.loadFournisseurs(), null, "Fournisseurs"),
-        soft(this.loadAchats(), [], "Achats")
+        soft(this.loadAchats(), [], "Achats"),
+        soft(this.loadGeneric("credits", cfg.creditsList, CREDIT_FIELDS), { ready: false, items: [] }, "Crédits"),
+        soft(this.loadGeneric("versements", cfg.versementsList, VERS_FIELDS), { ready: false, items: [] }, "Versements")
       ]);
       return { columns: art.columns, articles: art.articles, ventes, categories, clients, fournisseurs, achats,
+        credits: credits.items, versements: versements.items, creditsReady: credits.ready && versements.ready,
         achatsReady: !!this.achatsListId, ventesReady: !!this.ventesListId, siteName: this.siteName };
     },
+
+    /* ---- Listes « simples » retrouvées par leur nom, colonnes par leur nom affiché ---- */
+    async loadGeneric(key, listName, fields) {
+      if (!listName) return { ready: false, items: [] };
+      if (!this[key + "Id"]) this[key + "Id"] = await this.findList(listName);
+      if (!this[key + "Id"]) return { ready: false, items: [] };
+      this[key + "Map"] = await this.fieldMap(this[key + "Id"], fields);
+      const its = await this.getAll(`/sites/${this.siteId}/lists/${this[key + "Id"]}/items?$expand=fields&$top=500`);
+      return { ready: true, items: its.map(it => this.fromMapped(it, this[key + "Map"], fields)) };
+    },
+    async createGenericList(key, listName, columns, fields) {
+      if (this[key + "Id"]) return;
+      const list = await this.call(`/sites/${this.siteId}/lists`, {
+        method: "POST", body: JSON.stringify({ displayName: listName, columns, list: { template: "genericList" } })
+      }, ["Sites.Manage.All"]);
+      this[key + "Id"] = list.id;
+      this[key + "Map"] = await this.fieldMap(list.id, fields);
+    },
+    async createGeneric(key, fields, names) {
+      const it = await this.call(`/sites/${this.siteId}/lists/${this[key + "Id"]}/items`,
+        { method: "POST", body: JSON.stringify({ fields: this.toMapped(fields, this[key + "Map"] || {}) }) });
+      return this.fromMapped(it, this[key + "Map"] || {}, names);
+    },
+    async updateGeneric(key, id, fields) {
+      await this.call(`/sites/${this.siteId}/lists/${this[key + "Id"]}/items/${id}/fields`,
+        { method: "PATCH", body: JSON.stringify(this.toMapped(fields, this[key + "Map"] || {})) });
+    },
+    async deleteGeneric(key, id) {
+      await this.call(`/sites/${this.siteId}/lists/${this[key + "Id"]}/items/${id}`, { method: "DELETE" });
+    },
+
+    /* ---- Crédits et versements ---- */
+    async createCreditLists() {
+      await this.createGenericList("credits", cfg.creditsList, CREDIT_COLUMNS, CREDIT_FIELDS);
+      await this.createGenericList("versements", cfg.versementsList, VERS_COLUMNS, VERS_FIELDS);
+    },
+    createCredit(f) { return this.createGeneric("credits", f, CREDIT_FIELDS); },
+    updateCredit(id, f) { return this.updateGeneric("credits", id, f); },
+    deleteCredit(id) { return this.deleteGeneric("credits", id); },
+    createVersement(f) { return this.createGeneric("versements", f, VERS_FIELDS); },
+    deleteVersement(id) { return this.deleteGeneric("versements", id); },
 
     async loadArticles() {
       const base = `/sites/${this.siteId}/lists/${this.articlesListId}`;
@@ -262,7 +333,8 @@
     /* Mémorise / restaure les identifiants techniques (affichage instantané depuis le cache) */
     exportMeta() {
       const k = ["siteId", "siteName", "articlesListId", "ventesListId", "achatsListId", "categoriesListId", "clientsListId",
-        "fournisseursListId", "vmap", "amap", "catSeuilField", "columns", "ventesMissing"];
+        "fournisseursListId", "vmap", "amap", "catSeuilField", "columns", "ventesMissing",
+        "creditsId", "creditsMap", "versementsId", "versementsMap"];
       return Object.fromEntries(k.map(x => [x, this[x]]));
     },
     importMeta(m) { if (m) for (const k of Object.keys(m)) if (m[k] !== undefined && m[k] !== null) this[k] = m[k]; },
@@ -543,10 +615,20 @@
       if (!this.db.clients) this.db.clients = [{ id: "1", name: "ANONYME", phone: "" }, { id: "2", name: "Société Atlas", phone: "0522000000" }];
       if (!this.db.fournisseurs) this.db.fournisseurs = [{ id: "1", name: "TAKHFID" }, { id: "2", name: "AZIZ" }];
       if (!this.db.achats) this.db.achats = [];
+      if (!this.db.credits) this.db.credits = [];
+      if (!this.db.versements) this.db.versements = [];
       return { columns: clone(this.db.columns), articles: this.db.articles.map(a => this.resolve(a)), ventes: clone(this.db.ventes),
         categories: clone(this.db.categories || []), clients: clone(this.db.clients), fournisseurs: clone(this.db.fournisseurs),
-        achats: clone(this.db.achats), achatsReady: !!this.db.achatsReady, ventesReady: true, siteName: "Démo" };
+        achats: clone(this.db.achats), achatsReady: !!this.db.achatsReady,
+        credits: clone(this.db.credits), versements: clone(this.db.versements), creditsReady: !!this.db.creditsReady,
+        ventesReady: true, siteName: "Démo" };
     },
+    async createCreditLists() { this.db.creditsReady = true; this.persist(); },
+    async createCredit(f) { const v = { ...f, id: String(Date.now()) + Math.floor(Math.random() * 1000) }; this.db.credits.push(v); this.persist(); return { ...v }; },
+    async updateCredit(id, f) { const c = this.db.credits.find(x => x.id === String(id)); if (c) Object.assign(c, f); this.persist(); },
+    async deleteCredit(id) { this.db.credits = this.db.credits.filter(x => x.id !== String(id)); this.persist(); },
+    async createVersement(f) { const v = { ...f, id: String(Date.now()) + Math.floor(Math.random() * 1000) }; this.db.versements.push(v); this.persist(); return { ...v }; },
+    async deleteVersement(id) { this.db.versements = this.db.versements.filter(x => x.id !== String(id)); this.persist(); },
     async createAchatsList() { this.db.achatsReady = true; this.persist(); },
     async createAchatLine(fields) { const v = { ...fields, id: String(Date.now()) + Math.floor(Math.random() * 1000) }; this.db.achats.push(v); this.persist(); return { ...v }; },
     async deleteAchatLine(id) { this.db.achats = this.db.achats.filter(x => x.id !== String(id)); this.persist(); },

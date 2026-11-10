@@ -58,6 +58,10 @@ window.APP_CONFIG = {
   fournisseursField: "Nom_fournisseur",
   achatsList: "Tbl_achat",            // créée par l'application au premier achat
 
+  // Ventes par échéances (crédits) : listes créées par l'application à la première utilisation
+  creditsList: "Tbl_credit",
+  versementsList: "Tbl_versement",
+
   // Liste des catégories (gérée depuis l'écran « Catégories ») et sa colonne contenant le nom
   categoriesList: "Tbl_Calegorie",
   categoriesField: "Nom_Categorie",
