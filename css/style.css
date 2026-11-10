@@ -96,10 +96,10 @@ a { color: var(--primary); }
 .credit-preview { margin-top: 10px; font-size: 13px; }
 .credit-dates { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
 .credit-dates span { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 1px 7px; font-size: 12px; }
-.ech-edit { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 6px; margin-top: 8px; }
+.ech-edit { display: grid; grid-template-columns: repeat(auto-fill, minmax(235px, 1fr)); gap: 6px; margin-top: 8px; }
 .ech-item { display: flex; align-items: center; gap: 6px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 4px 8px; font-size: 12.5px; }
 .ech-item span { font-weight: 700; color: var(--primary); min-width: 16px; }
-.ech-item .input { min-height: 30px; padding: 2px 6px; font-size: 13px; flex: 1; min-width: 0; border-color: transparent; background: var(--surface-2); }
+.ech-item .input { min-height: 30px; padding: 2px 6px; font-size: 13px; flex: 1; min-width: 128px; border-color: transparent; background: var(--surface-2); }
 .ech-item em { font-style: normal; color: var(--muted); white-space: nowrap; }
 .input.ech-date { min-height: 30px; padding: 2px 6px; font-size: 13px; width: auto; }
 .credit-sum { display: grid; grid-template-columns: auto auto; gap: 2px 14px; font-size: 13.5px; align-items: baseline; }

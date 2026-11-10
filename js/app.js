@@ -11,6 +11,8 @@
   const esc = v => String(v == null ? "" : v).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const nf = new Intl.NumberFormat("fr-FR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const money = n => nf.format(+n || 0) + " " + cfg.devise;
+  // montant sans « ,00 » quand il est entier (échéances)
+  const moneyR = n => (Math.round((+n || 0) * 100) % 100 === 0 ? new Intl.NumberFormat("fr-FR").format(Math.round(+n || 0)) : nf.format(+n || 0)) + " " + cfg.devise;
   const int = n => new Intl.NumberFormat("fr-FR").format(+n || 0);
   const fmtDate = d => d ? new Date(d).toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit", year: "numeric" }) : "";
   const fmtDateTime = d => d ? new Date(d).toLocaleString("fr-FR", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" }) : "";
@@ -853,8 +855,8 @@
       if (!crDates.length) regenDates();
       const sch = schedule(total, apport, crDates.length, $("#cr-per", m).value, new Date(), crDates);
       $("#cr-preview", m).innerHTML = apport > total ? `<span style="color:var(--danger)">L'acompte dépasse le total.</span>`
-        : `<strong>${int(sch.length)} échéance(s) de ${money(sch[0] ? sch[0].amount : 0)}</strong>${sch.length > 1 && sch[sch.length - 1].amount !== sch[0].amount ? ` (dernière : ${money(sch[sch.length - 1].amount)})` : ""} · reste à financer ${money(Math.max(0, total - apport))}
-          <div class="ech-edit">${sch.map((e, i) => `<label class="ech-item"><span>${e.k}</span><input type="date" class="input" data-ech="${i}" value="${crDates[i]}" aria-label="Date de l'échéance ${e.k}"><em>${money(e.amount)}</em></label>`).join("")}</div>
+        : `<strong>${int(sch.length)} échéance(s) de ${moneyR(sch[0] ? sch[0].amount : 0)}</strong>${sch.length > 1 && sch[sch.length - 1].amount !== sch[0].amount ? ` (dernière : ${moneyR(sch[sch.length - 1].amount)})` : ""} · reste à financer ${moneyR(Math.max(0, total - apport))}
+          <div class="ech-edit">${sch.map((e, i) => `<label class="ech-item"><span>${e.k}</span><input type="date" class="input" data-ech="${i}" value="${crDates[i]}" aria-label="Date de l'échéance ${e.k}"><em>${moneyR(e.amount)}</em></label>`).join("")}</div>
           <div class="muted" style="font-size:12px;margin-top:4px">Les dates sont modifiables une par une.</div>`;
     };
     const syncCredit = () => {
@@ -2521,11 +2523,11 @@
     else { const day = x.getDate(); x.setDate(1); x.setMonth(x.getMonth() + k); x.setDate(Math.min(day, new Date(x.getFullYear(), x.getMonth() + 1, 0).getDate())); }
     return x;
   }
-  /* Échéancier : (total − acompte) réparti en n échéances égales, la dernière absorbe l'arrondi */
+  /* Échéancier : (total − acompte) réparti en n échéances de montant entier, la dernière absorbe le reste */
   function schedule(total, apport, n, per, start, dates) {
     const fin = Math.max(0, Math.round((total - apport) * 100) / 100);
     n = Math.max(1, n | 0);
-    const base = Math.floor(fin / n * 100) / 100;
+    const base = Math.floor(fin / n); // montants entiers : les centimes et le reste vont sur la dernière échéance
     return Array.from({ length: n }, (_, k) => ({
       k: k + 1, date: dates && dates[k] ? new Date(dates[k] + "T12:00:00") : addPeriod(start, per, k),
       amount: k === n - 1 ? Math.round((fin - base * (n - 1)) * 100) / 100 : base
@@ -2633,7 +2635,7 @@
         <span>Déjà payé</span><span class="num">${money(info.paid)}</span><strong class="grand">Reste à payer</strong><strong class="num grand">${money(info.reste)}</strong></div>
       <h3 style="margin:16px 0 6px">Échéancier</h3>
       <table><thead><tr><th>N°</th><th>Date</th><th class="num">Montant</th><th class="num">Payé</th><th>État</th></tr></thead><tbody>
-        ${info.sch.map(e => `<tr><td>${e.k}</td><td>${fmtDate(e.date)}</td><td class="num">${money(e.amount)}</td><td class="num">${money(e.paid)}</td><td>${{ payee: "Payée", retard: "En retard", partielle: "Partielle", avenir: "À venir" }[e.status]}</td></tr>`).join("")}</tbody></table>
+        ${info.sch.map(e => `<tr><td>${e.k}</td><td>${fmtDate(e.date)}</td><td class="num">${moneyR(e.amount)}</td><td class="num">${moneyR(e.paid)}</td><td>${{ payee: "Payée", retard: "En retard", partielle: "Partielle", avenir: "À venir" }[e.status]}</td></tr>`).join("")}</tbody></table>
       ${info.vs.length ? `<h3 style="margin:16px 0 6px">Versements reçus</h3><table><thead><tr><th>Date</th><th>Mode</th><th class="num">Montant</th></tr></thead><tbody>
         ${info.vs.map(v => `<tr><td>${fmtDate(v.DateVersement)}</td><td>${esc(v.ModePaiement || "")}${v.Note ? " · " + esc(v.Note) : ""}</td><td class="num">${money(v.Montant)}</td></tr>`).join("")}</tbody></table>` : ""}
     </div>`;
@@ -2657,7 +2659,7 @@
           ${info.articles.map(a => `<tr><td>${esc(a.name)}</td><td class="num">${int(a.qty)}</td><td class="num">${money(a.price)}</td><td class="num">${money(a.qty * a.price)}</td></tr>`).join("")}</tbody></table></div>
         <h3 class="credit-h3">Échéancier · ${int(info.n)} × ${esc(c.Periodicite || "")}${info.apport ? ` · acompte ${money(info.apport)}` : ""}</h3>
         <div class="table-wrap"><table class="table compact"><thead><tr><th>N°</th><th>Date</th><th class="num">Montant</th><th class="num">Payé</th><th>État</th></tr></thead><tbody>
-          ${info.sch.map((e, i) => `<tr><td>${e.k}</td><td><input type="date" class="input ech-date" data-edit-ech="${i}" value="${dayKey(e.date)}" title="Modifier la date de cette échéance" aria-label="Date de l'échéance ${e.k}"></td><td class="num">${money(e.amount)}</td><td class="num">${money(e.paid)}</td><td>${ECH_BADGE[e.status]}</td></tr>`).join("")}</tbody></table></div>
+          ${info.sch.map((e, i) => `<tr><td>${e.k}</td><td><input type="date" class="input ech-date" data-edit-ech="${i}" value="${dayKey(e.date)}" title="Modifier la date de cette échéance" aria-label="Date de l'échéance ${e.k}"></td><td class="num">${moneyR(e.amount)}</td><td class="num">${moneyR(e.paid)}</td><td>${ECH_BADGE[e.status]}</td></tr>`).join("")}</tbody></table></div>
         <h3 class="credit-h3">Versements reçus (${info.vs.length})</h3>
         ${info.vs.length ? `<div class="table-wrap"><table class="table compact"><thead><tr><th>Date</th><th>Mode</th><th>Note</th><th class="num">Montant</th><th></th></tr></thead><tbody>
           ${info.vs.map(v => `<tr><td>${fmtDate(v.DateVersement)}</td><td>${esc(v.ModePaiement || "")}</td><td class="muted">${esc(v.Note || "")}</td><td class="num"><strong>${money(v.Montant)}</strong></td>
