@@ -524,22 +524,8 @@
       .sort((a, b) => String(F(a, "categorie") || "").localeCompare(String(F(b, "categorie") || ""), "fr") || String(artName(a)).localeCompare(String(artName(b)), "fr")) : [];
     const stockValue = hasStock() ? state.articles.reduce((t, a) => t + Math.max(0, artStock(a)) * artPrice(a), 0) : 0;
 
-    // Ventes (articles + réparations) et achats des 12 derniers mois
-    const months = [];
-    for (let i = 11; i >= 0; i--) {
-      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
-      months.push({ key: d.getFullYear() + "-" + d.getMonth(), d, v: 0, n: 0, rep: 0, a: 0, na: 0, p: 0, pu: 0 });
-    }
-    const byMonth = Object.fromEntries(months.map(m => [m.key, m]));
-    const mOf = x => { const d = new Date(x); return byMonth[d.getFullYear() + "-" + d.getMonth()]; };
-    for (const s of sales) { const m = mOf(s.date); if (m) { m.v += s.total; m.n++; if (s.repair) m.rep += s.total; if (s.profit != null) m.p += s.profit; else m.pu++; } }
-    for (const p of state.achats || []) { const m = mOf(p.DateAchat); if (m) { m.a += +p.Montant || 0; m.na++; } }
-    const caYear = months.reduce((t, m) => t + m.v, 0), achYear = months.reduce((t, m) => t + m.a, 0), profYear = months.reduce((t, m) => t + m.p, 0);
-    // Bénéfice du mois : ventes (prix − coût d'achat) + réparations (prix − pièces)
     const repMonth = sMonth.filter(s => s.repair);
     const caRepMonth = repMonth.reduce((t, s) => t + s.total, 0);
-    const profitMonth = sMonth.reduce((t, s) => t + (s.profit != null ? s.profit : 0), 0);
-    const unknownMonth = sMonth.filter(s => s.profit == null).length;
 
     // Derniers achats : liste des achats si elle existe, sinon articles par date d'entrée (DATEe)
     const dateCol = findCol("DATEe") || state.columns.find(c => c.type === "dateTime");
@@ -559,18 +545,11 @@
           <div class="card kpi g-total"><div class="kpi-label">Capital</div><div class="kpi-value">${money(stockValue)}</div><div class="kpi-sub">prix de vente × quantité en stock · ${int(inStockCount)} article(s) en stock (${int(inStockQty)} pièces)</div></div>
           <div class="card kpi g-today"><div class="kpi-label">CA aujourd'hui</div><div class="kpi-value">${money(caToday)}</div><div class="kpi-sub">${sToday.length} opération(s)</div></div>
           <div class="card kpi g-month"><div class="kpi-label">CA du mois</div><div class="kpi-value">${money(caMonth)}</div><div class="kpi-sub">${sMonth.length - repMonth.length} vente(s) · ${repMonth.length} réparation(s) (${money(caRepMonth)})</div></div>
-          <div class="card kpi g-profit"><div class="kpi-label">Bénéfice du mois</div><div class="kpi-value">${money(profitMonth)}</div><div class="kpi-sub">ventes + réparations${unknownMonth ? ` · ${unknownMonth} vente(s) sans prix d'achat non comptée(s)` : ""}</div></div>
           <div class="card kpi g-buys clickable-kpi" data-goto="achats-hist"><div class="kpi-label">Achats du mois</div><div class="kpi-value">${money(achatsMonth)}</div><div class="kpi-sub">${(state.achats || []).filter(p => new Date(p.DateAchat) >= monthStart).length} achat(s) enregistré(s)</div></div>
-          <div class="card kpi g-out clickable-kpi" data-goto="out"><div class="kpi-label">En rupture de stock</div><div class="kpi-value">${int(out.length)}</div><div class="kpi-sub">article(s) à quantité 0</div></div>
         </div>
-        <div class="grid-2">
+        <div>
           <div class="card">
-            <div class="card-head"><h2>CA, bénéfice et achats par mois</h2>
-              <span class="chart-legend"><span><i class="lg-sales"></i>CA ${money(caYear)}</span><span><i class="lg-profit"></i>Bénéfice ${money(profYear)}</span><span><i class="lg-buys"></i>Achats ${money(achYear)}</span></span></div>
-            <div class="chart">${lineChart(months)}</div>
-          </div>
-          <div class="card">
-            <div class="card-head"><h2>Produits en rupture de stock</h2><button class="btn sm" data-goto="out">Tout voir</button></div>
+            <div class="card-head"><h2>Produits en rupture de stock${out.length ? ` <span class="badge bad">${int(out.length)}</span>` : ""}</h2><button class="btn sm" data-goto="out">Tout voir</button></div>
             ${out.length ? `<div class="dash-scroll"><ul class="list-simple">${out.slice(0, 40).map(a => `<li><span style="min-width:0">${thumbName(a)}</span><span class="muted ellipsis" style="font-size:12.5px;max-width:45%">${esc(F(a, "categorie") || "")}</span></li>`).join("")}</ul></div>
               ${out.length > 40 ? `<div class="table-foot"><span class="muted">… et ${int(out.length - 40)} autre(s)</span></div>` : ""}`
               : `<div class="empty">${hasStock() ? "Aucun produit en rupture." : "Colonne « Stock » non définie."}</div>`}

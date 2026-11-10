@@ -622,3 +622,7 @@ body.has-dock .view { padding-bottom: calc(var(--dock-h, 0px) + 40px); }
 .free-row .sellable { cursor: pointer; }
 .add-free { display: flex; gap: 8px; flex-wrap: wrap; }
 .add-free .add-svc { flex: 1 1 180px; }
+
+/* Tableau de bord : 4 indicateurs sur une ligne (2 × 2 sur écran moyen) */
+.kpis.kpis-grad { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+@media (max-width: 960px) { .kpis.kpis-grad { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
