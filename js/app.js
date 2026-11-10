@@ -664,6 +664,11 @@
     if (currentView() === "articles" && state.refreshArticle) state.refreshArticle(a, true);
     return true;
   }
+  function cartRemove(a) {
+    state.cart = state.cart.filter(l => l.id !== String(a.id));
+    cartSave(); renderCartBar();
+    if (currentView() === "articles" && state.refreshArticle) state.refreshArticle(a, true);
+  }
   function cartClear() {
     const ids = state.cart.map(l => l.id);
     state.cart = []; cartSave(); renderCartBar();
@@ -1233,7 +1238,7 @@
       return `<td class="editable ${isNumCol(c) ? "num" : ""}" data-col="${esc(c.name)}" data-label="${esc(colTitle(c))}" title="Cliquer pour modifier">${cellHTML(a, c)}</td>`;
     };
     const rowInner = a => layout.map(c => tdHTML(a, c)).join("") +
-      `<td class="actions"><button class="btn sm icon ghost sell-btn ${cartQty(a.id) ? "in-cart" : ""}" data-addcart="${esc(a.id)}" title="Ajouter au panier" aria-label="Ajouter au panier">${ICON.cartPlus}${cartQty(a.id) ? `<span class="cart-badge">${cartQty(a.id)}</span>` : ""}</button><button class="btn sm icon ghost rcv-btn ${pcartQty(a.id) ? "in-cart" : ""}" data-rcv="${esc(a.id)}" title="Ajouter au bon de réception (entrée en stock)" aria-label="Ajouter au bon de réception">📦${pcartQty(a.id) ? `<span class="cart-badge buy">${pcartQty(a.id)}</span>` : ""}</button><button class="btn sm icon ghost" data-edit="${esc(a.id)}" title="Modifier (formulaire complet)" aria-label="Modifier dans un formulaire">${ICON.edit}</button><button class="btn sm icon ghost danger" data-del="${esc(a.id)}" title="Supprimer" aria-label="Supprimer">${ICON.trash}</button></td>`;
+      `<td class="actions"><button class="btn sm icon ghost sell-btn ${cartQty(a.id) ? "in-cart" : ""}" data-addcart="${esc(a.id)}" title="${cartQty(a.id) ? "Retirer du panier" : "Ajouter au panier"}" aria-label="${cartQty(a.id) ? "Retirer du panier" : "Ajouter au panier"}">${ICON.cartPlus}${cartQty(a.id) ? `<span class="cart-badge">${cartQty(a.id)}</span>` : ""}</button><button class="btn sm icon ghost rcv-btn ${pcartQty(a.id) ? "in-cart" : ""}" data-rcv="${esc(a.id)}" title="${pcartQty(a.id) ? "Retirer du bon de réception" : "Ajouter au bon de réception (entrée en stock)"}" aria-label="${pcartQty(a.id) ? "Retirer du bon de réception" : "Ajouter au bon de réception"}">📦${pcartQty(a.id) ? `<span class="cart-badge buy">${pcartQty(a.id)}</span>` : ""}</button><button class="btn sm icon ghost" data-edit="${esc(a.id)}" title="Modifier (formulaire complet)" aria-label="Modifier dans un formulaire">${ICON.edit}</button><button class="btn sm icon ghost danger" data-del="${esc(a.id)}" title="Supprimer" aria-label="Supprimer">${ICON.trash}</button></td>`;
     const footHTML = list => `<span>${int(list.length)} article(s) sur ${int(state.articles.length)}</span>` +
       (hasStock() ? `<span>Quantité totale : <strong>${int(list.reduce((t, a) => t + artStock(a), 0))}</strong></span>` : "") +
       (hasCA() ? `<span>Valeur du stock : <strong>${money(list.reduce((t, a) => t + artCA(a), 0))}</strong></span>` : "") +
@@ -1437,11 +1442,13 @@
       const th0 = e.target.closest("[data-thumb]");
       if (th0) { const a = state.articles.find(x => x.id === th0.dataset.thumb); if (a) return showPhoto(a); }
       const addc = e.target.closest("[data-addcart]");
-      if (addc) { const a = state.articles.find(x => x.id === addc.dataset.addcart); if (a) return cartAdd(a); }
+      // 1er clic : ajoute l'article au panier · 2e clic : le retire (la quantité se règle dans le panier)
+      if (addc) { const a = state.articles.find(x => x.id === addc.dataset.addcart); if (a) return cartQty(a.id) ? cartRemove(a) : cartAdd(a); }
       const sell = e.target.closest("[data-sell]");
       if (sell) { const a = state.articles.find(x => x.id === sell.dataset.sell); if (a) return sellDialog(a); }
       const rcv = e.target.closest("[data-rcv]");
-      if (rcv) { const a = state.articles.find(x => x.id === rcv.dataset.rcv); if (a) return pcartAdd(a); }
+      // 1er clic : ajoute l'article au bon de réception · 2e clic : le retire (la quantité se règle dans le bon)
+      if (rcv) { const a = state.articles.find(x => x.id === rcv.dataset.rcv); if (a) return pcartQty(a.id) ? pcartRemove(a) : pcartAdd(a); }
       const cell = e.target.closest("td.editable");
       if (cell && !cell.classList.contains("editing")) return startEdit(cell);
       if (e.target.closest("#col-reset")) { store.set(COL_ORDER_KEY, null); try { localStorage.removeItem(COL_ORDER_KEY); } catch (_) {} return viewArticles(el); }
@@ -1999,6 +2006,11 @@
     const ex = state.pcart.find(l => l.id === id);
     if (ex) ex.qty += q;
     else { const lp = lastPurchase(a); state.pcart.push({ id, qty: q, price: lp ? +lp.PrixAchat : "", sell: "" }); }
+    pcartSave(); renderCartBar();
+    if (currentView() === "articles" && state.refreshArticle) state.refreshArticle(a, true);
+  }
+  function pcartRemove(a) {
+    state.pcart = state.pcart.filter(l => l.id !== String(a.id));
     pcartSave(); renderCartBar();
     if (currentView() === "articles" && state.refreshArticle) state.refreshArticle(a, true);
   }
