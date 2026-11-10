@@ -926,52 +926,71 @@
           try { state.clients.push(await DS.createClient(clientName, (credit ? $("#cr-tel", m) : $("#sell-phone", m)).value.trim())); }
           catch (e) { toast("Client non ajouté à la liste : " + e.message, "bad"); }
         }
-        // 3. une ligne par article, toutes sous le même numéro de vente
+        // 3. dossier de crédit + acompte, AVANT les lignes de vente : si SharePoint refuse, rien n'est décompté
         const d = new Date(), num = saleNumber(d), pay = credit ? "Échéances" : $("#sell-pay", m).value;
-        for (const { l, a } of ls) {
-          if (!a) { // service hors stock : pas d'article ni de coût d'achat
-            state.ventes.push(await DS.createVenteLine({
-              Title: num, ArticleId: 0, Article: String(l.name).trim(), Reference: "Service",
-              Quantite: l.qty, PrixUnitaire: l.price, Montant: Math.round(l.qty * l.price * 100) / 100,
-              Client: clientName, ModePaiement: pay, Vendeur: Auth.userName(), DateVente: d.toISOString(),
-              TypeOperation: "Service", Cout: 0
-            }));
-            continue;
-          }
-          const ref = F(a, "reference"), lp = lastPurchase(a);
-          const v = await DS.createVenteLine({
-            Title: num, ArticleId: parseInt(a.id, 10), Article: String(artName(a)), Reference: ref == null ? "" : String(ref),
-            Quantite: l.qty, PrixUnitaire: l.price, Montant: Math.round(l.qty * l.price * 100) / 100,
-            Client: clientName, ModePaiement: pay, Vendeur: Auth.userName(), DateVente: d.toISOString(),
-            TypeOperation: "Vente", Cout: lp ? Math.round((+lp.PrixAchat || 0) * l.qty * 100) / 100 : null
-          });
-          state.ventes.push(v);
-          if (hasStock()) Object.assign(a, await DS.updateArticle(a.id, { [state.map.stock]: fresh[a.id] - l.qty }));
-        }
-        // dossier de crédit + acompte
+        const skipped = new Set();
+        const noteSkip = o => { (o && o.__skipped || []).forEach(x => skipped.add(x)); return o; };
         let creditNum = null;
         if (credit) {
           creditNum = "C" + num.slice(1);
           if (!crDates.length) regenDates();
           const nb = crDates.length;
           const startV = $("#cr-start", m).value;
-          const c = await DS.createCredit({
+          let artsTxt = JSON.stringify(ls.map(x => ({ id: x.a ? x.a.id : "", name: lineName(x), qty: x.l.qty, price: x.l.price, service: !x.a })));
+          // colonne « une ligne de texte » (255 caractères max) : description lisible au lieu du détail complet
+          if (DS.colType && DS.colType("credits", "Articles") === "text" && artsTxt.length > 255)
+            artsTxt = ls.map(x => `${x.l.qty}× ${lineName(x)}`).join(" ; ").slice(0, 255);
+          const c = noteSkip(await DS.createCredit({
             Title: creditNum, Client: clientName, Telephone: $("#cr-tel", m).value.trim() || ($("#sell-phone", m) ? $("#sell-phone", m).value.trim() : ""),
-            Articles: JSON.stringify(ls.map(x => ({ id: x.a ? x.a.id : "", name: lineName(x), qty: x.l.qty, price: x.l.price, service: !x.a }))),
+            Articles: artsTxt,
             MontantTotal: totalCart, Apport: apport, NbEcheances: nb, Periodicite: PERIODES[$("#cr-per", m).value],
             DateDebut: new Date((crDates[0] || startV || dayKey(addPeriod(d, "mensuelle", 1))) + "T12:00:00").toISOString(),
             Echeancier: JSON.stringify(crDates),
             Statut: apport >= totalCart ? "Soldé" : "En cours", NumVente: num, Utilisateur: Auth.userName()
-          });
-          state.credits.push(c);
-          if (apport > 0) state.versements.push(await DS.createVersement({
-            Title: creditNum, CreditNum: creditNum, Client: clientName, Montant: apport, DateVersement: d.toISOString(),
-            ModePaiement: "Acompte", Note: "Acompte à la signature", Utilisateur: Auth.userName()
           }));
+          // valeurs gardées en mémoire même si une colonne les a refusées (affichage correct tout de suite)
+          for (const k of ["MontantTotal", "Apport", "NbEcheances", "Periodicite", "DateDebut", "Echeancier", "Articles", "Statut", "NumVente", "Client"])
+            if (c[k] == null || c[k] === "") c[k] = { MontantTotal: totalCart, Apport: apport, NbEcheances: nb, Periodicite: PERIODES[$("#cr-per", m).value],
+              Echeancier: JSON.stringify(crDates), Articles: artsTxt, Statut: apport >= totalCart ? "Soldé" : "En cours", NumVente: num, Client: clientName,
+              DateDebut: new Date((crDates[0] || startV) + "T12:00:00").toISOString() }[k];
+          c.Title = c.Title || creditNum;
+          state.credits.push(c);
+          if (apport > 0) {
+            const v = noteSkip(await DS.createVersement({
+              Title: creditNum, CreditNum: creditNum, Client: clientName, Montant: apport, DateVersement: d.toISOString(),
+              ModePaiement: "Acompte", Note: "Acompte à la signature", Utilisateur: Auth.userName()
+            }));
+            if (!v.CreditNum) v.CreditNum = creditNum;
+            if (v.Montant == null || v.Montant === "") v.Montant = apport;
+            if (!v.DateVersement) v.DateVersement = d.toISOString();
+            state.versements.push(v);
+          }
+        }
+        // 4. une ligne par article, toutes sous le même numéro de vente
+        for (const { l, a } of ls) {
+          if (!a) { // service hors stock : pas d'article ni de coût d'achat
+            state.ventes.push(noteSkip(await DS.createVenteLine({
+              Title: num, ArticleId: 0, Article: String(l.name).trim(), Reference: "Service",
+              Quantite: l.qty, PrixUnitaire: l.price, Montant: Math.round(l.qty * l.price * 100) / 100,
+              Client: clientName, ModePaiement: pay, Vendeur: Auth.userName(), DateVente: d.toISOString(),
+              TypeOperation: "Service", Cout: 0
+            })));
+            continue;
+          }
+          const ref = F(a, "reference"), lp = lastPurchase(a);
+          const v = noteSkip(await DS.createVenteLine({
+            Title: num, ArticleId: parseInt(a.id, 10), Article: String(artName(a)), Reference: ref == null ? "" : String(ref),
+            Quantite: l.qty, PrixUnitaire: l.price, Montant: Math.round(l.qty * l.price * 100) / 100,
+            Client: clientName, ModePaiement: pay, Vendeur: Auth.userName(), DateVente: d.toISOString(),
+            TypeOperation: "Vente", Cout: lp ? Math.round((+lp.PrixAchat || 0) * l.qty * 100) / 100 : null
+          }));
+          state.ventes.push(v);
+          if (hasStock()) Object.assign(a, await DS.updateArticle(a.id, { [state.map.stock]: fresh[a.id] - l.qty }));
         }
         closeModal();
         cartClear();
         toast(credit ? `Vente à crédit ${num} enregistrée.` : `Vente ${num} enregistrée (${ls.length} article(s)).`, "ok");
+        if (skipped.size) toast(`Enregistré, mais SharePoint a refusé ces colonnes (type incompatible) : ${[...skipped].join(", ")}. Vérifiez leur type dans la liste.`, "bad");
         if (currentView() === "articles" && state.refreshArticle) ls.forEach(x => { if (x.a) state.refreshArticle(x.a); }); else render();
         if (credit) creditDetail(creditNum); else showSale(num);
       } catch (e) {

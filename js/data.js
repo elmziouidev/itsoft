@@ -74,6 +74,30 @@
     "Author", "Editor", "Created", "Modified", "ID", "id", "SelectTitle", "_ColorTag"
   ]);
 
+  /* Type d'une colonne SharePoint, pour convertir les valeurs avant écriture */
+  function colKind(c) {
+    if (!c) return "";
+    if (c.number || c.currency) return "number";
+    if (c.dateTime) return "date";
+    if (c.boolean) return "bool";
+    if (c.text) return c.text.allowMultipleLines ? "note" : "text";
+    return "";
+  }
+  /* Adapte une valeur au type de la colonne cible (évite les erreurs 400 « argument non acceptable ») */
+  function coerce(v, kind) {
+    if (v === undefined) return v;
+    if (kind === "number") {
+      if (v === null || v === "") return null;
+      const n = typeof v === "number" ? v : Number(String(v).replace(/\s/g, "").replace(",", "."));
+      return isNaN(n) ? null : n;
+    }
+    if (kind === "text") return v === null ? null : String(v).slice(0, 255);
+    if (kind === "note") return v === null ? null : String(v);
+    if (kind === "date") return v === null || v === "" ? null : v;
+    if (kind === "bool") return !!v;
+    return v;
+  }
+
   function normalizeColumn(c) {
     let type = "other";
     if (c.text) type = c.text.allowMultipleLines ? "note" : "text";
@@ -258,11 +282,41 @@
       this[key + "Id"] = list.id;
       this[key + "Map"] = await this.fieldMap(list.id, fields);
     },
-    async createGeneric(key, fields, names) {
-      const it = await this.call(`/sites/${this.siteId}/lists/${this[key + "Id"]}/items`,
-        { method: "POST", body: JSON.stringify({ fields: this.toMapped(fields, this[key + "Map"] || {}) }) });
-      return this.fromMapped(it, this[key + "Map"] || {}, names);
+    /* Création tolérante : si SharePoint refuse un champ (erreur 400, type de colonne incompatible),
+       l'élément est créé avec le titre puis chaque champ est écrit séparément ; les champs refusés sont signalés. */
+    async safeCreate(listId, mapped, label) {
+      const base = `/sites/${this.siteId}/lists/${listId}/items`;
+      try {
+        return await this.call(base, { method: "POST", body: JSON.stringify({ fields: mapped }) });
+      } catch (e) {
+        if (e.status !== 400) throw e;
+        const it = await this.call(base, { method: "POST", body: JSON.stringify({ fields: { Title: mapped.Title || "" } }) });
+        const bad = [];
+        it.fields = it.fields || {};
+        for (const k of Object.keys(mapped)) {
+          if (k === "Title") continue;
+          try {
+            await this.call(`${base}/${it.id}/fields`, { method: "PATCH", body: JSON.stringify({ [k]: mapped[k] }) });
+            it.fields[k] = mapped[k];
+          } catch (e2) { if (e2.status !== 400) throw e2; bad.push(k); }
+        }
+        if (bad.length) {
+          const names = bad.map(k => (this.colLabels && this.colLabels[k]) || k);
+          console.warn(`[${label}] champs refusés par SharePoint :`, names);
+          it.__skipped = names;
+        }
+        return it;
+      }
     },
+    async createGeneric(key, fields, names) {
+      const m = this[key + "Map"] || {};
+      const it = await this.safeCreate(this[key + "Id"], this.toMapped(fields, m), key);
+      const out = this.fromMapped(it, m, names);
+      if (it.__skipped) out.__skipped = it.__skipped.map(n => Object.keys(m).find(L => m[L] === n) || n);
+      return out;
+    },
+    /* Type réel d'une colonne (text, note, number, date…) */
+    colType(key, L) { const m = this[key + "Map"]; return (m && m.__types && m.__types[L]) || ""; },
     async updateGeneric(key, id, fields) {
       await this.call(`/sites/${this.siteId}/lists/${this[key + "Id"]}/items/${id}/fields`,
         { method: "PATCH", body: JSON.stringify(this.toMapped(fields, this[key + "Map"] || {})) });
@@ -316,16 +370,17 @@
       if (!this.ventesListId) return [];
       // colonnes retrouvées par leur nom affiché (ex. field_1 … field_10 si la liste vient d'un CSV)
       const [vcols, v] = await Promise.all([
-        this.getAll(`/sites/${this.siteId}/lists/${this.ventesListId}/columns?$select=name,displayName,readOnly,hidden`),
+        this.getAll(`/sites/${this.siteId}/lists/${this.ventesListId}/columns`),
         this.getAll(`/sites/${this.siteId}/lists/${this.ventesListId}/items?$expand=fields&$top=500`)
       ]);
       this.vmap = { Title: "Title" };
+      this.vtypes = { Title: "text" };
       this.ventesMissing = [];
       const usable = vcols.filter(x => !x.readOnly && !x.hidden); // jamais les colonnes système (ex. « Type » = DocIcon)
       for (const L of VENTE_FIELDS) {
         const c = usable.find(x => x.name === L) || usable.find(x => norm(x.displayName) === norm(L));
         this.vmap[L] = c ? c.name : L;
-        if (!c) this.ventesMissing.push(L);
+        if (c) this.vtypes[L] = colKind(c); else this.ventesMissing.push(L);
       }
       return v.map(it => this.fromVente(it));
     },
@@ -345,20 +400,20 @@
     exportMeta() {
       const k = ["siteId", "siteName", "articlesListId", "ventesListId", "achatsListId", "categoriesListId", "clientsListId",
         "fournisseursListId", "vmap", "amap", "catSeuilField", "columns", "ventesMissing",
-        "creditsId", "creditsMap", "versementsId", "versementsMap"];
+        "creditsId", "creditsMap", "versementsId", "versementsMap", "vtypes"];
       return Object.fromEntries(k.map(x => [x, this[x]]));
     },
     importMeta(m) { if (m) for (const k of Object.keys(m)) if (m[k] !== undefined && m[k] !== null) this[k] = m[k]; },
 
     /* ---- Outils : colonnes retrouvées par nom affiché ---- */
     async fieldMap(listId, names) {
-      const cols = (await this.getAll(`/sites/${this.siteId}/lists/${listId}/columns?$select=name,displayName,readOnly,hidden`))
+      const cols = (await this.getAll(`/sites/${this.siteId}/lists/${listId}/columns`))
         .filter(x => !x.readOnly && !x.hidden); // colonnes système exclues
-      const m = { Title: "Title", __missing: [] };
+      const m = { Title: "Title", __missing: [], __types: { Title: "text" } };
       for (const L of names) {
         const c = cols.find(x => x.name === L) || cols.find(x => norm(x.displayName) === norm(L));
         m[L] = c ? c.name : L;
-        if (!c) m.__missing.push(L);
+        if (c) m.__types[L] = colKind(c); else m.__missing.push(L);
       }
       return m;
     },
@@ -368,8 +423,13 @@
       return out;
     },
     toMapped(fields, m) {
-      const out = {}, miss = m.__missing || [];
-      for (const k of Object.keys(fields)) { if (miss.includes(k)) continue; out[m[k] || k] = fields[k]; }
+      const out = {}, miss = m.__missing || [], types = m.__types || {};
+      for (const k of Object.keys(fields)) {
+        if (miss.includes(k)) continue;
+        const v = coerce(fields[k], types[k]);
+        if (v === null && types[k] !== "text" && types[k] !== "note" && fields[k] === "") continue; // valeur vide : on n'écrit rien
+        out[m[k] || k] = v;
+      }
       return out;
     },
 
@@ -430,10 +490,10 @@
       return out;
     },
     toVente(fields) {
-      const out = {}, missing = this.ventesMissing || [];
+      const out = {}, missing = this.ventesMissing || [], types = this.vtypes || {};
       for (const k of Object.keys(fields)) {
         if (missing.includes(k)) continue; // colonne absente de la liste : ignorée
-        out[(this.vmap || {})[k] || k] = fields[k];
+        out[(this.vmap || {})[k] || k] = coerce(fields[k], types[k]);
       }
       return out;
     },
@@ -524,9 +584,10 @@
     },
 
     async createVenteLine(fields) {
-      const it = await this.call(`/sites/${this.siteId}/lists/${this.ventesListId}/items`,
-        { method: "POST", body: JSON.stringify({ fields: this.toVente(fields) }) });
-      return this.fromVente(it);
+      const it = await this.safeCreate(this.ventesListId, this.toVente(fields), "ventes");
+      const v = this.fromVente(it);
+      if (it.__skipped) v.__skipped = it.__skipped.map(n => Object.keys(this.vmap || {}).find(L => this.vmap[L] === n) || n);
+      return v;
     },
     async deleteVenteLine(id) {
       await this.call(`/sites/${this.siteId}/lists/${this.ventesListId}/items/${id}`, { method: "DELETE" });
