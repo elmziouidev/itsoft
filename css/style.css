@@ -596,3 +596,10 @@ body.has-dock .view { padding-bottom: calc(var(--dock-h, 0px) + 40px); }
   .print-area { display: block; position: absolute; left: 0; top: 0; width: 100%; padding: 10mm; color: #000; background: #fff; }
   .print-area .receipt th, .print-area .receipt td { border-color: #ccc; }
 }
+
+/* Lignes libres : « Article non classé » et « Service » (prix saisi à la vente) */
+.svc-ico.divers { --h: 32; }
+.free-row td { background: color-mix(in srgb, var(--primary, #2563eb) 4%, transparent); }
+.free-row .sellable { cursor: pointer; }
+.add-free { display: flex; gap: 8px; flex-wrap: wrap; }
+.add-free .add-svc { flex: 1 1 180px; }

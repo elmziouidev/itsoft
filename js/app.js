@@ -43,6 +43,7 @@
     info: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>',
     cartPlus: '<svg viewBox="0 0 24 24"><circle cx="9" cy="20" r="1.5"/><circle cx="18" cy="20" r="1.5"/><path d="M2 3h3l2.7 12.4a1 1 0 0 0 1 .8h9.6a1 1 0 0 0 1-.8L21 7H6"/><path d="M13.5 8.5v5M11 11h5"/></svg>',
     settings: '<svg viewBox="0 0 24 24"><path d="M4 6h8M16 6h4M4 12h2M10 12h10M4 18h11M19 18h1"/><circle cx="14" cy="6" r="2"/><circle cx="8" cy="12" r="2"/><circle cx="17" cy="18" r="2"/></svg>',
+    tag: '<svg viewBox="0 0 24 24"><path d="M20.6 13.4 13.4 20.6a2 2 0 0 1-2.8 0L3 13V3h10l7.6 7.6a2 2 0 0 1 0 2.8z"/><circle cx="7.5" cy="7.5" r="1.5"/></svg>',
     service: '<svg viewBox="0 0 24 24"><path d="M14.7 6.3a4 4 0 0 0-5.4 5.2L3 17.8V21h3.2l6.3-6.3a4 4 0 0 0 5.2-5.4l-2.6 2.6-2.4-.6-.6-2.4z"/></svg>',
     logout: '<svg viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5M21 12H9"/></svg>'
   };
@@ -56,7 +57,7 @@
     ventesReady: false,
     map: {},
     pcart: (() => { try { return (JSON.parse(localStorage.getItem("itsoft-bon-reception")) || []).map(l => ({ id: String(l.id), qty: +l.qty || 1, price: l.price === "" || l.price == null ? "" : +l.price, sell: l.sell === "" || l.sell == null ? "" : +l.sell })); } catch (_) { return []; } })(),
-    cart: (() => { try { return (JSON.parse(localStorage.getItem("itsoft-panier")) || []).map(l => ({ id: String(l.id), qty: +l.qty || 1, price: +l.price || 0, ...(l.svc ? { svc: true, name: String(l.name || "") } : {}) })); } catch (_) { return []; } })(),
+    cart: (() => { try { return (JSON.parse(localStorage.getItem("itsoft-panier")) || []).map(l => ({ id: String(l.id), qty: +l.qty || 1, price: +l.price || 0, ...(l.svc ? { svc: true, name: String(l.name || ""), kind: l.kind === "divers" ? "divers" : "service" } : {}) })); } catch (_) { return []; } })(),
     filters: { articles: { q: "", cat: "", stock: "" }, caisse: { q: "", cat: "" }, ventes: { q: "", from: "", to: "" } }
   };
 
@@ -665,7 +666,19 @@
     state.cart = state.cart.filter(l => l.svc || artById(l.id));
     return state.cart.map(l => ({ l, a: l.svc ? null : artById(l.id) }));
   }
-  const lineName = x => x.a ? String(artName(x.a)) : (String(x.l.name || "").trim() || "Service");
+  /* Articles « libres » (prix et description saisis à la vente, hors stock) */
+  const FREE = {
+    divers: { label: "Article non classé", ico: "tag", hint: "Nature exacte de l'article (ex. câble HDMI 2 m)", sub: "Article non classé · hors stock" },
+    service: { label: "Service", ico: "service", hint: "Nature exacte du service (ex. installation Windows)", sub: "Service · hors stock" }
+  };
+  const freeKind = l => (l && l.kind === "divers" ? "divers" : "service");
+  const lineName = x => x.a ? String(artName(x.a)) : (String(x.l.name || "").trim() || FREE[freeKind(x.l)].label);
+  /* Ajoute une ligne libre au panier puis ouvre le panier sur sa description */
+  function freeAdd(kind) {
+    state.cart.push({ id: "svc-" + Date.now(), svc: true, kind: kind === "divers" ? "divers" : "service", name: "", qty: 1, price: 0 });
+    cartSave(); renderCartBar();
+    sellDialog(null, { focusLast: true });
+  }
   function cartAdd(a, silent) {
     const id = String(a.id);
     const ex = state.cart.find(l => l.id === id);
@@ -762,7 +775,7 @@
       const ls = cartLines();
       const total = ls.reduce((t, x) => t + x.l.qty * x.l.price, 0);
       let cost = 0, known = true;
-      for (const x of ls) { if (!x.a) continue; const lp = lastPurchase(x.a); if (lp) cost += (+lp.PrixAchat || 0) * x.l.qty; else known = false; }
+      for (const x of ls) { if (!x.a) { if (freeKind(x.l) === "divers") known = false; continue; } const lp = lastPurchase(x.a); if (lp) cost += (+lp.PrixAchat || 0) * x.l.qty; else known = false; }
       const nb = ls.reduce((t, x) => t + x.l.qty, 0);
       $("#sell-total", m).innerHTML = `<span class="muted">${int(ls.length)} article(s) · ${int(nb)} pièce(s)</span><span></span>
         ${known && ls.length ? `<span class="muted">Bénéfice estimé</span><span class="num" style="color:var(--success)">${money(total - cost)}</span>` : ""}
@@ -774,14 +787,14 @@
     const drawLines = () => {
       const ls = cartLines();
       $("#cart-lines", m).innerHTML = (ls.length ? ls.map(({ l, a }, i) => {
-        if (!a) return `<div class="cart-row svc-row" data-i="${i}">
-          <span class="thumb svc-ico" title="Service">${ICON.service}</span>
-          <div class="cart-name"><input class="input svc-name" data-name value="${esc(l.name || "")}" placeholder="Description du service (ex. installation Windows)" aria-label="Description du service"><span class="muted">Service · hors stock</span></div>
+        if (!a) { const K = FREE[freeKind(l)]; return `<div class="cart-row svc-row" data-i="${i}">
+          <span class="thumb svc-ico ${freeKind(l)}" title="${K.label}">${ICON[K.ico]}</span>
+          <div class="cart-name"><input class="input svc-name" data-name value="${esc(l.name || "")}" placeholder="${esc(K.hint)}" aria-label="Nature de l'article ou du service"><span class="muted">${K.sub}</span></div>
           <span class="qty"><button type="button" data-d="-1" aria-label="Diminuer">−</button><input type="number" min="1" value="${l.qty}" data-qty inputmode="numeric" aria-label="Quantité"><button type="button" data-d="1" aria-label="Augmenter">+</button></span>
-          <span class="cart-price"><input class="input" type="number" step="any" min="0" value="${l.price}" data-price inputmode="decimal" aria-label="Prix"></span>
+          <span class="cart-price"><input class="input" type="number" step="any" min="0" value="${l.price || ""}" placeholder="Prix" data-price inputmode="decimal" aria-label="Prix"></span>
           <strong class="num cart-sub">${money(l.qty * l.price)}</strong>
           <button type="button" class="btn sm icon ghost danger" data-rm title="Retirer du panier" aria-label="Retirer">${ICON.close}</button>
-        </div>`;
+        </div>`; }
         const max = hasStock() ? artStock(a) : "";
         return `<div class="cart-row" data-i="${i}">
           ${thumbHTML(a)}
@@ -793,15 +806,17 @@
         </div>`;
       }).join("") : `<div class="empty" style="padding:18px">Le panier est vide.<br><span style="font-size:13px">Ajoutez des articles depuis la page Articles avec le bouton ${ICON.cart}, ou un service ci-dessous.</span>
           <div style="margin-top:10px"><a class="btn sm" href="#/articles" data-close>Aller aux articles</a></div></div>`)
-        + `<button type="button" class="add-svc" data-add-svc>${ICON.plus} Ajouter un service (hors stock)</button>`;
+        + `<div class="add-free"><button type="button" class="add-svc" data-add-svc="divers">${ICON.plus} Article non classé</button><button type="button" class="add-svc" data-add-svc="service">${ICON.plus} Service</button></div>`;
       totals();
     };
     const changed = id => { cartSave(); renderCartBar(); const a = artById(id); if (a && currentView() === "articles" && state.refreshArticle) state.refreshArticle(a, true); };
     drawLines();
+    if (opts && opts.focusLast) { const ins = $$(".svc-name", m); if (ins.length) setTimeout(() => ins[ins.length - 1].focus(), 50); }
 
     $("#cart-lines", m).addEventListener("click", e => {
-      if (e.target.closest("[data-add-svc]")) {
-        state.cart.push({ id: "svc-" + Date.now(), svc: true, name: "", qty: 1, price: 0 });
+      const addF = e.target.closest("[data-add-svc]");
+      if (addF) {
+        state.cart.push({ id: "svc-" + Date.now(), svc: true, kind: addF.dataset.addSvc === "divers" ? "divers" : "service", name: "", qty: 1, price: 0 });
         cartSave(); renderCartBar(); drawLines();
         const ins = $$(".svc-name", m); if (ins.length) ins[ins.length - 1].focus();
         return;
@@ -893,7 +908,9 @@
         if (inp && !inp.closest("[hidden]") && !phoneOk(inp.value)) { inp.focus(); return toast("Le numéro de téléphone doit contenir exactement 10 chiffres.", "bad"); }
       }
       const noName = ls.find(x => !x.a && !String(x.l.name || "").trim());
-      if (noName) { const ins = $$(".svc-name", m).find(i => !i.value.trim()); if (ins) ins.focus(); return toast("Décrivez le service ajouté au panier.", "bad"); }
+      if (noName) { const ins = $$(".svc-name", m).find(i => !i.value.trim()); if (ins) ins.focus(); return toast(`Précisez la nature de « ${FREE[freeKind(noName.l)].label} » dans le panier.`, "bad"); }
+      const noPrice = ls.find(x => !x.a && !(+x.l.price > 0));
+      if (noPrice) { const row = $(`#cart-lines .cart-row[data-i="${ls.indexOf(noPrice)}"] [data-price]`, m); if (row) row.focus(); return toast(`Indiquez le prix de « ${lineName(noPrice)} ».`, "bad"); }
       // vente par échéances : contrôles et préparation des listes SharePoint
       const credit = isCredit();
       const totalCart = Math.round(ls.reduce((t, x) => t + x.l.qty * x.l.price, 0) * 100) / 100;
@@ -970,10 +987,10 @@
         for (const { l, a } of ls) {
           if (!a) { // service hors stock : pas d'article ni de coût d'achat
             state.ventes.push(noteSkip(await DS.createVenteLine({
-              Title: num, ArticleId: 0, Article: String(l.name).trim(), Reference: "Service",
+              Title: num, ArticleId: 0, Article: String(l.name).trim(), Reference: FREE[freeKind(l)].label,
               Quantite: l.qty, PrixUnitaire: l.price, Montant: Math.round(l.qty * l.price * 100) / 100,
               Client: clientName, ModePaiement: pay, Vendeur: Auth.userName(), DateVente: d.toISOString(),
-              TypeOperation: "Service", Cout: 0
+              TypeOperation: freeKind(l) === "divers" ? "Vente" : "Service", Cout: freeKind(l) === "divers" ? null : 0
             })));
             continue;
           }
@@ -1270,6 +1287,18 @@
     };
     const rowInner = a => layout.map(c => tdHTML(a, c)).join("") +
       `<td class="actions"><button class="btn sm icon ghost sell-btn ${cartQty(a.id) ? "in-cart" : ""}" data-addcart="${esc(a.id)}" title="${cartQty(a.id) ? "Retirer du panier" : "Ajouter au panier"}" aria-label="${cartQty(a.id) ? "Retirer du panier" : "Ajouter au panier"}">${ICON.cartPlus}${cartQty(a.id) ? `<span class="cart-badge">${cartQty(a.id)}</span>` : ""}</button><button class="btn sm icon ghost rcv-btn ${pcartQty(a.id) ? "in-cart" : ""}" data-rcv="${esc(a.id)}" title="${pcartQty(a.id) ? "Retirer du bon de réception" : "Ajouter au bon de réception (entrée en stock)"}" aria-label="${pcartQty(a.id) ? "Retirer du bon de réception" : "Ajouter au bon de réception"}">📦${pcartQty(a.id) ? `<span class="cart-badge buy">${pcartQty(a.id)}</span>` : ""}</button><button class="btn sm icon ghost" data-edit="${esc(a.id)}" title="Modifier (formulaire complet)" aria-label="Modifier dans un formulaire">${ICON.edit}</button><button class="btn sm icon ghost danger" data-del="${esc(a.id)}" title="Supprimer" aria-label="Supprimer">${ICON.trash}</button></td>`;
+    /* Lignes fixes « Article non classé » et « Service » : prix et nature saisis à la vente */
+    const freeRows = () => (f.cat || f.stock) ? "" : ["divers", "service"].filter(k => !norm(f.q) || norm(FREE[k].label).includes(norm(f.q))).map(k => {
+      const K = FREE[k];
+      return `<tr class="free-row" data-free="${k}">${layout.map(c => {
+        const lab = esc(colTitle(c));
+        if (c.name === state.map.designation) return `<td class="sellable primary-cell" data-free-sell="${k}" data-label="${lab}" title="Vendre : prix et nature saisis dans le panier"><span class="name-cell"><span class="thumb svc-ico ${k}">${ICON[K.ico]}</span><span class="name-text"><strong>${K.label}</strong></span></span></td>`;
+        if (c.name === state.map.prix) return `<td class="num" data-label="${lab}"><span class="muted">Prix libre</span></td>`;
+        if (c.name === state.map.stock) return `<td class="num" data-label="${lab}"><span class="muted">—</span></td>`;
+        if (c.name === state.map.categorie) return `<td data-label="${lab}"><span class="muted">${k === "divers" ? "Divers" : "Prestation"}</span></td>`;
+        return `<td data-label="${lab}"></td>`;
+      }).join("")}<td class="actions"><button class="btn sm icon ghost sell-btn" data-free-add="${k}" title="Ajouter au panier (prix et nature à saisir)" aria-label="Ajouter ${K.label} au panier">${ICON.cartPlus}</button></td></tr>`;
+    }).join("");
     const footHTML = list => `<span>${int(list.length)} article(s) sur ${int(state.articles.length)}</span>` +
       (hasStock() ? `<span>Quantité totale : <strong>${int(list.reduce((t, a) => t + artStock(a), 0))}</strong></span>` : "") +
       (hasCA() ? `<span>Valeur du stock : <strong>${money(list.reduce((t, a) => t + artCA(a), 0))}</strong></span>` : "") +
@@ -1309,7 +1338,7 @@
       curList = list; shown = Math.min(PAGE, list.length);
       $("#art-table").innerHTML = list.length ? `<div class="table-scroll"><table class="table responsive compact">
         <thead><tr>${layout.map(c => `<th class="sortable ${isNumCol(c) ? "num" : ""}" data-sort="${esc(c.name)}" draggable="true" title="Cliquer pour trier · glisser pour déplacer la colonne"><span class="grip" aria-hidden="true">⋮⋮</span>${esc(colTitle(c))}${f.sort === c.name ? (f.dir > 0 ? " ▲" : " ▼") : ""}</th>`).join("")}<th></th></tr></thead>
-        <tbody>${list.slice(0, shown).map(a => `<tr data-id="${esc(a.id)}">${rowInner(a)}</tr>`).join("")}</tbody></table>
+        <tbody>${freeRows()}${list.slice(0, shown).map(a => `<tr data-id="${esc(a.id)}">${rowInner(a)}</tr>`).join("")}</tbody></table>
         ${shown < list.length ? `<button class="more-row" id="art-more" type="button">Afficher plus d'articles…</button>` : ""}</div>
         <div class="table-foot" id="art-foot">${footHTML(list)}</div>`
         : `<div class="empty">Aucun article ne correspond aux critères.</div>`;
@@ -1472,6 +1501,8 @@
       if (e.target.closest("#art-more")) return appendMore();
       const th0 = e.target.closest("[data-thumb]");
       if (th0) { const a = state.articles.find(x => x.id === th0.dataset.thumb); if (a) return showPhoto(a); }
+      const fr = e.target.closest("[data-free-add],[data-free-sell]");
+      if (fr) return freeAdd(fr.dataset.freeAdd || fr.dataset.freeSell);
       const addc = e.target.closest("[data-addcart]");
       // 1er clic : ajoute l'article au panier · 2e clic : le retire (la quantité se règle dans le panier)
       if (addc) { const a = state.articles.find(x => x.id === addc.dataset.addcart); if (a) return cartQty(a.id) ? cartRemove(a) : cartAdd(a); }
