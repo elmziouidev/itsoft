@@ -351,13 +351,23 @@
         </div>
       </div>`;
     const bd = root.firstElementChild;
-    bd.addEventListener("click", e => { if (e.target === bd || e.target.closest("[data-close]")) closeModal(); });
+    // fenêtre modale : elle ne se ferme que par ses boutons (Annuler, ✕, Valider…).
+    // Un clic à côté ou la touche Échap la font simplement « vibrer » pour signaler qu'elle attend une réponse.
+    bd.addEventListener("click", e => {
+      if (e.target.closest("[data-close]")) return closeModal();
+      if (e.target === bd) nudgeModal();
+    });
     document.addEventListener("keydown", escClose);
     const first = bd.querySelector("input, select, textarea");
     if (first && window.innerWidth > 560) setTimeout(() => first.focus(), 50);
     return bd;
   }
-  function escClose(e) { if (e.key === "Escape") closeModal(); }
+  function escClose(e) { if (e.key === "Escape") { e.preventDefault(); nudgeModal(); } }
+  function nudgeModal() {
+    const md = $("#modal-root .modal:last-of-type") || $("#modal-root .modal");
+    if (!md) return;
+    md.classList.remove("nudge"); void md.offsetWidth; md.classList.add("nudge");
+  }
   function closeModal() { $("#modal-root").innerHTML = ""; document.removeEventListener("keydown", escClose); }
 
   function confirmBox(title, message, okLabel = "Confirmer", danger = true, cancelLabel = "Annuler") {

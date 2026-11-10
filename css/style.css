@@ -474,6 +474,9 @@ body.has-dock .view { padding-bottom: calc(var(--dock-h, 0px) + 40px); }
 .modal-body { padding: 20px; overflow-y: auto; }
 .modal-foot { display: flex; justify-content: flex-end; gap: 10px; padding: 14px 20px; border-top: 1px solid var(--border); flex-wrap: wrap; }
 @keyframes fade { from { opacity: 0 } }
+/* clic à côté d'une fenêtre modale : petite secousse pour rappeler qu'elle attend une réponse */
+.modal.nudge { animation: nudge .32s ease; }
+@keyframes nudge { 0%, 100% { transform: none; } 25% { transform: scale(1.015); } 50% { transform: translateX(-6px); } 75% { transform: translateX(6px); } }
 @keyframes pop { from { opacity: 0; transform: translateY(8px) scale(.98) } }
 
 /* Toasts */
