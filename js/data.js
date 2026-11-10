@@ -53,7 +53,8 @@
     { name: "Statut", text: {} },                                    // En cours, Soldé
     { name: "NumVente", text: {} },
     { name: "Note", text: { allowMultipleLines: true } },
-    { name: "Utilisateur", text: {} }
+    { name: "Utilisateur", text: {} },
+    { name: "Echeancier", text: { allowMultipleLines: true } }   // dates des échéances (JSON), modifiables
   ];
   const CREDIT_FIELDS = CREDIT_COLUMNS.map(c => c.name);
   const VERS_COLUMNS = [
@@ -275,6 +276,16 @@
       await this.createGenericList("credits", cfg.creditsList, CREDIT_COLUMNS, CREDIT_FIELDS);
       await this.createGenericList("versements", cfg.versementsList, VERS_COLUMNS, VERS_FIELDS);
     },
+    /* colonnes ajoutées après coup (ex. Echeancier) : détectées et créées à la demande */
+    missingCreditColumns() { return ((this.creditsMap && this.creditsMap.__missing) || []).slice(); },
+    async addCreditColumns() {
+      for (const L of this.missingCreditColumns()) {
+        const def = CREDIT_COLUMNS.find(c => c.name === L);
+        await this.call(`/sites/${this.siteId}/lists/${this.creditsId}/columns`, { method: "POST", body: JSON.stringify({ ...def, displayName: L }) }, ["Sites.Manage.All"]);
+        this.creditsMap[L] = L;
+      }
+      this.creditsMap.__missing = [];
+    },
     createCredit(f) { return this.createGeneric("credits", f, CREDIT_FIELDS); },
     updateCredit(id, f) { return this.updateGeneric("credits", id, f); },
     deleteCredit(id) { return this.deleteGeneric("credits", id); },
@@ -343,10 +354,11 @@
     async fieldMap(listId, names) {
       const cols = (await this.getAll(`/sites/${this.siteId}/lists/${listId}/columns?$select=name,displayName,readOnly,hidden`))
         .filter(x => !x.readOnly && !x.hidden); // colonnes système exclues
-      const m = { Title: "Title" };
+      const m = { Title: "Title", __missing: [] };
       for (const L of names) {
         const c = cols.find(x => x.name === L) || cols.find(x => norm(x.displayName) === norm(L));
         m[L] = c ? c.name : L;
+        if (!c) m.__missing.push(L);
       }
       return m;
     },
@@ -356,8 +368,8 @@
       return out;
     },
     toMapped(fields, m) {
-      const out = {};
-      for (const k of Object.keys(fields)) out[m[k] || k] = fields[k];
+      const out = {}, miss = m.__missing || [];
+      for (const k of Object.keys(fields)) { if (miss.includes(k)) continue; out[m[k] || k] = fields[k]; }
       return out;
     },
 
@@ -624,6 +636,8 @@
         ventesReady: true, siteName: "Démo" };
     },
     async createCreditLists() { this.db.creditsReady = true; this.persist(); },
+    missingCreditColumns() { return []; },
+    async addCreditColumns() {},
     async createCredit(f) { const v = { ...f, id: String(Date.now()) + Math.floor(Math.random() * 1000) }; this.db.credits.push(v); this.persist(); return { ...v }; },
     async updateCredit(id, f) { const c = this.db.credits.find(x => x.id === String(id)); if (c) Object.assign(c, f); this.persist(); },
     async deleteCredit(id) { this.db.credits = this.db.credits.filter(x => x.id !== String(id)); this.persist(); },

@@ -751,7 +751,8 @@
         ${known && ls.length ? `<span class="muted">Bénéfice estimé</span><span class="num" style="color:var(--success)">${money(total - cost)}</span>` : ""}
         <span class="grand">Total</span><span class="num grand">${money(total)}</span>`;
       $("#sell-ok", m).disabled = !ls.length;
-      $("#sell-new", m).hidden = !isNewClient();
+      const payNow = $("#sell-pay", m);
+      $("#sell-new", m).hidden = !isNewClient() || (payNow && payNow.value === "__credit__"); // en crédit : le téléphone du dossier suffit
     };
     const drawLines = () => {
       const ls = cartLines();
@@ -823,26 +824,42 @@
     // ---- vente par échéances : affichage des champs et aperçu de l'échéancier ----
     const payI = $("#sell-pay", m);
     const isCredit = () => payI.value === "__credit__";
+    // dates des échéances : générées à partir de la 1re date et de la périodicité, puis modifiables une par une
+    let crDates = [];
+    const regenDates = () => {
+      const nb = Math.max(1, Math.min(60, parseInt($("#cr-nb", m).value, 10) || 1));
+      const start = $("#cr-start", m).value ? new Date($("#cr-start", m).value + "T12:00:00") : addPeriod(new Date(), "mensuelle", 1);
+      crDates = Array.from({ length: nb }, (_, k) => dayKey(addPeriod(start, $("#cr-per", m).value, k)));
+    };
     const creditPreview = () => {
       if (!isCredit()) return;
       const total = cartLines().reduce((t, x) => t + x.l.qty * x.l.price, 0);
       const apport = Math.max(0, parseFloat(String($("#cr-apport", m).value).replace(",", ".")) || 0);
-      const nb = Math.max(1, parseInt($("#cr-nb", m).value, 10) || 1);
-      const start = $("#cr-start", m).value ? new Date($("#cr-start", m).value + "T12:00:00") : new Date();
-      const sch = schedule(total, apport, nb, $("#cr-per", m).value, start);
+      if (!crDates.length) regenDates();
+      const sch = schedule(total, apport, crDates.length, $("#cr-per", m).value, new Date(), crDates);
       $("#cr-preview", m).innerHTML = apport > total ? `<span style="color:var(--danger)">L'acompte dépasse le total.</span>`
-        : `<strong>${int(nb)} échéance(s) de ${money(sch[0] ? sch[0].amount : 0)}</strong>${sch.length > 1 && sch[sch.length - 1].amount !== sch[0].amount ? ` (dernière : ${money(sch[sch.length - 1].amount)})` : ""} · reste à financer ${money(Math.max(0, total - apport))}
-          <div class="credit-dates">${sch.slice(0, 12).map(e => `<span>${fmtDate(e.date)}</span>`).join("")}${sch.length > 12 ? "<span>…</span>" : ""}</div>`;
+        : `<strong>${int(sch.length)} échéance(s) de ${money(sch[0] ? sch[0].amount : 0)}</strong>${sch.length > 1 && sch[sch.length - 1].amount !== sch[0].amount ? ` (dernière : ${money(sch[sch.length - 1].amount)})` : ""} · reste à financer ${money(Math.max(0, total - apport))}
+          <div class="ech-edit">${sch.map((e, i) => `<label class="ech-item"><span>${e.k}</span><input type="date" class="input" data-ech="${i}" value="${crDates[i]}" aria-label="Date de l'échéance ${e.k}"><em>${money(e.amount)}</em></label>`).join("")}</div>
+          <div class="muted" style="font-size:12px;margin-top:4px">Les dates sont modifiables une par une.</div>`;
     };
     const syncCredit = () => {
       $("#sell-credit", m).hidden = !isCredit();
       $("#sell-ok", m).innerHTML = isCredit() ? `${ICON.cart} Vendre à crédit` : `${ICON.cart} Vendre`;
+      totals();
       const known = clients.find(c => norm(c.name) === norm(clientI.value.trim()));
       if (known && known.phone && !$("#cr-tel", m).value) $("#cr-tel", m).value = known.phone;
       creditPreview();
     };
     payI.addEventListener("change", syncCredit);
-    ["#cr-apport", "#cr-nb", "#cr-per", "#cr-start"].forEach(s => { $(s, m).addEventListener("input", creditPreview); $(s, m).addEventListener("change", creditPreview); });
+    $("#cr-apport", m).addEventListener("input", creditPreview);
+    ["#cr-nb", "#cr-per", "#cr-start"].forEach(s => { $(s, m).addEventListener("change", () => { regenDates(); creditPreview(); }); });
+    $("#cr-nb", m).addEventListener("input", () => { if (parseInt($("#cr-nb", m).value, 10) > 0) { regenDates(); creditPreview(); } });
+    $("#cr-preview", m).addEventListener("change", e => {
+      const di = e.target.closest("[data-ech]"); if (!di) return;
+      if (di.value) crDates[+di.dataset.ech] = di.value;
+      if (+di.dataset.ech === 0 && di.value) $("#cr-start", m).value = di.value;
+      creditPreview();
+    });
     $("#cart-lines", m).addEventListener("input", creditPreview);
     $("#cart-lines", m).addEventListener("click", () => setTimeout(creditPreview, 0));
     clientI.addEventListener("change", syncCredit);
@@ -869,6 +886,8 @@
         if (!typedC || norm(typedC) === norm(defClient)) { clientI.focus(); return toast("Indiquez le nom du client pour une vente par échéances.", "bad"); }
         if (apport > totalCart) return toast("L'acompte ne peut pas dépasser le total.", "bad");
         if (!(await ensureCreditLists())) return;
+        await ensureCreditColumns();
+        if (crDates.some((x, i) => i && x < crDates[i - 1])) return toast("Les dates d'échéance doivent se suivre dans l'ordre.", "bad");
       }
       const btn = $("#sell-ok", m);
       busy(btn, true, "Enregistrement…");
@@ -887,7 +906,7 @@
         const known = clients.find(c => norm(c.name) === norm(typed));
         const clientName = known ? known.name : (typed || defClient);
         if (isNewClient()) {
-          try { state.clients.push(await DS.createClient(clientName, $("#sell-phone", m).value.trim())); }
+          try { state.clients.push(await DS.createClient(clientName, (credit ? $("#cr-tel", m) : $("#sell-phone", m)).value.trim())); }
           catch (e) { toast("Client non ajouté à la liste : " + e.message, "bad"); }
         }
         // 3. une ligne par article, toutes sous le même numéro de vente
@@ -916,13 +935,15 @@
         let creditNum = null;
         if (credit) {
           creditNum = "C" + num.slice(1);
-          const nb = Math.max(1, parseInt($("#cr-nb", m).value, 10) || 1);
+          if (!crDates.length) regenDates();
+          const nb = crDates.length;
           const startV = $("#cr-start", m).value;
           const c = await DS.createCredit({
             Title: creditNum, Client: clientName, Telephone: $("#cr-tel", m).value.trim() || ($("#sell-phone", m) ? $("#sell-phone", m).value.trim() : ""),
             Articles: JSON.stringify(ls.map(x => ({ id: x.a ? x.a.id : "", name: lineName(x), qty: x.l.qty, price: x.l.price, service: !x.a }))),
             MontantTotal: totalCart, Apport: apport, NbEcheances: nb, Periodicite: PERIODES[$("#cr-per", m).value],
-            DateDebut: (startV ? new Date(startV + "T12:00:00") : addPeriod(d, "mensuelle", 1)).toISOString(),
+            DateDebut: new Date((crDates[0] || startV || dayKey(addPeriod(d, "mensuelle", 1))) + "T12:00:00").toISOString(),
+            Echeancier: JSON.stringify(crDates),
             Statut: apport >= totalCart ? "Soldé" : "En cours", NumVente: num, Utilisateur: Auth.userName()
           });
           state.credits.push(c);
@@ -2479,12 +2500,12 @@
     return x;
   }
   /* Échéancier : (total − acompte) réparti en n échéances égales, la dernière absorbe l'arrondi */
-  function schedule(total, apport, n, per, start) {
+  function schedule(total, apport, n, per, start, dates) {
     const fin = Math.max(0, Math.round((total - apport) * 100) / 100);
     n = Math.max(1, n | 0);
     const base = Math.floor(fin / n * 100) / 100;
     return Array.from({ length: n }, (_, k) => ({
-      k: k + 1, date: addPeriod(start, per, k),
+      k: k + 1, date: dates && dates[k] ? new Date(dates[k] + "T12:00:00") : addPeriod(start, per, k),
       amount: k === n - 1 ? Math.round((fin - base * (n - 1)) * 100) / 100 : base
     }));
   }
@@ -2493,7 +2514,9 @@
     const total = +c.MontantTotal || 0, apport = +c.Apport || 0, n = +c.NbEcheances || 1, per = perKey(c.Periodicite);
     const vs = (state.versements || []).filter(v => v.CreditNum === c.Title).sort((a, b) => new Date(a.DateVersement) - new Date(b.DateVersement));
     const paid = Math.round(vs.reduce((t, v) => t + (+v.Montant || 0), 0) * 100) / 100;
-    const sch = schedule(total, apport, n, per, c.DateDebut || c.Created || new Date());
+    let dates = null;
+    try { const ds = JSON.parse(c.Echeancier || "null"); if (Array.isArray(ds) && ds.length === n) dates = ds; } catch (_) {}
+    const sch = schedule(total, apport, n, per, c.DateDebut || c.Created || new Date(), dates);
     let pool = paid - Math.min(apport, paid); // l'acompte ne compte pas pour les échéances
     const today = dayKey(new Date());
     for (const e of sch) {
@@ -2520,6 +2543,18 @@
         try { await DS.createCreditLists(); state.creditsReady = true; toast("Listes des crédits créées.", "ok"); return true; }
         catch (e) { toast("Création impossible : " + e.message, "bad"); return false; }
       });
+  }
+
+  /* Colonne « Echeancier » (dates modifiées) : ajoutée à Tbl_credit si elle manque */
+  async function ensureCreditColumns() {
+    const miss = DS.missingCreditColumns ? DS.missingCreditColumns() : [];
+    if (!miss.length) return true;
+    const ok = await confirmBox("Mettre à jour la liste des crédits",
+      `Pour mémoriser les dates d'échéance modifiées, l'application va ajouter la colonne <strong>${miss.map(esc).join(", ")}</strong> à la liste <strong>${esc(cfg.creditsList)}</strong> (une seule fois). Continuer ?`,
+      "Ajouter la colonne", false, "Plus tard");
+    if (!ok) return false;
+    try { await DS.addCreditColumns(); toast("Colonne ajoutée.", "ok"); return true; }
+    catch (e) { toast("Colonne non ajoutée : " + e.message, "bad"); return false; }
   }
 
   /* Enregistrer un versement d'un client */
@@ -2600,7 +2635,7 @@
           ${info.articles.map(a => `<tr><td>${esc(a.name)}</td><td class="num">${int(a.qty)}</td><td class="num">${money(a.price)}</td><td class="num">${money(a.qty * a.price)}</td></tr>`).join("")}</tbody></table></div>
         <h3 class="credit-h3">Échéancier · ${int(info.n)} × ${esc(c.Periodicite || "")}${info.apport ? ` · acompte ${money(info.apport)}` : ""}</h3>
         <div class="table-wrap"><table class="table compact"><thead><tr><th>N°</th><th>Date</th><th class="num">Montant</th><th class="num">Payé</th><th>État</th></tr></thead><tbody>
-          ${info.sch.map(e => `<tr><td>${e.k}</td><td>${fmtDate(e.date)}</td><td class="num">${money(e.amount)}</td><td class="num">${money(e.paid)}</td><td>${ECH_BADGE[e.status]}</td></tr>`).join("")}</tbody></table></div>
+          ${info.sch.map((e, i) => `<tr><td>${e.k}</td><td><input type="date" class="input ech-date" data-edit-ech="${i}" value="${dayKey(e.date)}" title="Modifier la date de cette échéance" aria-label="Date de l'échéance ${e.k}"></td><td class="num">${money(e.amount)}</td><td class="num">${money(e.paid)}</td><td>${ECH_BADGE[e.status]}</td></tr>`).join("")}</tbody></table></div>
         <h3 class="credit-h3">Versements reçus (${info.vs.length})</h3>
         ${info.vs.length ? `<div class="table-wrap"><table class="table compact"><thead><tr><th>Date</th><th>Mode</th><th>Note</th><th class="num">Montant</th><th></th></tr></thead><tbody>
           ${info.vs.map(v => `<tr><td>${fmtDate(v.DateVersement)}</td><td>${esc(v.ModePaiement || "")}</td><td class="muted">${esc(v.Note || "")}</td><td class="num"><strong>${money(v.Montant)}</strong></td>
@@ -2612,6 +2647,20 @@
     m.querySelector("[data-print-credit]").addEventListener("click", () => { $("#print-area").innerHTML = creditHTML(creditInfo(c)); window.print(); });
     const addVs = m.querySelector("[data-add-vs]");
     if (addVs) addVs.addEventListener("click", () => { closeModal(); versementDialog(num, () => { render(); creditDetail(num); }); });
+    // modification de la date d'une échéance
+    m.addEventListener("change", async e => {
+      const inp = e.target.closest("[data-edit-ech]"); if (!inp || !inp.value) return;
+      const dates = info.sch.map(x => dayKey(x.date));
+      dates[+inp.dataset.editEch] = inp.value;
+      if (dates.some((x, i) => i && x < dates[i - 1])) { toast("Les dates d'échéance doivent se suivre dans l'ordre.", "bad"); return creditDetail(num); }
+      if (!(await ensureCreditColumns())) return creditDetail(num);
+      try {
+        const upd = { Echeancier: JSON.stringify(dates), DateDebut: new Date(dates[0] + "T12:00:00").toISOString() };
+        await DS.updateCredit(c.id, upd); Object.assign(c, upd);
+        toast(`Échéance ${+inp.dataset.editEch + 1} déplacée au ${fmtDate(dates[+inp.dataset.editEch] + "T12:00:00")}.`, "ok");
+      } catch (err) { toast(err.message, "bad"); }
+      render(); creditDetail(num);
+    });
     m.addEventListener("click", async e => {
       const dv = e.target.closest("[data-del-vs]");
       if (dv) {
