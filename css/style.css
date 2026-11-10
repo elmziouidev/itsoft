@@ -387,6 +387,9 @@ body.has-dock .view { padding-bottom: calc(var(--dock-h, 0px) + 40px); }
   .cart-row .qty { grid-area: qty; } .cart-row .cart-price { grid-area: price; } .cart-row .cart-sub { grid-area: sub; text-align: right; }
 }
 
+/* Téléphone incomplet (10 chiffres exigés) */
+.input.invalid, .input.invalid:focus { border-color: var(--danger); outline-color: color-mix(in srgb, var(--danger) 35%, transparent); background: var(--danger-soft); }
+
 /* Services (lignes libres hors stock) dans le panier */
 .add-svc { display: flex; align-items: center; justify-content: center; gap: 6px; width: 100%; padding: 10px; border: 0; border-top: 1px dashed var(--border);
   background: var(--surface-2); color: var(--primary); font: inherit; font-weight: 600; font-size: 13.5px; cursor: pointer; }

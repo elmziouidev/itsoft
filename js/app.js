@@ -320,6 +320,17 @@
       .sort((a, b) => new Date(b.date) - new Date(a.date));
   }
 
+  /* ============ Téléphones : exactement 10 chiffres ============ */
+  const phoneOk = v => { const s = String(v || "").trim(); return !s || /^\d{10}$/.test(s); };
+  document.addEventListener("input", e => {
+    const inp = e.target;
+    if (!inp.matches || !inp.matches("[data-phone]")) return;
+    const v = inp.value.replace(/\D/g, "").slice(0, 10);
+    if (v !== inp.value) inp.value = v;
+    inp.classList.toggle("invalid", v.length > 0 && v.length !== 10);
+    inp.title = v.length && v.length !== 10 ? `${v.length}/10 chiffres` : "";
+  });
+
   /* ============ UI : toasts & modales ============ */
   function toast(msg, type = "") {
     const el = document.createElement("div");
@@ -707,7 +718,7 @@
             <datalist id="dl-clients">${clients.map(c => `<option value="${esc(c.name)}">${esc(c.phone || "")}</option>`).join("")}</datalist></label>
           <div class="full" id="sell-new" hidden>
             <div class="alert info" style="padding:10px 12px">${ICON.info}<div class="grow"><strong>Nouveau client</strong> : il sera ajouté à la liste ${esc(cfg.clientsList || "")}.
-              <input class="input" id="sell-phone" placeholder="Téléphone (facultatif)" style="margin-top:8px" inputmode="tel"></div></div>
+              <input class="input" id="sell-phone" placeholder="Téléphone : 10 chiffres (facultatif)" style="margin-top:8px" data-phone maxlength="10" inputmode="numeric" autocomplete="tel"></div></div>
           </div>
           <label class="field full">Paiement<select class="input" id="sell-pay">${cfg.modesPaiement.map(p => `<option>${esc(p)}</option>`).join("")}<option value="__credit__" ${opts && opts.credit ? "selected" : ""}>Par échéances (crédit)</option></select></label>
           <div class="full credit-box" id="sell-credit" hidden>
@@ -716,7 +727,7 @@
               <label class="field">Nombre d'échéances<input class="input" id="cr-nb" type="number" min="1" max="60" step="1" value="3" inputmode="numeric"></label>
               <label class="field">Périodicité<select class="input" id="cr-per">${Object.entries(PERIODES).map(([k, v]) => `<option value="${k}">${v}</option>`).join("")}</select></label>
               <label class="field">1re échéance<input class="input" id="cr-start" type="date" value="${dayKey(addPeriod(new Date(), "mensuelle", 1))}"></label>
-              <label class="field full">Téléphone du client<input class="input" id="cr-tel" placeholder="Pour rappeler les échéances" inputmode="tel"></label>
+              <label class="field full">Téléphone du client<input class="input" id="cr-tel" placeholder="10 chiffres, ex. 0612345678" data-phone maxlength="10" inputmode="numeric" autocomplete="tel"></label>
             </div>
             <div class="credit-preview" id="cr-preview"></div>
           </div>
@@ -842,6 +853,11 @@
     const submit = async () => {
       const ls = cartLines();
       if (!ls.length) return toast("Le panier est vide.", "bad");
+      // téléphone : vide ou exactement 10 chiffres
+      for (const sel of ["#sell-phone", "#cr-tel"]) {
+        const inp = $(sel, m);
+        if (inp && !inp.closest("[hidden]") && !phoneOk(inp.value)) { inp.focus(); return toast("Le numéro de téléphone doit contenir exactement 10 chiffres.", "bad"); }
+      }
       const noName = ls.find(x => !x.a && !String(x.l.name || "").trim());
       if (noName) { const ins = $$(".svc-name", m).find(i => !i.value.trim()); if (ins) ins.focus(); return toast("Décrivez le service ajouté au panier.", "bad"); }
       // vente par échéances : contrôles et préparation des listes SharePoint
@@ -903,7 +919,7 @@
           const nb = Math.max(1, parseInt($("#cr-nb", m).value, 10) || 1);
           const startV = $("#cr-start", m).value;
           const c = await DS.createCredit({
-            Title: creditNum, Client: clientName, Telephone: $("#cr-tel", m).value.trim(),
+            Title: creditNum, Client: clientName, Telephone: $("#cr-tel", m).value.trim() || ($("#sell-phone", m) ? $("#sell-phone", m).value.trim() : ""),
             Articles: JSON.stringify(ls.map(x => ({ id: x.a ? x.a.id : "", name: lineName(x), qty: x.l.qty, price: x.l.price, service: !x.a }))),
             MontantTotal: totalCart, Apport: apport, NbEcheances: nb, Periodicite: PERIODES[$("#cr-per", m).value],
             DateDebut: (startV ? new Date(startV + "T12:00:00") : addPeriod(d, "mensuelle", 1)).toISOString(),
@@ -960,7 +976,7 @@
             <input class="input" id="rep-client" list="dl-rep-clients" placeholder="Rechercher ou saisir un client (vide = ${esc(defClient)})" autocomplete="off">
             <datalist id="dl-rep-clients">${clients.map(c => `<option value="${esc(c.name)}">${esc(c.phone || "")}</option>`).join("")}</datalist></label>
           <div class="full" id="rep-new" hidden><div class="alert info" style="padding:10px 12px">${ICON.info}<div class="grow"><strong>Nouveau client</strong> : il sera ajouté à ${esc(cfg.clientsList || "")}.
-            <input class="input" id="rep-phone" placeholder="Téléphone (facultatif)" style="margin-top:8px" inputmode="tel"></div></div></div>
+            <input class="input" id="rep-phone" placeholder="Téléphone : 10 chiffres (facultatif)" style="margin-top:8px" data-phone maxlength="10" inputmode="numeric" autocomplete="tel"></div></div></div>
           <label class="field full">Pièce utilisée du stock <span class="muted" style="font-weight:400">(facultatif)</span>
             <input class="input" id="rep-piece" list="dl-rep-pieces" placeholder="Rechercher un article (ex. afficheur)…" autocomplete="off">
             <datalist id="dl-rep-pieces">${pieces.map(a => `<option value="${esc(pieceLabel(a))}"></option>`).join("")}</datalist>
@@ -1000,6 +1016,8 @@
       if (!desc) { descI.focus(); return toast("Décrivez la réparation.", "bad"); }
       if (!(priceI.value !== "" && price >= 0)) { priceI.focus(); return toast("Saisissez le prix facturé.", "bad"); }
       if (pieceI.value.trim() && !piece) { pieceI.focus(); return toast("Choisissez la pièce dans la liste proposée (ou videz le champ).", "bad"); }
+      const telI = $("#rep-phone", m);
+      if (telI && !telI.closest("[hidden]") && !phoneOk(telI.value)) { telI.focus(); return toast("Le numéro de téléphone doit contenir exactement 10 chiffres.", "bad"); }
       const btn = $("#rep-ok", m); busy(btn, true, "Enregistrement…");
       try {
         let stockNow = null;
