@@ -387,6 +387,14 @@ body.has-dock .view { padding-bottom: calc(var(--dock-h, 0px) + 40px); }
   .cart-row .qty { grid-area: qty; } .cart-row .cart-price { grid-area: price; } .cart-row .cart-sub { grid-area: sub; text-align: right; }
 }
 
+/* Services (lignes libres hors stock) dans le panier */
+.add-svc { display: flex; align-items: center; justify-content: center; gap: 6px; width: 100%; padding: 10px; border: 0; border-top: 1px dashed var(--border);
+  background: var(--surface-2); color: var(--primary); font: inherit; font-weight: 600; font-size: 13.5px; cursor: pointer; }
+.add-svc:hover { background: var(--primary-soft); }
+.add-svc svg { width: 16px; height: 16px; }
+.svc-ico { --h: 285; background: hsl(var(--h) 70% 94%); color: hsl(var(--h) 50% 35%); }
+.svc-name { min-height: 32px; padding: 4px 8px; font-weight: 600; }
+
 /* Vente rapide */
 .table.compact td.sellable { cursor: pointer; font-weight: 600; }
 .table.compact td.sellable:hover { color: var(--primary); background: var(--primary-soft); }

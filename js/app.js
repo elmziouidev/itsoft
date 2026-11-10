@@ -41,6 +41,7 @@
     info: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>',
     cartPlus: '<svg viewBox="0 0 24 24"><circle cx="9" cy="20" r="1.5"/><circle cx="18" cy="20" r="1.5"/><path d="M2 3h3l2.7 12.4a1 1 0 0 0 1 .8h9.6a1 1 0 0 0 1-.8L21 7H6"/><path d="M13.5 8.5v5M11 11h5"/></svg>',
     settings: '<svg viewBox="0 0 24 24"><path d="M4 6h8M16 6h4M4 12h2M10 12h10M4 18h11M19 18h1"/><circle cx="14" cy="6" r="2"/><circle cx="8" cy="12" r="2"/><circle cx="17" cy="18" r="2"/></svg>',
+    service: '<svg viewBox="0 0 24 24"><path d="M14.7 6.3a4 4 0 0 0-5.4 5.2L3 17.8V21h3.2l6.3-6.3a4 4 0 0 0 5.2-5.4l-2.6 2.6-2.4-.6-.6-2.4z"/></svg>',
     logout: '<svg viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5M21 12H9"/></svg>'
   };
 
@@ -53,7 +54,7 @@
     ventesReady: false,
     map: {},
     pcart: (() => { try { return (JSON.parse(localStorage.getItem("itsoft-bon-reception")) || []).map(l => ({ id: String(l.id), qty: +l.qty || 1, price: l.price === "" || l.price == null ? "" : +l.price, sell: l.sell === "" || l.sell == null ? "" : +l.sell })); } catch (_) { return []; } })(),
-    cart: (() => { try { return (JSON.parse(localStorage.getItem("itsoft-panier")) || []).map(l => ({ id: String(l.id), qty: +l.qty || 1, price: +l.price || 0 })); } catch (_) { return []; } })(),
+    cart: (() => { try { return (JSON.parse(localStorage.getItem("itsoft-panier")) || []).map(l => ({ id: String(l.id), qty: +l.qty || 1, price: +l.price || 0, ...(l.svc ? { svc: true, name: String(l.name || "") } : {}) })); } catch (_) { return []; } })(),
     filters: { articles: { q: "", cat: "", stock: "" }, caisse: { q: "", cat: "" }, ventes: { q: "", from: "", to: "" } }
   };
 
@@ -299,7 +300,7 @@
   /* Coût d'une ligne : coût enregistré, sinon estimation par le dernier prix d'achat de l'article */
   function lineCost(l) {
     if (l.Cout != null && l.Cout !== "" && !isNaN(+l.Cout)) return { cost: +l.Cout, known: true };
-    if (isRepair(l)) return { cost: 0, known: true }; // réparation sans pièce : main-d'œuvre seule
+    if (isRepair(l) || norm(l.TypeOperation) === "service") return { cost: 0, known: true }; // main-d'œuvre / service
     const a = artById(l.ArticleId), lp = a && lastPurchase(a);
     return lp ? { cost: (+lp.PrixAchat || 0) * (+l.Quantite || 0), known: true } : { cost: 0, known: false };
   }
@@ -427,7 +428,7 @@
     state.siteName = res.siteName;
     computeMapping();
     // retirer du panier les articles disparus
-    state.cart = state.cart.filter(l => state.articles.some(a => a.id === l.id));
+    state.cart = state.cart.filter(l => l.svc || state.articles.some(a => a.id === l.id));
     state.loaded = true;
   }
 
@@ -637,10 +638,11 @@
   const CART_KEY = "itsoft-panier";
   const cartSave = () => { try { localStorage.setItem(CART_KEY, JSON.stringify(state.cart)); } catch (_) {} };
   const cartQty = id => { const l = state.cart.find(x => x.id === String(id)); return l ? l.qty : 0; };
-  function cartLines() { // lignes du panier avec leur article (les articles supprimés sont retirés)
-    state.cart = state.cart.filter(l => artById(l.id));
-    return state.cart.map(l => ({ l, a: artById(l.id) }));
+  function cartLines() { // lignes du panier avec leur article (les articles supprimés sont retirés) ; a = null pour un service
+    state.cart = state.cart.filter(l => l.svc || artById(l.id));
+    return state.cart.map(l => ({ l, a: l.svc ? null : artById(l.id) }));
   }
+  const lineName = x => x.a ? String(artName(x.a)) : (String(x.l.name || "").trim() || "Service");
   function cartAdd(a, silent) {
     const id = String(a.id);
     const ex = state.cart.find(l => l.id === id);
@@ -732,7 +734,7 @@
       const ls = cartLines();
       const total = ls.reduce((t, x) => t + x.l.qty * x.l.price, 0);
       let cost = 0, known = true;
-      for (const x of ls) { const lp = lastPurchase(x.a); if (lp) cost += (+lp.PrixAchat || 0) * x.l.qty; else known = false; }
+      for (const x of ls) { if (!x.a) continue; const lp = lastPurchase(x.a); if (lp) cost += (+lp.PrixAchat || 0) * x.l.qty; else known = false; }
       const nb = ls.reduce((t, x) => t + x.l.qty, 0);
       $("#sell-total", m).innerHTML = `<span class="muted">${int(ls.length)} article(s) · ${int(nb)} pièce(s)</span><span></span>
         ${known && ls.length ? `<span class="muted">Bénéfice estimé</span><span class="num" style="color:var(--success)">${money(total - cost)}</span>` : ""}
@@ -742,7 +744,15 @@
     };
     const drawLines = () => {
       const ls = cartLines();
-      $("#cart-lines", m).innerHTML = ls.length ? ls.map(({ l, a }, i) => {
+      $("#cart-lines", m).innerHTML = (ls.length ? ls.map(({ l, a }, i) => {
+        if (!a) return `<div class="cart-row svc-row" data-i="${i}">
+          <span class="thumb svc-ico" title="Service">${ICON.service}</span>
+          <div class="cart-name"><input class="input svc-name" data-name value="${esc(l.name || "")}" placeholder="Description du service (ex. installation Windows)" aria-label="Description du service"><span class="muted">Service · hors stock</span></div>
+          <span class="qty"><button type="button" data-d="-1" aria-label="Diminuer">−</button><input type="number" min="1" value="${l.qty}" data-qty inputmode="numeric" aria-label="Quantité"><button type="button" data-d="1" aria-label="Augmenter">+</button></span>
+          <span class="cart-price"><input class="input" type="number" step="any" min="0" value="${l.price}" data-price inputmode="decimal" aria-label="Prix"></span>
+          <strong class="num cart-sub">${money(l.qty * l.price)}</strong>
+          <button type="button" class="btn sm icon ghost danger" data-rm title="Retirer du panier" aria-label="Retirer">${ICON.close}</button>
+        </div>`;
         const max = hasStock() ? artStock(a) : "";
         return `<div class="cart-row" data-i="${i}">
           ${thumbHTML(a)}
@@ -752,21 +762,28 @@
           <strong class="num cart-sub">${money(l.qty * l.price)}</strong>
           <button type="button" class="btn sm icon ghost danger" data-rm title="Retirer du panier" aria-label="Retirer">${ICON.close}</button>
         </div>`;
-      }).join("") : `<div class="empty" style="padding:22px">Le panier est vide.<br><span style="font-size:13px">Ajoutez des articles depuis la page Articles avec le bouton ${ICON.cart}.</span>
-          <div style="margin-top:12px"><a class="btn" href="#/articles" data-close>Aller aux articles</a></div></div>`;
+      }).join("") : `<div class="empty" style="padding:18px">Le panier est vide.<br><span style="font-size:13px">Ajoutez des articles depuis la page Articles avec le bouton ${ICON.cart}, ou un service ci-dessous.</span>
+          <div style="margin-top:10px"><a class="btn sm" href="#/articles" data-close>Aller aux articles</a></div></div>`)
+        + `<button type="button" class="add-svc" data-add-svc>${ICON.plus} Ajouter un service (hors stock)</button>`;
       totals();
     };
     const changed = id => { cartSave(); renderCartBar(); const a = artById(id); if (a && currentView() === "articles" && state.refreshArticle) state.refreshArticle(a, true); };
     drawLines();
 
     $("#cart-lines", m).addEventListener("click", e => {
+      if (e.target.closest("[data-add-svc]")) {
+        state.cart.push({ id: "svc-" + Date.now(), svc: true, name: "", qty: 1, price: 0 });
+        cartSave(); renderCartBar(); drawLines();
+        const ins = $$(".svc-name", m); if (ins.length) ins[ins.length - 1].focus();
+        return;
+      }
       const row = e.target.closest(".cart-row"); if (!row) return;
       const { l, a } = cartLines()[+row.dataset.i];
       if (e.target.closest("[data-rm]")) { state.cart = state.cart.filter(x => x !== l); changed(l.id); return drawLines(); }
       const d = e.target.closest("[data-d]");
       if (d) {
         let q = l.qty + +d.dataset.d;
-        if (hasStock() && q > artStock(a)) { toast(`Stock disponible : ${int(artStock(a))}.`, "bad"); q = artStock(a); }
+        if (a && hasStock() && q > artStock(a)) { toast(`Stock disponible : ${int(artStock(a))}.`, "bad"); q = artStock(a); }
         l.qty = Math.max(1, q); changed(l.id); drawLines();
       }
     });
@@ -775,10 +792,11 @@
       const { l, a } = cartLines()[+row.dataset.i];
       if (e.target.matches("[data-qty]")) {
         let q = Math.max(1, parseInt(e.target.value, 10) || 1);
-        if (hasStock() && q > artStock(a)) { toast(`Stock disponible : ${int(artStock(a))}.`, "bad"); q = artStock(a); }
+        if (a && hasStock() && q > artStock(a)) { toast(`Stock disponible : ${int(artStock(a))}.`, "bad"); q = artStock(a); }
         l.qty = q;
       }
       if (e.target.matches("[data-price]")) l.price = Math.max(0, parseFloat(String(e.target.value).replace(",", ".")) || 0);
+      if (e.target.matches("[data-name]")) l.name = e.target.value.trim();
       changed(l.id); if (e.target.matches("[data-qty]")) drawLines(); else totals();
     });
     // mise à jour en direct pendant la saisie (sans redessiner les lignes, pour garder le curseur)
@@ -787,6 +805,7 @@
       const { l } = cartLines()[+row.dataset.i];
       if (e.target.matches("[data-qty]")) { const q = parseInt(e.target.value, 10); if (q > 0) l.qty = q; }
       if (e.target.matches("[data-price]")) { const v = parseFloat(String(e.target.value).replace(",", ".")); l.price = isNaN(v) ? 0 : Math.max(0, v); }
+      if (e.target.matches("[data-name]")) l.name = e.target.value;
       row.querySelector(".cart-sub").textContent = money(l.qty * l.price);
       totals(); cartSave(); renderCartBar();
     });
@@ -823,6 +842,8 @@
     const submit = async () => {
       const ls = cartLines();
       if (!ls.length) return toast("Le panier est vide.", "bad");
+      const noName = ls.find(x => !x.a && !String(x.l.name || "").trim());
+      if (noName) { const ins = $$(".svc-name", m).find(i => !i.value.trim()); if (ins) ins.focus(); return toast("Décrivez le service ajouté au panier.", "bad"); }
       // vente par échéances : contrôles et préparation des listes SharePoint
       const credit = isCredit();
       const totalCart = Math.round(ls.reduce((t, x) => t + x.l.qty * x.l.price, 0) * 100) / 100;
@@ -839,6 +860,7 @@
         // 1. vérification du stock réel de chaque article AVANT d'enregistrer quoi que ce soit
         const fresh = {};
         for (const { l, a } of ls) {
+          if (!a) continue; // service : pas de stock
           const f = await DS.getArticle(a.id);
           const s = +f[state.map.stock] || 0;
           if (hasStock() && s < l.qty) throw new Error(`Stock insuffisant pour « ${artName(a)} » : ${int(s)} disponible(s). Rien n'a été enregistré.`);
@@ -855,6 +877,15 @@
         // 3. une ligne par article, toutes sous le même numéro de vente
         const d = new Date(), num = saleNumber(d), pay = credit ? "Échéances" : $("#sell-pay", m).value;
         for (const { l, a } of ls) {
+          if (!a) { // service hors stock : pas d'article ni de coût d'achat
+            state.ventes.push(await DS.createVenteLine({
+              Title: num, ArticleId: 0, Article: String(l.name).trim(), Reference: "Service",
+              Quantite: l.qty, PrixUnitaire: l.price, Montant: Math.round(l.qty * l.price * 100) / 100,
+              Client: clientName, ModePaiement: pay, Vendeur: Auth.userName(), DateVente: d.toISOString(),
+              TypeOperation: "Service", Cout: 0
+            }));
+            continue;
+          }
           const ref = F(a, "reference"), lp = lastPurchase(a);
           const v = await DS.createVenteLine({
             Title: num, ArticleId: parseInt(a.id, 10), Article: String(artName(a)), Reference: ref == null ? "" : String(ref),
@@ -873,7 +904,7 @@
           const startV = $("#cr-start", m).value;
           const c = await DS.createCredit({
             Title: creditNum, Client: clientName, Telephone: $("#cr-tel", m).value.trim(),
-            Articles: JSON.stringify(ls.map(({ l, a }) => ({ id: a.id, name: String(artName(a)), qty: l.qty, price: l.price }))),
+            Articles: JSON.stringify(ls.map(x => ({ id: x.a ? x.a.id : "", name: lineName(x), qty: x.l.qty, price: x.l.price, service: !x.a }))),
             MontantTotal: totalCart, Apport: apport, NbEcheances: nb, Periodicite: PERIODES[$("#cr-per", m).value],
             DateDebut: (startV ? new Date(startV + "T12:00:00") : addPeriod(d, "mensuelle", 1)).toISOString(),
             Statut: apport >= totalCart ? "Soldé" : "En cours", NumVente: num, Utilisateur: Auth.userName()
@@ -887,7 +918,7 @@
         closeModal();
         cartClear();
         toast(credit ? `Vente à crédit ${num} enregistrée.` : `Vente ${num} enregistrée (${ls.length} article(s)).`, "ok");
-        if (currentView() === "articles" && state.refreshArticle) ls.forEach(x => state.refreshArticle(x.a)); else render();
+        if (currentView() === "articles" && state.refreshArticle) ls.forEach(x => { if (x.a) state.refreshArticle(x.a); }); else render();
         if (credit) creditDetail(creditNum); else showSale(num);
       } catch (e) {
         busy(btn, false);
@@ -2678,9 +2709,7 @@
       const t = e.target.closest("[data-tab]");
       if (t) { f.tab = t.dataset.tab; return viewCredits(el); }
       if (e.target.closest("#cr-new")) {
-        if (cartLines().length) return sellDialog(null, { credit: true });
-        location.hash = "#/articles";
-        return toast("Ajoutez les articles demandés au panier (🛒), puis validez en choisissant « Par échéances ».", "");
+        return sellDialog(null, { credit: true });
       }
       const vs = e.target.closest("[data-vs]");
       if (vs) return versementDialog(vs.dataset.vs);
