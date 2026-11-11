@@ -4351,7 +4351,6 @@
     } else {
       try { await loadData(); render(); } catch (e) { return showFatal(e); }
     }
-    $("#btn-scan-top").addEventListener("click", () => { if (state.loaded) openScanner(); });
     $("#btn-refresh").addEventListener("click", async e => {
       const b = e.currentTarget; if (b.classList.contains("spinning")) return;
       setSyncing(true);

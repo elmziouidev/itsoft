@@ -16,7 +16,7 @@
   <link rel="preconnect" href="https://graph.microsoft.com" crossorigin>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%231f4fd1'/%3E%3Cpath d='M8 10h16v10H8z' fill='none' stroke='white' stroke-width='2.4'/%3E%3Cpath d='M12 24h8' stroke='white' stroke-width='2.4' stroke-linecap='round'/%3E%3C/svg%3E">
   <!-- le « ?v= » change à chaque version : les navigateurs chargent alors les nouveaux fichiers -->
-  <link rel="stylesheet" href="css/style.css?v=2026.11.11-29">
+  <link rel="stylesheet" href="css/style.css?v=2026.11.11-30">
 </head>
 <body>
   <div id="app" class="app">
@@ -40,10 +40,6 @@
       <header class="topbar">
         <h1 id="view-title">Tableau de bord</h1>
         <div class="topbar-actions">
-          <button class="btn scan-top" id="btn-scan-top" type="button" title="Scanner un article (touche F2)" aria-label="Scanner un article">
-            <svg viewBox="0 0 24 24"><path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3"/><path d="M7 12h10"/></svg>
-            <span>Scanner</span><kbd>F2</kbd>
-          </button>
           <span class="badge" id="mode-badge" hidden></span>
           <a class="btn icon ghost show-mobile achats-btn" id="btn-achats-top" href="#/achats" title="Achats" aria-label="Achats"><svg viewBox="0 0 24 24"><path d="M3 6h11v10H3z"/><path d="M14 9h4l3 3.5V16h-7"/><circle cx="7" cy="17.5" r="1.8"/><circle cx="17" cy="17.5" r="1.8"/></svg></a>
           <a class="btn icon ghost show-mobile" id="btn-settings-top" href="#/parametres" title="Paramètres" aria-label="Paramètres"><svg viewBox="0 0 24 24"><path d="M4 6h8M16 6h4M4 12h2M10 12h10M4 18h11M19 18h1"/><circle cx="14" cy="6" r="2"/><circle cx="8" cy="12" r="2"/><circle cx="17" cy="18" r="2"/></svg></a>
@@ -66,9 +62,9 @@
   <div id="print-area" class="print-area"></div>
 
   <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.27.0/lib/msal-browser.min.js"></script>
-  <script src="js/config.js?v=2026.11.11-29"></script>
-  <script src="js/auth.js?v=2026.11.11-29"></script>
-  <script src="js/data.js?v=2026.11.11-29"></script>
-  <script src="js/app.js?v=2026.11.11-29"></script>
+  <script src="js/config.js?v=2026.11.11-30"></script>
+  <script src="js/auth.js?v=2026.11.11-30"></script>
+  <script src="js/data.js?v=2026.11.11-30"></script>
+  <script src="js/app.js?v=2026.11.11-30"></script>
 </body>
 </html>
