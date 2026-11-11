@@ -1592,123 +1592,107 @@
       obs.disconnect(); stop();
       if (state.scanPanelHandle && state.scanPanelHandle.m === m) state.scanPanelHandle = null;
       if (fromCart && !m.dataset.toCart) sellDialog(null);
-      if (auto) queue.then(() => {
-        if (!sess.lines.length) return;
-        if (panel) return; // page quittée : la vente est déjà enregistrée
-        const tot = sess.lines.reduce((t, L) => t + L.qty * L.price, 0), nb = sess.lines.reduce((t, L) => t + L.qty, 0);
-        toast(`Vente ${sess.num} enregistrée : ${int(nb)} article(s), ${money(tot)}.`, "ok");
-        if (currentView() === "articles" && state.refreshArticle) sess.lines.forEach(L => { if (L.a) state.refreshArticle(L.a, true); }); else render();
-        if (m.dataset.ticket) showSale(sess.num);
-      });
+      // fenêtre fermée ou page quittée sans « Valider la vente » : rien n'a été enregistré
+      if (auto && sess.lines.length && !m.dataset.validated)
+        toast(`Vente non validée : ${int(sess.lines.reduce((t, L) => t + L.qty, 0))} article(s) abandonné(s), rien n'a été enregistré.`, "bad");
     });
     obs.observe(panel ? $("#view") : $("#modal-root"), { childList: true, subtree: !!panel });
-    /* scanner intégré : « Nouvelle vente » clôt la vente en cours, « Ticket » l'affiche puis passe au client suivant */
-    const finishSession = () => {
-      if (sess.lines.length) {
-        const tot = sess.lines.reduce((t, L) => t + L.qty * L.price, 0), nb = sess.lines.reduce((t, L) => t + L.qty, 0);
-        toast(`Vente ${sess.num} enregistrée : ${int(nb)} article(s), ${money(tot)}.`, "ok");
-      }
+    /* remet à zéro la vente en cours (après validation ou abandon) */
+    const resetSession = () => {
       sess.num = null; sess.date = null; sess.lines = []; sess.hist = []; logged = 0;
+      try { pres.forEach(p => { p.counted = true; }); } catch (_) {} // les étiquettes encore devant la caméra ne sont pas recomptées
       $("#scan-log", m).innerHTML = `<div class="muted" style="padding:8px 2px">Nouvelle vente : visez l'étiquette du premier article.</div>`;
-      showTotal(); if (opts.onChange) opts.onChange(null);
+      showTotal();
     };
     if (panel) {
-      $("#sp-stop", m).addEventListener("click", () => { queue.then(() => { finishSession(); if (opts.onStop) opts.onStop(); }); });
+      $("#sp-stop", m).addEventListener("click", async () => {
+        if (sess.lines.length && !(await confirmBox("Arrêter le scan", `La vente en cours (${int(sess.lines.reduce((t, L) => t + L.qty, 0))} article(s)) n'est pas validée : elle sera abandonnée, rien ne sera enregistré.`, "Abandonner la vente", true, "Continuer le scan"))) return;
+        resetSession(); if (opts.onStop) opts.onStop();
+      });
       state.scanPanelHandle = { m, code: c => { last = { code: "", t: 0 }; handle(c); }, focus: () => { const i = $("#scan-input", m); if (i) i.focus(); } };
     }
     $("#scan-cart", m).addEventListener("click", () => {
-      if (panel) { if (!sess.num) return toast("Aucun article scanné pour l'instant.", "bad"); const n = sess.num; return queue.then(() => { finishSession(); showSale(n); }); }
-      if (auto) { if (!sess.num) return toast("Aucun article scanné pour l'instant.", "bad"); m.dataset.ticket = "1"; m.dataset.toCart = "1"; return closeModal(); }
+      if (auto) return validateSale();
       m.dataset.toCart = "1"; closeModal(); sellDialog(null);
     });
     if (auto) {
       $("#scan-cart", m).innerHTML = "✔ Valider la vente"; $("#scan-cart", m).classList.add("sc-validate");
-      $("#scan-log", m).innerHTML = `<div class="muted" style="padding:8px 2px">Visez l'étiquette : chaque article est <strong>enregistré directement dans Ventes</strong> (client ${esc(cfg.clientParDefaut || "comptoir")}, paiement ${esc((cfg.modesPaiement || ["Espèces"])[0])}) et retiré du stock.</div>`;
+      $("#scan-log", m).innerHTML = `<div class="muted" style="padding:8px 2px">Visez l'étiquette : les articles s'ajoutent à la <strong>vente en cours</strong>. Rien n'est enregistré avant le clic sur <strong>Valider la vente</strong> (client ${esc(cfg.clientParDefaut || "comptoir")}, paiement ${esc((cfg.modesPaiement || ["Espèces"])[0])}).</div>`;
     }
 
-    /* Enregistre un article scanné dans la vente en cours (a = null : article non classé) */
     const r2 = n => Math.round(n * 100) / 100;
-    async function recordItem(a, price) {
-      let fresh = null;
-      if (a && hasStock()) {
-        // stock et prix relus sur SharePoint : la vente est enregistrée avec les valeurs exactes du moment
-        const f = await DS.getArticle(a.id); fresh = +f[state.map.stock] || 0;
-        if (fresh < 1) { Object.assign(a, f); return { ok: false, why: "stock" }; }
-        const sp = state.map.prix ? +f[state.map.prix] : NaN;
-        if (sp > 0 && Math.abs(sp - price) > 0.005 && Math.abs(price - artPrice(a)) < 0.005) { // prix modifié ailleurs entre-temps
-          toast(`Prix de « ${artName(a)} » mis à jour : ${money(sp)} (au lieu de ${money(price)}).`, "ok");
-          price = sp;
+    /* « Valider la vente » : stock et prix relus sur SharePoint, puis toutes les lignes enregistrées en une fois */
+    let validating = false;
+    async function validateSale() {
+      if (validating) return;
+      if (!sess.lines.length) return toast("Aucun article scanné pour l'instant.", "bad");
+      validating = true;
+      const btn = $("#scan-cart", m); busy(btn, true, "Enregistrement…");
+      try {
+        // 1. contrôle : stock et prix réels de chaque article (lus en parallèle)
+        const withArt = sess.lines.filter(L => L.a);
+        const ids = [...new Set(withArt.map(L => String(L.a.id)))];
+        const fresh = await Promise.all(ids.map(id => DS.getArticle(id)));
+        ids.forEach((id, i) => { const a = artById(id); if (a) Object.assign(a, fresh[i]); });
+        const need = new Map();
+        withArt.forEach(L => need.set(String(L.a.id), (need.get(String(L.a.id)) || 0) + L.qty));
+        if (hasStock()) {
+          const short = [...need].filter(([id, q]) => q > artStock(artById(id))).map(([id, q]) => `${artName(artById(id))} : ${int(artStock(artById(id)))} en stock pour ${int(q)} scanné(s)`);
+          if (short.length) { beep(false); toast("Stock insuffisant, vente non enregistrée — " + short.join(" ; ") + ". Corrigez les quantités.", "bad"); showTotal(); return; }
         }
-        Object.assign(a, f);
-      }
-      if (!sess.num) { sess.date = new Date(); sess.num = saleNumber(sess.date); }
-      // la pièce est retirée du stock EN MÊME TEMPS que la ligne de vente est écrite (2 requêtes en parallèle)
-      const stockP = a && hasStock() ? DS.updateArticle(a.id, { [state.map.stock]: fresh - 1 }) : null;
-      let L = a ? sess.lines.find(x => x.a === a && x.price === price) : null;
-      if (L) {
-        L.qty++;
-        const upd = { Quantite: L.qty, Montant: r2(L.qty * price), Cout: L.unitCost != null ? r2(L.unitCost * L.qty) : null };
-        await DS.updateVenteLine(L.v.id, upd); Object.assign(L.v, upd);
-      } else {
-        const lp = a && lastPurchase(a), unitCost = a && lp ? (+lp.PrixAchat || 0) : null;
-        const ref = a ? F(a, "reference") : null;
-        const v = await DS.createVenteLine({
-          Title: sess.num, ArticleId: a ? parseInt(a.id, 10) : 0, Article: a ? String(artName(a)) : FREE.divers.label,
-          Reference: a ? (ref == null ? "" : String(ref)) : FREE.divers.label,
-          Quantite: 1, PrixUnitaire: price, Montant: r2(price), Client: cfg.clientParDefaut || "Client comptoir",
-          ModePaiement: (cfg.modesPaiement || ["Espèces"])[0], Vendeur: Auth.userName(), DateVente: sess.date.toISOString(),
-          TypeOperation: "Vente", Cout: unitCost != null ? r2(unitCost) : null
+        for (const L of withArt) { // prix modifié ailleurs entre-temps : prix exact du serveur
+          const sp = artPrice(L.a);
+          if (L.autoPrice && sp > 0 && Math.abs(sp - L.price) > 0.005) { toast(`Prix de « ${artName(L.a)} » mis à jour : ${money(sp)} (au lieu de ${money(L.price)}).`, "ok"); L.price = sp; }
+        }
+        // 2. enregistrement : lignes de vente et retrait du stock, tout en parallèle
+        const d = new Date(), num = saleNumber(d);
+        const pay = (cfg.modesPaiement || ["Espèces"])[0], client = cfg.clientParDefaut || "Client comptoir";
+        const lineJobs = sess.lines.map(L => {
+          const lp = L.a && lastPurchase(L.a), unit = L.a && lp ? (+lp.PrixAchat || 0) : null, ref = L.a ? F(L.a, "reference") : null;
+          return DS.createVenteLine({
+            Title: num, ArticleId: L.a ? parseInt(L.a.id, 10) : 0, Article: L.a ? String(artName(L.a)) : FREE.divers.label,
+            Reference: L.a ? (ref == null ? "" : String(ref)) : FREE.divers.label,
+            Quantite: L.qty, PrixUnitaire: L.price, Montant: r2(L.qty * L.price), Client: client, ModePaiement: pay,
+            Vendeur: Auth.userName(), DateVente: d.toISOString(), TypeOperation: "Vente", Cout: unit != null ? r2(unit * L.qty) : null
+          });
         });
-        state.ventes.push(v);
-        L = { v, a, qty: 1, price, unitCost }; sess.lines.push(L);
-      }
-      if (stockP) Object.assign(a, await stockP);
-      sess.hist.push(L);
-      return { ok: true, L, price };
+        const stockJobs = hasStock() ? [...need].map(([id, q]) => { const a = artById(id); return DS.updateArticle(id, { [state.map.stock]: artStock(a) - q }).then(r => Object.assign(a, r)); }) : [];
+        const lines = await Promise.all(lineJobs);
+        await Promise.all(stockJobs);
+        lines.forEach(v => state.ventes.push(v));
+        const nb = sess.lines.reduce((t, L) => t + L.qty, 0), tot = sess.lines.reduce((t, L) => t + L.qty * L.price, 0);
+        beep(true);
+        toast(`Vente ${num} enregistrée : ${int(nb)} article(s), ${money(tot)}.`, "ok");
+        if (currentView() === "articles" && state.refreshArticle) withArt.forEach(L => state.refreshArticle(L.a, true));
+        resetSession();
+        if (opts.onChange) opts.onChange(num); // la vente apparaît maintenant dans le tableau (en vert 5 s)
+        if (!panel) { m.dataset.validated = "1"; m.dataset.toCart = "1"; closeModal(); if (currentView() !== "articles") render(); }
+        showSale(num);
+      } catch (e) {
+        toast("Vente non enregistrée : " + e.message, "bad");
+      } finally { validating = false; if (document.body.contains(btn)) busy(btn, false); }
     }
-    /* Quantité saisie pour une ligne : stock vérifié sur SharePoint, ligne et stock mis à jour ensemble */
+    /* Quantité saisie pour une ligne (vente en cours, non enregistrée) : contrôle du stock connu */
     async function setQty(L, q) {
       q = Math.max(0, Math.floor(+q || 0));
       if (q === L.qty) return;
       if (q === 0) return removeLine(L);
-      const diff = q - L.qty;
-      let stockP = null;
       if (L.a && hasStock()) {
-        const f = await DS.getArticle(L.a.id), s = +f[state.map.stock] || 0;
-        Object.assign(L.a, f);
-        if (diff > s) { beep(false); toast(`Stock insuffisant pour « ${artName(L.a)} » : ${int(s)} pièce(s) de plus disponible(s).`, "bad"); return; }
-        stockP = DS.updateArticle(L.a.id, { [state.map.stock]: s - diff });
+        const other = sess.lines.filter(x => x.a === L.a && x !== L).reduce((t, x) => t + x.qty, 0);
+        const avail = artStock(L.a) - other;
+        if (q > avail) { beep(false); toast(`Stock disponible pour « ${artName(L.a)} » : ${int(avail)} pièce(s).`, "bad"); return; }
       }
       L.qty = q;
-      const upd = { Quantite: q, Montant: r2(q * L.price), Cout: L.unitCost != null ? r2(L.unitCost * q) : null };
-      const [, st] = await Promise.all([DS.updateVenteLine(L.v.id, upd), stockP]);
-      Object.assign(L.v, upd); if (st) Object.assign(L.a, st);
     }
-    /* Annule un article scanné : ligne supprimée de la vente, pièces remises en stock */
+    /* Annule un article scanné (simple retrait de la vente en cours) */
     async function removeLine(L) {
-      const stockP = L.a && hasStock()
-        ? DS.getArticle(L.a.id).then(f => DS.updateArticle(L.a.id, { [state.map.stock]: (+f[state.map.stock] || 0) + L.qty })) : null;
-      const [, st] = await Promise.all([DS.deleteVenteLine(L.v.id), stockP]);
-      if (st) Object.assign(L.a, st);
-      state.ventes = state.ventes.filter(v => v !== L.v);
       sess.lines = sess.lines.filter(x => x !== L); sess.hist = sess.hist.filter(x => x !== L);
-      if (!sess.lines.length) { sess.num = null; sess.date = null; } // plus aucun article : vente vide
     }
-    /* Annule le dernier article scanné : ligne retirée de la vente et pièce remise en stock */
     async function undoLast() {
       const L = sess.hist.pop(); if (!L) return;
-      if (L.a && hasStock()) { const f = await DS.getArticle(L.a.id); Object.assign(L.a, await DS.updateArticle(L.a.id, { [state.map.stock]: (+f[state.map.stock] || 0) + 1 })); }
-      if (L.qty > 1) {
-        L.qty--;
-        const upd = { Quantite: L.qty, Montant: r2(L.qty * L.price), Cout: L.unitCost != null ? r2(L.unitCost * L.qty) : null };
-        await DS.updateVenteLine(L.v.id, upd); Object.assign(L.v, upd);
-      } else {
-        await DS.deleteVenteLine(L.v.id);
-        state.ventes = state.ventes.filter(v => v !== L.v);
-        sess.lines = sess.lines.filter(x => x !== L);
-      }
+      if (L.qty > 1) L.qty--; else sess.lines = sess.lines.filter(x => x !== L);
     }
-    /* Ajoute un article : vente directe (mode automatique) ou panier. a = null : article non classé au prix donné */
+    /* Ajoute un article : vente en cours (mode automatique) ou panier. a = null : article non classé au prix donné */
     const addItem = (a, price) => {
       if (!auto) {
         if (!a) { state.cart.push({ id: "svc-" + Date.now(), svc: true, kind: "divers", name: "", qty: 1, price }); cartSave(); renderCartBar(); return Promise.resolve({ ok: true, qty: 1 }); }
@@ -1716,34 +1700,22 @@
         if (ok && price != null) { const l = state.cart.find(x => x.id === String(a.id)); if (l) { l.price = price; cartSave(); renderCartBar(); } }
         return Promise.resolve({ ok, qty: cartQty(a.id), why: ok ? "" : "stock" });
       }
-      // vente directe : confirmation IMMÉDIATE (bip + bandeau) d'après le stock connu localement,
-      // l'enregistrement sur SharePoint se fait ensuite en arrière-plan, dans l'ordre des scans
+      // vente en cours : ajout instantané (rien n'est enregistré avant « Valider la vente »)
       const p = price != null ? price : artPrice(a);
-      const key = a ? String(a.id) : "";
-      const inFlight = key ? (pending.get(key) || 0) : 0;
-      if (a && hasStock() && artStock(a) - inFlight < 1) return Promise.resolve({ ok: false, why: "stock" });
-      if (key) pending.set(key, inFlight + 1);
-      const L0 = a ? sess.lines.find(x => x.a === a && x.price === p) : null;
-      const predicted = (L0 ? L0.qty : 0) + inFlight + 1;
-      const job = queue.then(() => recordItem(a, p)).then(r => r, e => ({ ok: false, why: "erreur", err: e }));
-      queue = job.then(() => {});
-      job.then(r => {
-        if (key) pending.set(key, Math.max(0, (pending.get(key) || 1) - 1));
-        if (!r.ok) { // la vérification sur SharePoint a refusé : on le signale clairement
-          const name = a ? artName(a) : FREE.divers.label;
-          const why = r.why === "stock" ? "Annulé : plus de stock sur SharePoint" : "Annulé : non enregistré" + (r.err ? " (" + r.err.message + ")" : "");
-          beep(false); flash(false, name, 0, why);
-          log(`<span class="bad-dot"></span><span class="ellipsis">${esc(name)}</span><span class="muted">${esc(why.toLowerCase())}</span>`, "bad");
-        }
-        showTotal(); if (opts.onChange) opts.onChange(sess.num);
-      });
-      return Promise.resolve({ ok: true, qty: predicted });
+      if (a && hasStock()) {
+        const inSale = sess.lines.filter(x => x.a === a).reduce((t, x) => t + x.qty, 0);
+        if (artStock(a) - inSale < 1) return Promise.resolve({ ok: false, why: "stock" });
+      }
+      let L = a ? sess.lines.find(x => x.a === a && x.price === p) : null;
+      if (L) L.qty++;
+      else { L = { a, qty: 1, price: p, autoPrice: !!a && Math.abs(p - artPrice(a)) < 0.005 }; sess.lines.push(L); }
+      sess.hist.push(L);
+      return Promise.resolve({ ok: true, qty: L.qty });
     };
-    const pending = new Map(); // article → pièces scannées en cours d'enregistrement
     const itemDone = (a, price, r) => {
       const name = a ? artName(a) : FREE.divers.label;
       beep(r.ok);
-      const where = auto ? "Enregistré dans Ventes" : "Ajouté au panier";
+      const where = auto ? "Ajouté à la vente en cours" : "Ajouté au panier";
       if (r.ok) {
         flash(true, name, price, `${where} · quantité ${int(r.qty)}`);
         log(`<span class="ok-dot"></span><span class="ellipsis">${esc(name)}</span><strong class="num">${money(price)}</strong><span class="muted">× ${int(r.qty)}</span>`, "ok");
@@ -1777,7 +1749,7 @@
         // « Vente en cours » : une ligne par article scanné, quantité modifiable, ✕ pour annuler l'article
         const nb = sess.lines.reduce((t, L) => t + L.qty, 0), tot = sess.lines.reduce((t, L) => t + L.qty * L.price, 0);
         el.className = "scan-total as-sale";
-        el.innerHTML = nb ? `<div class="sc-head"><strong>Vente en cours</strong><span class="muted">${esc(sess.num)}</span></div>
+        el.innerHTML = nb ? `<div class="sc-head"><strong>Vente en cours</strong><span class="sc-pending">non enregistrée · à valider</span></div>
           <div class="sc-rows">${sess.lines.map((L, i) => `<div class="sc-row" data-li="${i}">
             <span class="sc-name" title="${esc(L.a ? artName(L.a) : FREE.divers.label)}">${esc(L.a ? artName(L.a) : FREE.divers.label)}</span>
             <span class="sc-pu num">${money(L.price)}</span>
