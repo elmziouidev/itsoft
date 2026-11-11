@@ -856,3 +856,17 @@ body.has-dock .view { padding-bottom: calc(var(--dock-h, 0px) + 40px); }
   .vs-right { position: static; order: -1; }
   .scan-panel { max-height: none; }
 }
+/* Ventes : tableau sur toute la hauteur de l'écran (défilement interne, en-tête figé) */
+@media (min-width: 1101px) {
+  .ventes-split .vs-left > .card { display: flex; flex-direction: column; height: calc(100vh - 118px); min-height: 420px; }
+  .ventes-split .vs-left > .card > #v-table { flex: 1 1 auto; min-height: 0; overflow: auto; }
+  .ventes-split #v-table .table-wrap { overflow: visible; }
+  .ventes-split #v-table thead th { position: sticky; top: 0; z-index: 2; background: var(--surface-2, var(--surface)); box-shadow: inset 0 -1px 0 var(--border); }
+  .ventes-split .vs-left > .card > #v-table .empty { height: 100%; display: flex; align-items: center; justify-content: center; }
+}
+/* nouvelle vente : fond vert pendant 5 s, puis retour en douceur à la mise en forme normale */
+.ventes-split #v-table tbody td { transition: background-color .9s ease, box-shadow .9s ease; }
+.ventes-split #v-table tr.row-new td { background: #bbf7d0; }
+.ventes-split #v-table tr.row-new td:first-child { box-shadow: inset 5px 0 0 #16a34a; }
+:root[data-theme="dark"] .ventes-split #v-table tr.row-new td { background: #14532d; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .ventes-split #v-table tr.row-new td { background: #14532d; } }

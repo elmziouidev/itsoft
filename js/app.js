@@ -3833,6 +3833,8 @@
   }
 
   /* ============ Vue : historique des ventes ============ */
+  let hiCheckRef = null;
+  const hiOn = n => !!state.hiSale && state.hiSale.num === n && Date.now() < state.hiSale.until;
   function viewVentes(el) {
     const f = state.filters.ventes;
     if (!f.type) f.type = "";
@@ -3882,7 +3884,8 @@
       try { localStorage.setItem(DOCK_KEY, "1"); } catch (_) {}
       scanDialog({
         container: dock,
-        onChange: num => { state.hiSale = num; draw(); },
+        // vente mise à jour par le scan : sa ligne passe au vert pendant 5 secondes (relancé à chaque article)
+        onChange: num => { if (num) state.hiSale = { num, until: Date.now() + 5000 }; draw(); },
         onStop: () => { try { localStorage.setItem(DOCK_KEY, "0"); } catch (_) {} state.hiSale = null; draw(); dockIdle(); }
       });
     };
@@ -3901,7 +3904,7 @@
         <span><span class="muted">Bénéfice :</span> <strong style="color:var(--success)">${money(profit)}</strong>${unknown ? ` <span class="muted" title="Ventes d'articles dont le prix d'achat est inconnu">(${int(unknown)} sans prix d'achat)</span>` : ""}</span>`;
       $("#v-table").innerHTML = list.length ? `<div class="table-wrap"><table class="table responsive compact">
         <thead><tr><th>Date</th><th>Type</th><th>Détail</th><th>Client</th><th class="num">Total</th><th class="num">Bénéfice</th><th></th></tr></thead>
-        <tbody>${list.slice(0, 500).map(s => `<tr class="clickable ${s.num === state.hiSale ? "row-new" : ""}" data-sale="${esc(s.num)}">
+        <tbody>${list.slice(0, 500).map(s => `<tr class="clickable ${hiOn(s.num) ? "row-new" : ""}" data-sale="${esc(s.num)}">
           <td data-label="Date">${fmtDateTime(s.date)}</td>
           <td data-label="Type">${s.repair ? '<span class="badge info">Réparation</span>' : '<span class="badge">Vente</span>'}</td>
           <td class="primary-cell" data-label="Détail"><span class="ellipsis" style="display:block;max-width:320px">${esc(s.lines.map(l => (l.Quantite > 1 ? l.Quantite + " × " : "") + (l.Article || "")).join(", "))}</span></td>
@@ -3911,8 +3914,18 @@
           <td class="actions"><button class="btn sm row-act" data-print-sale="${esc(s.num)}" title="Imprimer le ticket">${ICON.print}<span>Imprimer</span></button><button class="btn sm row-act danger" data-cancel-sale="${esc(s.num)}" title="${s.repair ? "Annuler la réparation" : "Annuler la vente"}">${ICON.trash}<span>Annuler</span></button></td></tr>`).join("")}
         </tbody></table></div>${list.length > 500 ? `<div class="muted" style="padding:10px 16px">Affichage limité aux 500 opérations les plus récentes — affinez les filtres.</div>` : ""}`
         : `<div class="empty">Aucune vente pour ces critères.</div>`;
+      if (hiCheckRef) hiCheckRef();
     };
     draw();
+    // retour à la mise en forme normale du tableau après les 5 secondes
+    const hiCheck = () => {
+      clearTimeout(state.hiT);
+      const h = state.hiSale; if (!h) return;
+      const left = h.until - Date.now();
+      if (left <= 0) { $$("#v-table tr.row-new").forEach(tr => tr.classList.remove("row-new")); return; }
+      state.hiT = setTimeout(hiCheck, left + 30);
+    };
+    hiCheckRef = hiCheck;
     let autoStart = "1"; try { autoStart = localStorage.getItem(DOCK_KEY) || "0"; } catch (_) {}
     if (autoStart === "1" && state.ventesReady) dockStart(); else dockIdle();
     $("#v-q").addEventListener("input", e => { f.q = e.target.value; draw(); });
