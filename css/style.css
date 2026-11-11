@@ -870,3 +870,54 @@ body.has-dock .view { padding-bottom: calc(var(--dock-h, 0px) + 40px); }
 .ventes-split #v-table tr.row-new td:first-child { box-shadow: inset 5px 0 0 #16a34a; }
 :root[data-theme="dark"] .ventes-split #v-table tr.row-new td { background: #14532d; }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .ventes-split #v-table tr.row-new td { background: #14532d; } }
+
+/* Ventes : tableau ajusté à la largeur (aucune barre de défilement horizontale) */
+@media (min-width: 1101px) {
+  .ventes-split .vs-left > .card > #v-table { overflow-x: hidden; }
+  .ventes-split #v-table table { width: 100%; table-layout: fixed; }
+  .ventes-split #v-table th, .ventes-split #v-table td { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding-left: 8px; padding-right: 8px; }
+  .ventes-split #v-table th:nth-child(1) { width: 128px; }
+  .ventes-split #v-table th:nth-child(2) { width: 82px; }
+  .ventes-split #v-table th:nth-child(4) { width: 16%; }
+  .ventes-split #v-table th:nth-child(5) { width: 104px; }
+  .ventes-split #v-table th:nth-child(6) { width: 92px; }
+  .ventes-split #v-table th:nth-child(7) { width: 84px; }
+  .ventes-split #v-table td .ellipsis { max-width: 100% !important; }
+  .ventes-split #v-table .row-act { padding: 5px 7px; }
+  .ventes-split #v-table .row-act span { display: none; }
+  .ventes-split #v-table td.actions { white-space: nowrap; text-align: right; }
+}
+
+/* Scan : liste « Vente en cours » (quantité modifiable, annulation par article) */
+.scan-total.as-sale { display: block; padding: 0; background: var(--surface); color: var(--text); border: 1px solid color-mix(in srgb, #16a34a 45%, var(--border)); border-radius: 12px; overflow: hidden; }
+.scan-total.as-sale:empty { display: none; }
+.sc-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; padding: 9px 12px; background: color-mix(in srgb, #16a34a 12%, var(--surface)); font-size: 14px; }
+.sc-head .muted { font-size: 12px; }
+.sc-rows { max-height: 300px; overflow-y: auto; }
+.sc-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto 92px 34px; align-items: center; gap: 8px; padding: 7px 10px 7px 12px; border-top: 1px solid var(--border); font-size: 14px; }
+.sc-name { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sc-pu { color: var(--muted); font-size: 12.5px; white-space: nowrap; }
+.sc-qty input { width: 46px; }
+.sc-sub { text-align: right; white-space: nowrap; }
+.sc-del { color: var(--danger); }
+.sc-foot { display: flex; justify-content: space-between; align-items: center; padding: 10px 12px; border-top: 2px solid color-mix(in srgb, #16a34a 45%, var(--border)); font-size: 14px; }
+.sc-total strong { font-size: 19px; margin-left: 6px; color: #15803d; }
+.btn.sc-validate { background: #16a34a; border-color: #16a34a; color: #fff; font-size: 16px; font-weight: 800; min-height: 46px; }
+.btn.sc-validate:hover { background: #15803d; }
+@media (max-width: 520px) { .sc-row { grid-template-columns: minmax(0, 1fr) auto 80px 32px; } .sc-pu { display: none; } }
+@media (min-width: 1101px) {
+  .ventes-split #v-table th:nth-child(7) { width: 96px; }
+  .ventes-split #v-table td.actions { padding-left: 4px; padding-right: 6px; }
+  .ventes-split #v-table td.actions .row-act { padding: 5px 6px; margin-left: 2px; }
+}
+.sc-row { grid-template-columns: minmax(0, 1fr) auto auto 104px 32px; }
+.sc-sub { font-size: 14px; }
+/* « Valider la vente » toujours visible en bas du panneau de scan */
+.scan-panel .scan-cam video { max-height: 34vh; }
+.scan-panel .sp-foot { position: sticky; bottom: -14px; margin: 0 -14px -14px; padding: 10px 14px 14px; background: var(--surface); box-shadow: 0 -6px 14px -10px rgba(0,0,0,.25); z-index: 3; }
+@media (min-width: 1101px) {
+  .ventes-split #v-table th:nth-child(4) { width: 14%; }
+  .ventes-split #v-table th:nth-child(5) { width: 122px; }
+  .ventes-split #v-table th:nth-child(6) { width: 84px; }
+  .ventes-split #v-table th:nth-child(2) { width: 76px; }
+}

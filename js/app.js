@@ -1575,7 +1575,7 @@
     if (panel) {
       panel.innerHTML = `<div class="scan-panel"><div class="sp-head"><h2>${ICON.scan} Scanner</h2><button class="btn sm ghost" id="sp-stop" type="button" title="Arrêter la caméra">Arrêter</button></div>
         <div class="sp-body">${scanBody}</div>
-        <div class="sp-foot"><button class="btn" id="scan-new" type="button">Nouvelle vente</button><button class="btn primary" id="scan-cart" type="button">${ICON.print} Ticket</button></div></div>`;
+        <div class="sp-foot"><button class="btn primary sc-validate" id="scan-cart" type="button">✔ Valider la vente</button></div></div>`;
       m = panel.firstElementChild;
     } else m = openModal({
       title: "Scanner des articles", size: "cart scan-modal", body: scanBody,
@@ -1613,7 +1613,6 @@
       showTotal(); if (opts.onChange) opts.onChange(null);
     };
     if (panel) {
-      $("#scan-new", m).addEventListener("click", () => queue.then(finishSession));
       $("#sp-stop", m).addEventListener("click", () => { queue.then(() => { finishSession(); if (opts.onStop) opts.onStop(); }); });
       state.scanPanelHandle = { m, code: c => { last = { code: "", t: 0 }; handle(c); }, focus: () => { const i = $("#scan-input", m); if (i) i.focus(); } };
     }
@@ -1623,7 +1622,7 @@
       m.dataset.toCart = "1"; closeModal(); sellDialog(null);
     });
     if (auto) {
-      $("#scan-cart", m).innerHTML = `${ICON.print} Terminer et voir le ticket`;
+      $("#scan-cart", m).innerHTML = "✔ Valider la vente"; $("#scan-cart", m).classList.add("sc-validate");
       $("#scan-log", m).innerHTML = `<div class="muted" style="padding:8px 2px">Visez l'étiquette : chaque article est <strong>enregistré directement dans Ventes</strong> (client ${esc(cfg.clientParDefaut || "comptoir")}, paiement ${esc((cfg.modesPaiement || ["Espèces"])[0])}) et retiré du stock.</div>`;
     }
 
@@ -1666,6 +1665,34 @@
       if (stockP) Object.assign(a, await stockP);
       sess.hist.push(L);
       return { ok: true, L, price };
+    }
+    /* Quantité saisie pour une ligne : stock vérifié sur SharePoint, ligne et stock mis à jour ensemble */
+    async function setQty(L, q) {
+      q = Math.max(0, Math.floor(+q || 0));
+      if (q === L.qty) return;
+      if (q === 0) return removeLine(L);
+      const diff = q - L.qty;
+      let stockP = null;
+      if (L.a && hasStock()) {
+        const f = await DS.getArticle(L.a.id), s = +f[state.map.stock] || 0;
+        Object.assign(L.a, f);
+        if (diff > s) { beep(false); toast(`Stock insuffisant pour « ${artName(L.a)} » : ${int(s)} pièce(s) de plus disponible(s).`, "bad"); return; }
+        stockP = DS.updateArticle(L.a.id, { [state.map.stock]: s - diff });
+      }
+      L.qty = q;
+      const upd = { Quantite: q, Montant: r2(q * L.price), Cout: L.unitCost != null ? r2(L.unitCost * q) : null };
+      const [, st] = await Promise.all([DS.updateVenteLine(L.v.id, upd), stockP]);
+      Object.assign(L.v, upd); if (st) Object.assign(L.a, st);
+    }
+    /* Annule un article scanné : ligne supprimée de la vente, pièces remises en stock */
+    async function removeLine(L) {
+      const stockP = L.a && hasStock()
+        ? DS.getArticle(L.a.id).then(f => DS.updateArticle(L.a.id, { [state.map.stock]: (+f[state.map.stock] || 0) + L.qty })) : null;
+      const [, st] = await Promise.all([DS.deleteVenteLine(L.v.id), stockP]);
+      if (st) Object.assign(L.a, st);
+      state.ventes = state.ventes.filter(v => v !== L.v);
+      sess.lines = sess.lines.filter(x => x !== L); sess.hist = sess.hist.filter(x => x !== L);
+      if (!sess.lines.length) { sess.num = null; sess.date = null; } // plus aucun article : vente vide
     }
     /* Annule le dernier article scanné : ligne retirée de la vente et pièce remise en stock */
     async function undoLast() {
@@ -1747,9 +1774,17 @@
     const showTotal = () => {
       const el = $("#scan-total", m); if (!el) return;
       if (auto) {
+        // « Vente en cours » : une ligne par article scanné, quantité modifiable, ✕ pour annuler l'article
         const nb = sess.lines.reduce((t, L) => t + L.qty, 0), tot = sess.lines.reduce((t, L) => t + L.qty * L.price, 0);
-        el.innerHTML = nb ? `${ICON.cart}<span>Vente <strong>${esc(sess.num)}</strong> : <strong>${int(nb)}</strong> article(s)</span>
-          <button type="button" class="btn sm" data-undo title="Retire le dernier article scanné de la vente et le remet en stock">↶ Annuler le dernier</button><strong class="num">${money(tot)}</strong>` : "";
+        el.className = "scan-total as-sale";
+        el.innerHTML = nb ? `<div class="sc-head"><strong>Vente en cours</strong><span class="muted">${esc(sess.num)}</span></div>
+          <div class="sc-rows">${sess.lines.map((L, i) => `<div class="sc-row" data-li="${i}">
+            <span class="sc-name" title="${esc(L.a ? artName(L.a) : FREE.divers.label)}">${esc(L.a ? artName(L.a) : FREE.divers.label)}</span>
+            <span class="sc-pu num">${money(L.price)}</span>
+            <span class="qty sc-qty"><button type="button" data-sq="-1" aria-label="Diminuer">−</button><input type="number" min="1" step="1" value="${L.qty}" data-sqi inputmode="numeric" aria-label="Quantité"><button type="button" data-sq="1" aria-label="Augmenter">+</button></span>
+            <strong class="sc-sub num">${money(L.qty * L.price)}</strong>
+            <button type="button" class="btn sm icon ghost danger sc-del" data-sdel title="Annuler cet article (remis en stock)" aria-label="Annuler cet article">${ICON.close}</button></div>`).join("")}</div>
+          <div class="sc-foot"><span>${int(nb)} article(s)</span><span class="sc-total">Total <strong>${money(tot)}</strong></span></div>` : "";
         return;
       }
       const ls = cartLines();
@@ -1766,6 +1801,23 @@
       if (!a) { beep(false); flash(false, "Code non reconnu", 0, code); return askAssociate(code); }
       addItem(a, artPrice(a)).then(r => itemDone(a, artPrice(a), r));
     };
+    /* modification d'une ligne de la vente en cours (quantité, annulation), dans l'ordre des scans */
+    const lineAt = el => sess.lines[+el.closest(".sc-row").dataset.li];
+    const editLine = (L, fn) => {
+      queue = queue.then(() => fn(L)).catch(err => toast("Modification impossible : " + err.message, "bad"))
+        .then(() => { showTotal(); if (opts.onChange) opts.onChange(sess.num); });
+    };
+    $("#scan-total", m).addEventListener("click", e => {
+      const q = e.target.closest("[data-sq]");
+      if (q) { const L = lineAt(q); if (L) editLine(L, x => setQty(x, x.qty + +q.dataset.sq)); return; }
+      const del = e.target.closest("[data-sdel]");
+      if (del) { const L = lineAt(del); if (L) { del.disabled = true; editLine(L, x => removeLine(x).then(() => { beep(true); log(`<span class="bad-dot"></span><span class="ellipsis">${esc(x.a ? artName(x.a) : FREE.divers.label)}</span><span class="muted">annulé, remis en stock</span>`, "bad"); })); } return; }
+    });
+    $("#scan-total", m).addEventListener("change", e => {
+      const i = e.target.closest("[data-sqi]"); if (!i) return;
+      const L = lineAt(i); if (L) editLine(L, x => setQty(x, parseInt(i.value, 10) || 0));
+    });
+    $("#scan-total", m).addEventListener("keydown", e => { if (e.key === "Enter" && e.target.matches("[data-sqi]")) { e.preventDefault(); e.target.blur(); } });
     $("#scan-total", m).addEventListener("click", e => {
       const b = e.target.closest("[data-undo]"); if (!b) return;
       busy(b, true, "Annulation…");
