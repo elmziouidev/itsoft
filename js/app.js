@@ -1227,6 +1227,32 @@
     });
     return libCache[url];
   }
+  const LIB_OCR = "https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js";
+  let ocrWorkerP = null;
+  /* Moteur de lecture des chiffres (chargé une seule fois, à la première utilisation) */
+  function ocrWorker() {
+    if (!ocrWorkerP) ocrWorkerP = (async () => {
+      await loadScript(LIB_OCR);
+      const w = await window.Tesseract.createWorker("eng", 1);
+      // chiffres + lettres de la devise (DH, MAD) : « 150,50 DH » ne doit pas se lire « 150,504 »
+      await w.setParameters({ tessedit_char_whitelist: "0123456789.,DHMAdh ", tessedit_pageseg_mode: "7" });
+      return w;
+    })().catch(e => { ocrWorkerP = null; throw e; });
+    return ocrWorkerP;
+  }
+  /* « 1 030 », « 1030 », « 105,00 », « 1.030 » → nombre */
+  function parsePrice(text) {
+    let s = String(text || "").replace(/[\s ]/g, "");
+    s = s.split(/(?:dhs|dh|mad)/i)[0] || s; // ce qui précède « DH » / « MAD » est le prix
+    s = s.replace(/[a-z]/gi, "");
+    const mm = s.match(/\d[\d.,]*/g); if (!mm) return null;
+    s = mm.sort((a, b) => b.length - a.length)[0].replace(/[.,]+$/, "");
+    if (/^\d{1,3}([.,]\d{3})+$/.test(s)) s = s.replace(/[.,]/g, "");      // séparateur de milliers
+    else if (/[.,]\d{1,2}$/.test(s)) s = s.replace(/[.,](?=\d{1,2}$)/, "#").replace(/[.,]/g, "").replace("#", ".");
+    else s = s.replace(/[.,]/g, "");
+    const n = parseFloat(s);
+    return isFinite(n) && n > 0 && n < 1e6 ? Math.round(n * 100) / 100 : null;
+  }
   const CODE_FIELD = "CodeBarre";
   const codeCol = () => findCol(CODE_FIELD);
   const labelCode = a => "ITS:" + a.id; // contenu du QR code de l'étiquette
@@ -1310,11 +1336,13 @@
     const fromCart = !!opts.fromCart;
     const m = openModal({
       title: "Scanner des articles", size: "cart",
-      body: `<div class="scan-wrap"><div id="scan-cam" class="scan-cam"></div><div class="scan-wait" id="scan-wait">Démarrage de la caméra…<br><span>Si le navigateur affiche « Utiliser les caméras », cliquez sur <strong>Autoriser</strong>.</span></div><div class="scan-flash" id="scan-flash" hidden></div></div>
+      body: `<div class="seg scan-mode" id="scan-mode" role="tablist"><button type="button" class="on" data-mode="code">${ICON.scan} QR / code-barres</button><button type="button" data-mode="price"><span class="seg-num">123</span> Prix écrit</button></div>
+        <div class="scan-wrap"><div id="scan-cam" class="scan-cam"></div><div class="price-guide" id="price-guide" hidden><span id="price-guide-txt">Placez le prix dans le cadre</span></div><div class="scan-wait" id="scan-wait">Démarrage de la caméra…<br><span>Si le navigateur affiche « Utiliser les caméras », cliquez sur <strong>Autoriser</strong>.</span></div><div class="scan-flash" id="scan-flash" hidden></div></div>
         <div class="scan-total" id="scan-total"></div>
+        <div id="price-panel"></div>
         <div class="form-grid" style="margin-top:10px">
           <label class="field" id="scan-cam-field" hidden>Caméra<select class="input" id="scan-cam-sel"></select></label>
-          <label class="field">Code (lecteur code-barres ou saisie)<input class="input" id="scan-input" placeholder="Scannez ou tapez le code puis Entrée" autocomplete="off" enterkeyhint="done"></label>
+          <label class="field"><span id="scan-input-lab">Code (lecteur code-barres ou saisie)</span><input class="input" id="scan-input" placeholder="Scannez ou tapez le code puis Entrée" autocomplete="off" enterkeyhint="done"></label>
         </div>
         <div id="scan-unknown"></div>
         <div class="scan-log" id="scan-log"><div class="muted" style="padding:8px 2px">Visez l'étiquette (QR code) ou le code-barres : l'article est ajouté au panier avec son prix.</div></div>`,
@@ -1397,7 +1425,149 @@
       setTimeout(() => { const i = $("#scan-assoc", box); if (i) i.focus(); }, 50);
     };
     const inp = $("#scan-input", m);
-    inp.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); last = { code: "", t: 0 }; handle(inp.value); inp.value = ""; } });
+    inp.addEventListener("keydown", e => {
+      if (e.key !== "Enter") return;
+      e.preventDefault();
+      if (mode === "price") { const p = parsePrice(inp.value); if (p == null) toast("Prix non valide.", "bad"); else showPrice(p); }
+      else { last = { code: "", t: 0 }; handle(inp.value); }
+      inp.value = "";
+    });
+
+    /* ---- Mode « Prix écrit » : lecture d'un simple nombre par la caméra (OCR) ---- */
+    let mode = "code", ocrPaused = false, ocrPrev = null, ocrRunning = false, lastPrice = { p: null, t: 0 };
+    const guideTxt = s => { const g = $("#price-guide-txt", m); if (g) g.textContent = s; };
+    const setMode = md => {
+      mode = md;
+      $$("#scan-mode button", m).forEach(b => b.classList.toggle("on", b.dataset.mode === md));
+      $("#price-guide", m).hidden = md !== "price";
+      $("#scan-input-lab", m).textContent = md === "price" ? "Prix (saisie manuelle, puis Entrée)" : "Code (lecteur code-barres ou saisie)";
+      inp.placeholder = md === "price" ? "Ex. 1030" : "Scannez ou tapez le code puis Entrée";
+      inp.inputMode = md === "price" ? "decimal" : "text";
+      if (md !== "price") { $("#price-panel", m).innerHTML = ""; return; }
+      ocrPaused = false; ocrPrev = null;
+      ocrLoop();
+    };
+    $("#scan-mode", m).addEventListener("click", e => { const b = e.target.closest("[data-mode]"); if (b && b.dataset.mode !== mode) setMode(b.dataset.mode); });
+    /* image du cadre central, en noir et blanc, agrandie pour la lecture */
+    const grab = () => {
+      const v = $("#scan-cam video", m);
+      if (!v || !v.videoWidth) return null;
+      const vw = v.videoWidth, vh = v.videoHeight, cw = Math.round(vw * 0.6), ch = Math.round(vh * 0.3);
+      const scale = Math.min(3, 110 / ch);
+      const c = document.createElement("canvas");
+      c.width = Math.round(cw * scale); c.height = Math.round(ch * scale);
+      const x = c.getContext("2d", { willReadFrequently: true });
+      x.drawImage(v, (vw - cw) / 2, (vh - ch) / 2, cw, ch, 0, 0, c.width, c.height);
+      const W = c.width, H = c.height, img = x.getImageData(0, 0, W, H), d = img.data, px = W * H;
+      // niveaux de gris (l'encre bleue d'un stylo devient foncée)
+      const g = new Float32Array(px);
+      for (let p = 0, i = 0; p < px; p++, i += 4) g[p] = Math.min(d[i] * 0.3 + d[i + 1] * 0.59 + d[i + 2] * 0.11, d[i] * 0.5 + d[i + 1] * 0.5);
+      // seuil adaptatif (moyenne locale) : résiste aux ombres et à un éclairage inégal
+      const S = new Float64Array((W + 1) * (H + 1));
+      for (let yy = 0; yy < H; yy++) { let row = 0; for (let xx = 0; xx < W; xx++) { row += g[yy * W + xx]; S[(yy + 1) * (W + 1) + xx + 1] = S[yy * (W + 1) + xx + 1] + row; } }
+      const r = Math.max(8, Math.round(H / 3));
+      let on = new Uint8Array(px), dark = 0;
+      for (let yy = 0; yy < H; yy++) for (let xx = 0; xx < W; xx++) {
+        const x0 = Math.max(0, xx - r), x1 = Math.min(W, xx + r + 1), y0 = Math.max(0, yy - r), y1 = Math.min(H, yy + r + 1);
+        const mean = (S[y1 * (W + 1) + x1] - S[y0 * (W + 1) + x1] - S[y1 * (W + 1) + x0] + S[y0 * (W + 1) + x0]) / ((x1 - x0) * (y1 - y0));
+        if (g[yy * W + xx] < mean * 0.82 && g[yy * W + xx] < 200) { on[yy * W + xx] = 1; dark++; }
+      }
+      if (dark > px * 0.5) { for (let p = 0; p < px; p++) on[p] = on[p] ? 0 : 1; dark = px - dark; } // chiffres clairs sur fond sombre
+      // traits fins (stylo) : on les épaissit d'un pixel pour mieux reconnaître les chiffres
+      if (dark < px * 0.08) {
+        const o = on; on = new Uint8Array(px);
+        for (let yy = 1; yy < H - 1; yy++) for (let xx = 1; xx < W - 1; xx++) {
+          const p = yy * W + xx;
+          on[p] = o[p] | o[p - 1] | o[p + 1] | o[p - W] | o[p + W];
+        }
+      }
+      for (let p = 0, i = 0; p < px; p++, i += 4) { const v = on[p] ? 0 : 255; d[i] = d[i + 1] = d[i + 2] = v; d[i + 3] = 255; }
+      x.putImageData(img, 0, 0);
+      return c;
+    };
+    async function ocrLoop() {
+      if (ocrRunning) return;
+      ocrRunning = true;
+      try {
+        guideTxt("Chargement de la lecture des chiffres…");
+        let w;
+        try { w = await ocrWorker(); } catch (e) { guideTxt("Lecture des chiffres indisponible : " + e.message); return; }
+        while (mode === "price" && document.body.contains(m)) {
+          if (!ocrPaused) {
+            const c = grab();
+            if (!c) guideTxt("En attente de l'image de la caméra…");
+            else {
+              guideTxt("Placez le prix dans le cadre");
+              const r = await w.recognize(c);
+              const p = parsePrice(r.data.text);
+              // le même prix n'est relu qu'après avoir été retiré du cadre (ou après 15 s)
+              if (lastPrice.p != null && (p !== lastPrice.p || Date.now() - lastPrice.t > 15000)) lastPrice = { p: null, t: 0 };
+              if (p != null && r.data.confidence >= 40 && p !== lastPrice.p) {
+                if (ocrPrev === p && mode === "price" && !ocrPaused) { ocrPaused = true; showPrice(p); } // même valeur lue deux fois de suite : confirmée
+                ocrPrev = p;
+              } else if (p == null) ocrPrev = null;
+            }
+          }
+          await new Promise(r => setTimeout(r, 350));
+        }
+      } finally { ocrRunning = false; }
+    }
+    /* Prix lu : articles vendus à ce prix, ou article non classé */
+    const showPrice = (p, silent) => {
+      ocrPaused = true;
+      if (!silent) beep(true);
+      const panel = $("#price-panel", m); if (!panel) return;
+      const list = state.articles.filter(x => Math.abs(artPrice(x) - p) < 0.005)
+        .sort((a, b) => (artStock(b) > 0) - (artStock(a) > 0) || String(artName(a)).localeCompare(String(artName(b)), "fr"));
+      panel.innerHTML = `<div class="price-res">
+        <div class="pr-head"><span class="muted">Prix lu</span>
+          <span class="pr-edit-wrap"><input class="pr-edit" id="pr-edit" value="${esc(String(p).replace(".", ","))}" inputmode="decimal" aria-label="Prix lu (modifiable)" title="Prix incorrect ? Corrigez-le ici puis Entrée"><span>${esc(cfg.devise)}</span></span>
+          <strong class="pr-val" hidden>${esc(moneyR(p))}</strong>
+          <span class="muted">${list.length ? `${int(list.length)} article(s) à ce prix` : "aucun article à ce prix"}</span>
+          <button class="btn sm" type="button" data-pr-retry>Relire</button></div>
+        <div class="muted" style="font-size:12.5px;margin:-4px 0 8px">Chiffre mal lu ? Corrigez-le dans la case puis appuyez sur Entrée.</div>
+        <div class="pr-list">${list.slice(0, 12).map(a => `<button type="button" class="pr-art" data-pr-art="${esc(a.id)}" ${hasStock() && artStock(a) <= 0 ? "disabled" : ""}>
+            <strong class="ellipsis">${esc(artName(a))}</strong><span class="muted ellipsis">${esc(F(a, "categorie") || "")}${hasStock() ? ` · stock ${int(artStock(a))}` : ""}</span></button>`).join("")}
+          ${list.length > 12 ? `<div class="muted" style="font-size:13px">… et ${int(list.length - 12)} autre(s) : utilisez la recherche ci-dessous.</div>` : ""}
+          <button type="button" class="pr-art pr-free" data-pr-free><strong>Article non classé</strong><span class="muted">vendu ${esc(moneyR(p))}, nature à préciser dans le panier</span></button>
+        </div>
+        <div class="row" style="gap:8px;margin-top:8px;flex-wrap:wrap"><input class="input" id="pr-other" list="dl-pr-arts" placeholder="Autre article vendu à ce prix…" style="flex:1 1 220px">
+          <datalist id="dl-pr-arts">${state.articles.slice(0, 2000).map(a => `<option value="${esc(artName(a))}${F(a, "reference") != null ? " · " + esc(F(a, "reference")) : ""}" data-id="${esc(a.id)}"></option>`).join("")}</datalist>
+          <button class="btn" type="button" data-pr-other>Ajouter</button></div></div>`;
+      const done = () => { panel.innerHTML = ""; lastPrice = { p, t: Date.now() }; ocrPrev = null; ocrPaused = false; showTotal(); };
+      const ed = $("#pr-edit", panel);
+      const reprice = () => { const q = parsePrice(ed.value); if (q == null) return toast("Prix non valide.", "bad"); if (q !== p) showPrice(q, true); };
+      ed.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); reprice(); } });
+      ed.addEventListener("change", reprice);
+      const addArt = a => {
+        const ok = cartAdd(a, true);
+        if (ok) { const l = state.cart.find(x => x.id === String(a.id)); if (l) { l.price = p; cartSave(); renderCartBar(); } }
+        beep(ok);
+        if (ok) {
+          flash(true, artName(a), p, `Ajouté au panier · quantité ${int(cartQty(a.id))}`);
+          log(`<span class="ok-dot"></span><span class="ellipsis">${esc(artName(a))}</span><strong class="num">${money(p)}</strong><span class="muted">× ${int(cartQty(a.id))}</span>`, "ok");
+        } else flash(false, artName(a), 0, "Stock insuffisant : non ajouté");
+        done();
+      };
+      panel.onclick = e => {
+        if (e.target.closest("[data-pr-retry]")) { panel.innerHTML = ""; ocrPrev = null; ocrPaused = false; return; }
+        const b = e.target.closest("[data-pr-art]"); if (b) { const a = artById(b.dataset.prArt); if (a) addArt(a); return; }
+        if (e.target.closest("[data-pr-free]")) {
+          state.cart.push({ id: "svc-" + Date.now(), svc: true, kind: "divers", name: "", qty: 1, price: p });
+          cartSave(); renderCartBar();
+          flash(true, "Article non classé", p, "Nature à préciser dans le panier");
+          log(`<span class="ok-dot"></span><span class="ellipsis">Article non classé</span><strong class="num">${money(p)}</strong><span class="muted">× 1</span>`, "ok");
+          return done();
+        }
+        if (e.target.closest("[data-pr-other]")) {
+          const v = $("#pr-other", panel).value.trim();
+          const opt = [...$("#dl-pr-arts", panel).options].find(o => o.value === v);
+          const a = opt ? artById(opt.dataset.id) : state.articles.find(x => norm(artName(x)) === norm(v));
+          if (!a) return toast("Choisissez un article dans la liste proposée.", "bad");
+          addArt(a);
+        }
+      };
+    };
     if (opts.code) handle(opts.code);
 
     // caméra
@@ -1414,7 +1584,7 @@
       camBox.innerHTML = "";
       reader = new window.Html5Qrcode("scan-cam", { formatsToSupport: formats, verbose: false });
       const box = (w, h) => { const s = Math.floor(Math.min(w, h) * 0.75); return { width: Math.min(Math.floor(w * 0.85), Math.max(s, 220)), height: s }; };
-      await reader.start(source, { fps: 10, qrbox: box, aspectRatio: 1.333 }, txt => handle(txt), () => {});
+      await reader.start(source, { fps: 10, qrbox: box, aspectRatio: 1.333 }, txt => { if (mode === "code") handle(txt); }, () => {});
       const wt = $("#scan-wait", m); if (wt) wt.hidden = true;
     };
     try {

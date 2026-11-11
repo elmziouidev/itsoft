@@ -697,3 +697,26 @@ body.has-dock .view { padding-bottom: calc(var(--dock-h, 0px) + 40px); }
 .scan-total:empty { display: none; }
 .scan-total .num { margin-left: auto; font-size: 18px; }
 .scan-total svg { width: 20px; height: 20px; }
+/* Scan : choix du mode (code / prix écrit) et lecture d'un prix */
+.scan-mode { display: flex; gap: 4px; padding: 4px; margin-bottom: 10px; border-radius: 999px; background: var(--surface-2); border: 1px solid var(--border); }
+.scan-mode button { flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 8px; padding: 9px 12px; border: 0; border-radius: 999px; background: transparent; color: var(--muted); font: inherit; font-weight: 600; cursor: pointer; }
+.scan-mode button.on { background: var(--primary); color: #fff; }
+.scan-mode svg { width: 18px; height: 18px; }
+.seg-num { font-size: 12px; font-weight: 800; letter-spacing: .5px; border: 1.5px solid currentColor; border-radius: 5px; padding: 0 4px; line-height: 16px; }
+.price-guide { position: absolute; left: 20%; right: 20%; top: 35%; bottom: 35%; border: 3px solid #22c55e; border-radius: 10px; box-shadow: 0 0 0 9999px rgba(0,0,0,.45); display: flex; align-items: flex-end; justify-content: center; pointer-events: none; z-index: 2; }
+.price-guide[hidden] { display: none; }
+.price-guide span { transform: translateY(calc(100% + 10px)); color: #fff; font-size: 13.5px; font-weight: 600; text-shadow: 0 1px 3px #000; white-space: nowrap; }
+.price-res { margin-top: 10px; padding: 12px; border: 2px solid var(--success); border-radius: var(--radius); background: var(--success-soft, rgba(22,128,61,.08)); }
+.pr-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+.pr-head .pr-val { font-size: 26px; color: var(--success); }
+.pr-head .btn { margin-left: auto; }
+.pr-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 8px; }
+.pr-art { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; min-width: 0; padding: 9px 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); color: var(--text); font: inherit; text-align: left; cursor: pointer; }
+.pr-art:hover:not(:disabled) { border-color: var(--primary); background: var(--primary-soft); }
+.pr-art:disabled { opacity: .5; cursor: not-allowed; }
+.pr-art .muted { font-size: 12.5px; max-width: 100%; }
+.pr-art strong { max-width: 100%; }
+.pr-free { border-style: dashed; }
+.pr-edit-wrap { display: inline-flex; align-items: baseline; gap: 6px; color: var(--success); font-weight: 800; font-size: 22px; }
+.pr-edit { width: 7.5ch; font: inherit; font-size: 26px; font-weight: 800; color: var(--success); background: var(--surface); border: 1.5px solid color-mix(in srgb, var(--success) 45%, transparent); border-radius: 8px; padding: 2px 8px; text-align: right; }
+.pr-edit:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-soft); }
