@@ -459,6 +459,7 @@
     // préchargement de la lecture des codes : la fenêtre « Scanner » s'ouvre ensuite sans attente
     setTimeout(() => {
       loadScript(LIB_SCAN).catch(() => {});
+      zxingReader().catch(() => {}); // décodeur rapide prêt avant le premier scan
       if (scanModeGet() === "price") { ocrWorker().catch(() => {}); ocrDigits().catch(() => {}); } // moteur de lecture des prix prêt d'avance
     }, 1500);
   }
@@ -1222,6 +1223,16 @@
   /* ============ Étiquettes de prix (QR code) et scan à la vente ============ */
   const LIB_QR = "https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js";
   const LIB_SCAN = "https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js";
+  /* Décodeur ZXing compilé en WebAssembly : QR + codes-barres, rapide et fiable (chargé une seule fois) */
+  const LIB_ZXING = "https://cdn.jsdelivr.net/npm/zxing-wasm@2.1.2/dist/es/reader/index.js";
+  let zxingP = null;
+  function zxingReader() {
+    if (!zxingP) zxingP = import(LIB_ZXING).then(async Z => {
+      await Z.readBarcodes(new ImageData(16, 16), { formats: ["QRCode"] }); // initialise le moteur à l'avance
+      return Z;
+    }).catch(e => { zxingP = null; throw e; });
+    return zxingP;
+  }
   const libCache = {};
   function loadScript(url) {
     if (!libCache[url]) libCache[url] = new Promise((ok, ko) => {
@@ -1326,8 +1337,12 @@
       || state.articles.find(a => { const r = F(a, "reference"); return r != null && String(r) === code; }) || null;
   }
   function qrSVG(text) {
-    const q = window.qrcode(0, "M"); q.addData(text); q.make();
-    return q.createSvgTag({ cellSize: 4, margin: 0, scalable: true }).replace("<svg ", '<svg shape-rendering="crispEdges" ');
+    // correction d'erreur maximale (H : lisible même abîmé à 30 %) en mode alphanumérique : « ITS:123 » tient
+    // dans le plus petit QR code (21 × 21 modules), donc gros modules faciles à lire ; marge blanche de 2 modules
+    const q = window.qrcode(0, "H");
+    if (/^[0-9A-Z $%*+\-.\/:]+$/.test(text)) q.addData(text, "Alphanumeric"); else q.addData(text);
+    q.make();
+    return q.createSvgTag({ cellSize: 4, margin: 2, scalable: true }).replace("<svg ", '<svg shape-rendering="crispEdges" ');
   }
   function beep(ok) {
     try {
@@ -1351,7 +1366,7 @@
   /* Impression d'étiquettes : nom, prix de vente et QR code */
   /* Tailles d'étiquettes (dimensions réelles en mm). g = groupe affiché dans la liste. */
   const LABEL_SIZES = {
-    qr:   { g: "Selon le matériel", name: "QR seul", w: 20, h: 20, use: "très petits objets : câbles, cartes mémoire, clés USB, pièces" },
+    qr:   { g: "Selon le matériel", name: "Très petite", w: 30, h: 14, use: "très petits objets : câbles, cartes mémoire, clés USB, pièces" },
     mini: { g: "Selon le matériel", name: "Mini", w: 32, h: 16, use: "accessoires : chargeurs, écouteurs, batteries, coques" },
     s:    { g: "Selon le matériel", name: "Petite", w: 40, h: 25, use: "téléphones, afficheurs, petites boîtes" },
     m:    { g: "Selon le matériel", name: "Moyenne", w: 50, h: 30, use: "boîtes de téléphones, tablettes, enceintes" },
@@ -1389,11 +1404,20 @@
   /* Une étiquette : QR code + « MODELE - Prix : PRIX », mise en page calculée d'après ses dimensions réelles */
   function labelHTML(a, k, svg) {
     const S = LABEL_SIZES[k] || LABEL_SIZES.m, ref = F(a, "reference");
-    const pad = S.h <= 18 ? 1 : 1.5, qrmm = Math.max(10, Math.min(S.h - 2 * pad, S.w <= 24 ? S.w : S.w * 0.46));
-    const qr = `<div class="label-qr" style="width:${qrmm}mm;height:${qrmm}mm">${svg}</div>`;
+    const pad = S.h <= 18 ? 0.8 : 1.5;
     const box = `width:${S.w}mm;height:${S.h}mm;padding:${pad}mm ${pad + 0.4}mm`;
-    if (S.w <= 24) return `<div class="label lbz-qr" style="${box}">${qr}</div>`; // trop petit pour du texte
+    const model = esc(String(artName(a)).trim());
+    // étiquette étroite : le modèle est imprimé sous le QR code (toujours présent sur l'étiquette)
+    if (S.w < 26) {
+      const q2 = Math.max(9, Math.min(S.w - 2 * pad, S.h - 2 * pad - 3.2));
+      return `<div class="label lbz-col" style="${box}"><div class="label-qr" style="width:${q2}mm;height:${q2}mm">${svg}</div><div class="label-model" style="font-size:5pt">${model}</div></div>`;
+    }
+    const qrmm = Math.max(9, Math.min(S.h - 2 * pad, S.w * 0.46));
+    const qr = `<div class="label-qr" style="width:${qrmm}mm;height:${qrmm}mm">${svg}</div>`;
     const fs = Math.max(5.2, Math.min(13, S.h * 0.27)), lines = S.h <= 18 ? 2 : 3;
+    // très petite étiquette (hauteur ≤ 15 mm) : QR code + modèle à côté
+    if (S.h <= 15) return `<div class="label lbz-mini" style="${box}">${qr}<div class="label-txt">
+        <div class="label-line" style="font-size:${Math.max(5, fs)}pt;-webkit-line-clamp:2">${model}</div><div class="label-pr" style="font-size:${Math.max(5.6, fs + 0.8)}pt">Prix : ${esc(labelPrice(artPrice(a)))}</div></div></div>`;
     if (S.h <= 18) return `<div class="label lbz-mini" style="${box}">${qr}<div class="label-txt">
         <div class="label-line" style="font-size:${fs}pt;-webkit-line-clamp:${lines}">${esc(String(artName(a)).trim())} -</div><div class="label-pr" style="font-size:${fs + 1.6}pt">Prix : ${esc(labelPrice(artPrice(a)))}</div></div></div>`;
     // « MODELE - » puis « Prix : PRIX » sur sa propre ligne : le prix n'est jamais coupé, même avec un nom long
@@ -1968,7 +1992,7 @@
     const formats = F_ ? [F_.QR_CODE, F_.EAN_13, F_.EAN_8, F_.UPC_A, F_.UPC_E, F_.CODE_128, F_.CODE_39, F_.CODE_93, F_.ITF].filter(v => v !== undefined) : undefined;
     // précision : QR, EAN et UPC ont une clé de contrôle (lecture sûre dès la 1re fois) ;
     // les autres codes-barres doivent être lus deux fois à l'identique avant d'être acceptés
-    const SAFE = /QR_CODE|EAN_13|EAN_8|UPC_A|UPC_E/;
+    const SAFE = /QR_?CODE|EAN.?13|EAN.?8|UPC.?A|UPC.?E/i;
     let pend = { txt: "", t: 0 };
     const onCode = (txt, res) => {
       const fmt = String(res && res.result && res.result.format && (res.result.format.formatName || res.result.format) || "");
@@ -1995,7 +2019,33 @@
         videoConstraints: { ...source, width: { ideal: 1280 }, height: { ideal: 720 }, advanced: [{ focusMode: "continuous" }] }
       }, onCode, () => {});
       const wt = $("#scan-wait", m); if (wt) wt.hidden = true;
+      // décodeur rapide ZXing (WebAssembly) : il lit lui-même l'image de la caméra ; l'ancien décodeur est mis en pause
+      fastLoop();
     };
+    /* Lecture rapide : chaque image entière de la caméra est analysée (QR + codes-barres) en ~35 ms */
+    let fastId = 0;
+    const FAST_FORMATS = ["QRCode", "EAN-13", "EAN-8", "UPC-A", "UPC-E", "Code128", "Code39", "Code93", "ITF"];
+    async function fastLoop() {
+      const id = ++fastId;
+      let Z; try { Z = await zxingReader(); } catch (_) { return; } // indisponible : le décodeur classique continue
+      if (id !== fastId || !reader || !document.body.contains(m)) return;
+      try { reader.pause(false); } catch (_) {}
+      const cvs = document.createElement("canvas"), cx = cvs.getContext("2d", { willReadFrequently: true });
+      while (id === fastId && reader && document.body.contains(m)) {
+        const v = $("#scan-cam video", m);
+        if (v && v.videoWidth && v.readyState >= 2) {
+          if (cvs.width !== v.videoWidth) { cvs.width = v.videoWidth; cvs.height = v.videoHeight; }
+          cx.drawImage(v, 0, 0);
+          try {
+            const res = await Z.readBarcodes(cx.getImageData(0, 0, cvs.width, cvs.height), { formats: FAST_FORMATS, tryHarder: true, maxNumberOfSymbols: 1 });
+            const r = res && res.find(x => x.isValid && x.text);
+            if (r) onCode(r.text, { result: { format: { formatName: r.format } } });
+          } catch (_) {}
+        }
+        // en mode « prix écrit », on laisse du temps à la lecture des chiffres
+        await new Promise(r => setTimeout(r, mode === "price" ? 120 : 10));
+      }
+    }
     try {
       const pref = camGet() || null;
       await start(pref ? { deviceId: { exact: pref } } : { facingMode: "environment" }).catch(() => start({ facingMode: "environment" }));

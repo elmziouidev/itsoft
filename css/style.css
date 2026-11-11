@@ -831,3 +831,5 @@ body.has-dock .view { padding-bottom: calc(var(--dock-h, 0px) + 40px); }
 .labels.cut { display: grid; gap: 0; justify-content: start; }
 .labels.cut .label { border: 0.2mm dashed #888; border-radius: 0; margin: -0.1mm 0 0 -0.1mm; }
 .label .label-pr { font-weight: 800; white-space: nowrap; line-height: 1.1; }
+.label.lbz-col { flex-direction: column; justify-content: center; gap: .4mm; }
+.label .label-model { font-weight: 800; line-height: 1.05; max-width: 100%; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
