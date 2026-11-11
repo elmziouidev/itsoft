@@ -1474,8 +1474,7 @@
       const c = document.createElement("canvas");
       c.width = Math.round(cw * scale); c.height = Math.round(ch * scale);
       const x = c.getContext("2d", { willReadFrequently: true });
-      x.drawImage(v, (vw - cw) / 2, (vh - ch) / 2, cw, ch, 0, 0, c.width, c.height);
-      const W = c.width, H = c.height, img = x.getImageData(0, 0, W, H), d = img.data, px = W * H;
+      x.drawImage(v, (vw - cw) / 2, (vh - ch) / 2, cw, ch, 0, 0, c.width, c.height);      const W = c.width, H = c.height, img = x.getImageData(0, 0, W, H), d = img.data, px = W * H;
       // niveaux de gris (l'encre bleue d'un stylo devient foncée)
       const g = new Float32Array(px);
       for (let p = 0, i = 0; p < px; p++, i += 4) g[p] = Math.min(d[i] * 0.3 + d[i + 1] * 0.59 + d[i + 2] * 0.11, d[i] * 0.5 + d[i + 1] * 0.5);
@@ -1483,21 +1482,78 @@
       const S = new Float64Array((W + 1) * (H + 1));
       for (let yy = 0; yy < H; yy++) { let row = 0; for (let xx = 0; xx < W; xx++) { row += g[yy * W + xx]; S[(yy + 1) * (W + 1) + xx + 1] = S[yy * (W + 1) + xx + 1] + row; } }
       const r = Math.max(8, Math.round(H / 3));
+      // luminosité du papier (85e centile) : l'encre n'est cherchée que là où le voisinage est clair,
+      // le fond sombre autour de l'étiquette (table, objets) n'est donc jamais pris pour de l'écriture
+      const hist = new Uint32Array(256); for (let p = 0; p < px; p++) hist[Math.max(0, Math.min(255, g[p] | 0))]++;
+      let acc = 0, paper = 255; for (let v = 0; v < 256; v++) { acc += hist[v]; if (acc >= px * 0.85) { paper = v; break; } }
+      const paperMin = paper * 0.78;
       let on = new Uint8Array(px), dark = 0;
       for (let yy = 0; yy < H; yy++) for (let xx = 0; xx < W; xx++) {
         const x0 = Math.max(0, xx - r), x1 = Math.min(W, xx + r + 1), y0 = Math.max(0, yy - r), y1 = Math.min(H, yy + r + 1);
         const mean = (S[y1 * (W + 1) + x1] - S[y0 * (W + 1) + x1] - S[y1 * (W + 1) + x0] + S[y0 * (W + 1) + x0]) / ((x1 - x0) * (y1 - y0));
-        if (g[yy * W + xx] < mean * 0.82 && g[yy * W + xx] < 200) { on[yy * W + xx] = 1; dark++; }
+        // pixel « encre » : nettement plus foncé que son voisinage (le grain de la caméra et les ombres légères sont ignorés)
+        const gv = g[yy * W + xx];
+        if (gv < mean * 0.8 && mean - gv > 24 && mean > paperMin) { on[yy * W + xx] = 1; dark++; }
       }
-      if (dark > px * 0.5) { for (let p = 0; p < px; p++) on[p] = on[p] ? 0 : 1; dark = px - dark; } // chiffres clairs sur fond sombre
-      // on ne garde que la zone qui contient l'écriture : image beaucoup plus petite, lecture beaucoup plus rapide
-      const rowMin = Math.max(2, Math.round(W * 0.004)), colMin = 1;
-      let ya = -1, yb = -1;
-      for (let yy = 0; yy < H; yy++) { let n = 0; for (let xx = 0; xx < W; xx++) n += on[yy * W + xx]; if (n >= rowMin) { if (ya < 0) ya = yy; yb = yy; } }
-      if (ya < 0 || yb - ya < 8) return "vide"; // rien d'écrit dans le cadre : pas de lecture
-      let xa = -1, xb = -1;
-      for (let xx = 0; xx < W; xx++) { let n = 0; for (let yy = ya; yy <= yb; yy++) n += on[yy * W + xx]; if (n >= colMin) { if (xa < 0) xa = xx; xb = xx; } }
-      if (xa < 0) return "vide";
+      // tri des formes : on garde ce qui ressemble à des caractères. Écartés : les points (grain, poussière),
+      // les taches pleines et larges (bord sombre de l'étiquette, objets) et les formes trop grandes.
+      { const lab = new Int32Array(px), stack = new Int32Array(px), keep = [0], comps = [null];
+        let n = 0;
+        for (let p0 = 0; p0 < px; p0++) {
+          if (!on[p0] || lab[p0]) continue;
+          n++; let sp = 0, cnt = 0, x0 = W, x1 = 0, y0 = H, y1 = 0;
+          stack[sp++] = p0; lab[p0] = n;
+          while (sp) {
+            const p = stack[--sp], yy = (p / W) | 0, xx = p - yy * W; cnt++;
+            if (xx < x0) x0 = xx; if (xx > x1) x1 = xx; if (yy < y0) y0 = yy; if (yy > y1) y1 = yy;
+            if (xx > 0 && on[p - 1] && !lab[p - 1]) { lab[p - 1] = n; stack[sp++] = p - 1; }
+            if (xx < W - 1 && on[p + 1] && !lab[p + 1]) { lab[p + 1] = n; stack[sp++] = p + 1; }
+            if (yy > 0 && on[p - W] && !lab[p - W]) { lab[p - W] = n; stack[sp++] = p - W; }
+            if (yy < H - 1 && on[p + W] && !lab[p + W]) { lab[p + W] = n; stack[sp++] = p + W; }
+          }
+          comps[n] = { cnt, x0, x1, y0, y1 };
+        }
+        // épaisseur de chaque forme = plus petite longueur moyenne des segments (horizontaux / verticaux)
+        const hr = new Float64Array(n + 1), hl = new Float64Array(n + 1), vr = new Float64Array(n + 1), vl = new Float64Array(n + 1);
+        for (let yy = 0; yy < H; yy++) { let cur = 0, len = 0; for (let xx = 0; xx <= W; xx++) { const L = xx < W ? lab[yy * W + xx] : 0; if (L === cur && L) len++; else { if (cur) { hr[cur]++; hl[cur] += len; } cur = L; len = L ? 1 : 0; } } }
+        for (let xx = 0; xx < W; xx++) { let cur = 0, len = 0; for (let yy = 0; yy <= H; yy++) { const L = yy < H ? lab[yy * W + xx] : 0; if (L === cur && L) len++; else { if (cur) { vr[cur]++; vl[cur] += len; } cur = L; len = L ? 1 : 0; } } }
+        for (let L = 1; L <= n; L++) {
+          const { cnt, x0, x1, y0, y1 } = comps[L];
+          const bw0 = x1 - x0 + 1, bh0 = y1 - y0 + 1, fill = cnt / (bw0 * bh0);
+          const thick = Math.min(hl[L] / (hr[L] || 1), vl[L] / (vr[L] || 1));
+          const solidWide = (fill > 0.55 && bw0 > 2.2 * bh0 && bw0 > 12) || (bw0 > 4 * bh0 && bw0 > W * 0.12); // bord d'étiquette, trait
+          const tooBig = bw0 > W * 0.6 || bh0 > H * 0.7 || (fill > 0.7 && cnt > 400);
+          const edge = (y0 === 0 || y1 === H - 1 || x0 === 0 || x1 === W - 1) && fill > 0.45;
+          const blob = thick > Math.max(9, bh0 * 0.42) && bw0 > bh0 * 1.6; // ombre / bord épais et allongé : pas un caractère
+          keep[L] = cnt >= 6 && !solidWide && !tooBig && !edge && !blob ? 1 : 0;
+        }
+        on = new Uint8Array(px);
+        for (let p = 0; p < px; p++) if (lab[p] && keep[lab[p]]) on[p] = 1; }
+      // on ne garde que la ligne d'écriture principale : image beaucoup plus petite, lecture beaucoup plus rapide
+      const rowCnt = new Int32Array(H);
+      for (let yy = 0; yy < H; yy++) { let n = 0; for (let xx = 0; xx < W; xx++) n += on[yy * W + xx]; rowCnt[yy] = n; }
+      const maxRow = Math.max(...rowCnt);
+      if (maxRow < 3) return "vide"; // rien d'écrit dans le cadre : pas de lecture
+      const rowThr = Math.max(2, maxRow * 0.12);
+      let ya = -1, yb = -1, best = 0;
+      for (let yy = 0; yy < H;) { // bande de lignes la plus chargée (petits trous tolérés)
+        if (rowCnt[yy] < rowThr) { yy++; continue; }
+        let a = yy, b = yy, sum = 0, gap = 0;
+        for (; yy < H && gap <= 2; yy++) { if (rowCnt[yy] >= rowThr) { b = yy; sum += rowCnt[yy]; gap = 0; } else gap++; }
+        if (sum > best) { best = sum; ya = a; yb = b; }
+      }
+      if (ya < 0 || yb - ya < 7) return "vide";
+      const bandH = yb - ya + 1, gapMax = Math.max(6, Math.round(bandH * 0.9));
+      const colCnt = new Int32Array(W);
+      for (let xx = 0; xx < W; xx++) { let n = 0; for (let yy = ya; yy <= yb; yy++) n += on[yy * W + xx]; colCnt[xx] = n; }
+      let xa = -1, xb = -1; best = 0;
+      for (let xx = 0; xx < W;) { // groupe de caractères le plus chargé (les traces éloignées sont écartées)
+        if (!colCnt[xx]) { xx++; continue; }
+        let a = xx, b = xx, sum = 0, gap = 0;
+        for (; xx < W && gap <= gapMax; xx++) { if (colCnt[xx]) { b = xx; sum += colCnt[xx]; gap = 0; } else gap++; }
+        if (sum > best) { best = sum; xa = a; xb = b; }
+      }
+      if (xa < 0 || (xb - xa + 1) / bandH > 22) return "vide"; // simple trait horizontal (bord d'étiquette) : ignoré
       const pad = 4, bx = Math.max(0, xa - pad), by = Math.max(0, ya - pad), bw = Math.min(W, xb + pad + 1) - bx, bh = Math.min(H, yb + pad + 1) - by;
       // épaisseur moyenne des traits (longueur des segments noirs horizontaux) : seuls les traits fins
       // (stylo) sont épaissis — épaissir un chiffre déjà gras referme les boucles (le 5 devient 6)
@@ -1534,13 +1590,12 @@
         try { w = await ocrWorker(); } catch (e) { guideTxt("Lecture des chiffres indisponible : " + e.message); return; }
         while (mode === "price" && document.body.contains(m)) {
           if (!ocrPaused) {
-            const c = grab();
-            if (!c) guideTxt("En attente de l'image de la caméra…");
+            const c = grab();            if (!c) guideTxt("En attente de l'image de la caméra…");
             else if (c === "vide") { guideTxt("Placez le prix dans le cadre"); ocrPrev = null; if (lastPrice.p != null) lastPrice = { p: null, t: 0 }; }
             else {
-              guideTxt("Placez le prix dans le cadre");
               const r = await w.recognize(c);
-              const p = parsePrice(r.data.text);              // le même prix n'est relu qu'après avoir été retiré du cadre (ou après 15 s)
+              const p = parsePrice(r.data.text);              // ce que la caméra lit, en direct
+              guideTxt(p != null ? `Lu : ${String(p).replace(".", ",")} DH — vérification…` : "Écriture détectée — rapprochez ou redressez l'étiquette");              // le même prix n'est relu qu'après avoir été retiré du cadre (ou après 15 s)
               if (lastPrice.p != null && (p !== lastPrice.p || Date.now() - lastPrice.t > 15000)) lastPrice = { p: null, t: 0 };
               if (p != null && r.data.confidence >= 25 && p !== lastPrice.p) {
                 // lecture très nette : acceptée tout de suite ; sinon il faut la même valeur deux fois de suite
@@ -1636,6 +1691,8 @@
         videoConstraints: { ...source, width: { ideal: 1280 }, height: { ideal: 720 } }
       }, txt => { if (mode === "code") handle(txt); }, () => {});
       const wt = $("#scan-wait", m); if (wt) wt.hidden = true;
+      // mode « Prix écrit » : l'analyse des QR codes est suspendue, tout le processeur va à la lecture des chiffres
+      if (mode === "price") { try { reader.pause(false); } catch (_) {} }
     };
     try {
       const pref = camGet() || null;
