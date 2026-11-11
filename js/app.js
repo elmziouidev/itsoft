@@ -1666,7 +1666,7 @@
         resetSession();
         if (opts.onChange) opts.onChange(num); // la vente apparaît maintenant dans le tableau (en vert 5 s)
         if (!panel) { m.dataset.validated = "1"; m.dataset.toCart = "1"; closeModal(); if (currentView() !== "articles") render(); }
-        showSale(num);
+        // pas de fenêtre du ticket : la vente apparaît en vert dans le tableau (ticket imprimable depuis sa ligne)
       } catch (e) {
         toast("Vente non enregistrée : " + e.message, "bad");
       } finally { validating = false; if (document.body.contains(btn)) busy(btn, false); }
