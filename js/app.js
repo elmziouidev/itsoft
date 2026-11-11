@@ -3579,6 +3579,7 @@
           <div class="card-head"><h2>Connexion</h2></div>
           <div class="card-pad">
             <div class="form-grid">
+              <div><div class="muted" style="font-size:13px">Version de l'application</div><strong>${esc(cfg.nomEntreprise)} v${esc(APP_VERSION)}</strong></div>
               <div><div class="muted" style="font-size:13px">Utilisateur</div><strong>${esc(Auth.userName())}</strong>${Auth.account ? `<div class="muted" style="font-size:13px">${esc(Auth.account.username)}</div>` : ""}</div>
               <div><div class="muted" style="font-size:13px">Site SharePoint</div><strong>${esc(state.siteName || "")}</strong><div class="muted" style="font-size:13px;word-break:break-all">https://${esc(cfg.siteHost)}${esc(cfg.sitePath)}</div></div>
               <div><div class="muted" style="font-size:13px">Liste des articles</div><strong>${esc(cfg.articlesList)}</strong> <span class="badge ok">${int(state.articles.length)} éléments</span></div>
@@ -3681,12 +3682,19 @@
     else document.documentElement.setAttribute("data-theme", t);
   }
 
+  /* Version installée : lue sur l'adresse du script (app.js?v=…), toujours à jour avec index.html */
+  const APP_VERSION = (() => {
+    const s = [...document.scripts].find(x => /\/app\.js(\?|$)/.test(x.src || ""));
+    const m = s && /[?&]v=([^&]+)/.exec(s.src);
+    return m ? decodeURIComponent(m[1]) : "dev";
+  })();
+
   function renderUserBox() {
     const name = Auth.userName();
     const initials = name.split(/\s+/).map(w => w[0]).join("").slice(0, 2).toUpperCase();
     const email = Auth.account ? Auth.account.username : "";
     $("#user-box").innerHTML = `<div class="user" title="${esc(email)}"><span class="avatar">${esc(initials)}</span>
-      <div style="min-width:0;flex:1"><div class="user-name">${esc(name)}</div><div class="muted ellipsis" style="font-size:12px">${DS.mode === "demo" ? "Mode démo" : esc(email || "SharePoint")}</div></div>
+      <div style="min-width:0;flex:1"><div class="user-name">${esc(name)}</div><div class="muted ellipsis" style="font-size:12px">${DS.mode === "demo" ? "Mode démo" : esc(email || "SharePoint")}</div><div class="app-version" title="Version de l'application installée">v${esc(APP_VERSION)}</div></div>
       <a class="btn sm icon ghost achats-btn" href="#/achats" title="Achats" aria-label="Achats">${ICON.truck}</a>
       <a class="btn sm icon ghost settings-btn" href="#/parametres" title="Paramètres" aria-label="Paramètres">${ICON.settings}</a>
       ${Auth.enabled ? `<button class="btn sm icon ghost logout-btn" data-logout title="Se déconnecter" aria-label="Se déconnecter">${ICON.logout}</button>` : ""}</div>`;

@@ -735,3 +735,5 @@ body.has-dock .view { padding-bottom: calc(var(--dock-h, 0px) + 40px); }
 .scan-modal #qr-shaded-region { border-width: 4px !important; border-color: rgba(0,0,0,.08) !important; }
 .price-guide { left: 7%; right: 7%; top: 25%; bottom: 25%; }
 @media (max-width: 640px) { .modal.scan-modal { width: 100%; max-width: 100%; } .scan-modal .scan-cam video { max-height: 58vh; } }
+/* Version installée, sous le profil */
+.app-version { display: inline-block; margin-top: 3px; padding: 1px 7px; border-radius: 999px; background: var(--primary-soft); color: var(--primary); font-size: 11px; font-weight: 600; letter-spacing: .2px; white-space: nowrap; }
