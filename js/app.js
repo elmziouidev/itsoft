@@ -1564,7 +1564,6 @@
     const scanBody = `<div class="scan-mode-info" id="scan-mode-info"></div>
         <div class="scan-wrap"><div id="${camId}" class="scan-cam"></div><div class="price-guide" id="price-guide" hidden><span id="price-guide-txt">Placez le prix dans le cadre</span></div><div class="scan-wait" id="scan-wait">Démarrage de la caméra…<br><span>Si le navigateur affiche « Utiliser les caméras », cliquez sur <strong>Autoriser</strong>.</span></div><div class="scan-flash" id="scan-flash" hidden></div></div>
         <div class="scan-total" id="scan-total"></div>
-        <div id="price-panel"></div>
         <div class="form-grid" style="margin-top:10px">
           <label class="field" id="scan-cam-field" hidden>Caméra<select class="input" id="scan-cam-sel"></select></label>
           <label class="field"><span id="scan-input-lab">Code (lecteur code-barres ou saisie)</span><input class="input" id="scan-input" placeholder="Scannez ou tapez le code puis Entrée" autocomplete="off" enterkeyhint="done"></label>
@@ -1836,7 +1835,7 @@
       if (mode === "price") {
         const lab = parseLabel(inp.value), p = lab.price;
         if (p == null) toast("Prix non valide.", "bad");
-        else { const a = articleFromLabel(lab.model, p); if (a) addItem(a, p).then(res => itemDone(a, p, res)); else showPrice(p, false, lab.model); }
+        else { const a = articleFromLabel(lab.model, p); if (a) addItem(a, p).then(res => itemDone(a, p, res)); else showPrice(p, "manuel", lab.model); }
       }
       else { last = { code: "", t: 0 }; handle(inp.value); }
       inp.value = "";
@@ -1854,7 +1853,7 @@
       $("#scan-input-lab", m).textContent = md === "price" ? "Prix (saisie manuelle, puis Entrée)" : "Code (lecteur code-barres ou saisie)";
       inp.placeholder = md === "price" ? "Ex. 1030" : "Scannez ou tapez le code puis Entrée";
       inp.inputMode = md === "price" ? "decimal" : "text";
-      if (md !== "price") { $("#price-panel", m).innerHTML = ""; return; }
+      if (md !== "price") return;
       ocrPaused = false; ocrPrev = null;
       ocrLoop();
     };
@@ -2018,47 +2017,13 @@
         }
       } finally { ocrRunning = false; }
     }
-    /* Prix lu : articles vendus à ce prix, ou article non classé */
+    /* Prix lu sans article identifié (pas d'étiquette « MODELE - Prix : PRIX » reconnue) :
+       rien n'est proposé ni ajouté, le prix lu est seulement indiqué sous le cadre */
     const showPrice = (p, silent, model) => {
-      ocrPaused = true;
-      if (!silent) beep(true);
-      const panel = $("#price-panel", m); if (!panel) return;
-      const list = state.articles.filter(x => Math.abs(artPrice(x) - p) < 0.005)
-        // le modèle lu (même partiellement) remonte en tête de liste
-        .sort((a, b) => (model ? similarity(model, artName(b)) - similarity(model, artName(a)) : 0) || (artStock(b) > 0) - (artStock(a) > 0) || String(artName(a)).localeCompare(String(artName(b)), "fr"));
-      panel.innerHTML = `<div class="price-res">
-        <div class="pr-head"><span class="muted">Prix lu</span>
-          <span class="pr-edit-wrap"><input class="pr-edit" id="pr-edit" value="${esc(String(p).replace(".", ","))}" inputmode="decimal" aria-label="Prix lu (modifiable)" title="Prix incorrect ? Corrigez-le ici puis Entrée"><span>${esc(cfg.devise)}</span></span>
-          <strong class="pr-val" hidden>${esc(moneyR(p))}</strong>
-          <span class="muted">${list.length ? `${int(list.length)} article(s) à ce prix` : "aucun article à ce prix"}</span>
-          <button class="btn sm" type="button" data-pr-retry>Relire</button></div>
-        <div class="muted" style="font-size:12.5px;margin:-4px 0 8px">Chiffre mal lu ? Corrigez-le dans la case puis appuyez sur Entrée.</div>
-        <div class="pr-list">${list.slice(0, 12).map(a => `<button type="button" class="pr-art" data-pr-art="${esc(a.id)}" ${hasStock() && artStock(a) <= 0 ? "disabled" : ""}>
-            <strong class="ellipsis">${esc(artName(a))}</strong><span class="muted ellipsis">${esc(F(a, "categorie") || "")}${hasStock() ? ` · stock ${int(artStock(a))}` : ""}</span></button>`).join("")}
-          ${list.length > 12 ? `<div class="muted" style="font-size:13px">… et ${int(list.length - 12)} autre(s) : utilisez la recherche ci-dessous.</div>` : ""}
-          <button type="button" class="pr-art pr-free" data-pr-free><strong>Article non classé</strong><span class="muted">vendu ${esc(moneyR(p))}${auto ? "" : ", nature à préciser dans le panier"}</span></button>
-        </div>
-        <div class="row" style="gap:8px;margin-top:8px;flex-wrap:wrap"><input class="input" id="pr-other" list="dl-pr-arts" placeholder="Autre article vendu à ce prix…" style="flex:1 1 220px">
-          <datalist id="dl-pr-arts">${state.articles.slice(0, 2000).map(a => `<option value="${esc(artName(a))}${F(a, "reference") != null ? " · " + esc(F(a, "reference")) : ""}" data-id="${esc(a.id)}"></option>`).join("")}</datalist>
-          <button class="btn" type="button" data-pr-other>Ajouter</button></div></div>`;
-      const done = () => { panel.innerHTML = ""; lastPrice = { p, t: Date.now() }; ocrPrev = null; ocrPaused = false; showTotal(); };
-      const ed = $("#pr-edit", panel);
-      const reprice = () => { const q = parsePrice(ed.value); if (q == null) return toast("Prix non valide.", "bad"); if (q !== p) showPrice(q, true); };
-      ed.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); reprice(); } });
-      ed.addEventListener("change", reprice);
-      const addArt = a => { done(); addItem(a, p).then(r => itemDone(a, p, r)); };
-      panel.onclick = e => {
-        if (e.target.closest("[data-pr-retry]")) { panel.innerHTML = ""; ocrPrev = null; ocrPaused = false; return; }
-        const b = e.target.closest("[data-pr-art]"); if (b) { const a = artById(b.dataset.prArt); if (a) addArt(a); return; }
-        if (e.target.closest("[data-pr-free]")) { done(); addItem(null, p).then(r => itemDone(null, p, r)); return; }
-        if (e.target.closest("[data-pr-other]")) {
-          const v = $("#pr-other", panel).value.trim();
-          const opt = [...$("#dl-pr-arts", panel).options].find(o => o.value === v);
-          const a = opt ? artById(opt.dataset.id) : state.articles.find(x => norm(artName(x)) === norm(v));
-          if (!a) return toast("Choisissez un article dans la liste proposée.", "bad");
-          addArt(a);
-        }
-      };
+      guideTxt(`Lu : ${labelPrice(p)} DH — aucun article reconnu`);
+      lastPrice = { p, t: Date.now() }; ocrPrev = null; ocrPaused = false;
+      const panel = $("#price-panel", m); if (panel) panel.innerHTML = "";
+      if (silent === "manuel") toast(`Aucun article ne correspond à « ${model ? model + " - " : ""}Prix : ${labelPrice(p)} ». Saisissez le modèle et le prix (ex. HONOR PLAY 10 - Prix : 110).`, "bad");
     };
     if (opts.code) handle(opts.code);
     setMode(opts.code ? "code" : scanModeGet()); // mode choisi dans Paramètres
