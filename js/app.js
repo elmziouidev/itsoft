@@ -2231,11 +2231,6 @@
     };
 
     el.innerHTML = `
-      <button type="button" class="scan-hero" id="art-scan" title="Scanner une étiquette, un code-barres ou un prix écrit">
-        <span class="scan-hero-ico">${ICON.scan}</span>
-        <span class="scan-hero-txt"><strong>Scanner un article</strong><small>Caméra ou lecteur code-barres · l'article est vendu et retiré du stock</small></span>
-        <kbd>F2</kbd>
-      </button>
       <div class="card">
         <div class="card-head compact-head">
           <div class="search">${ICON.search}<input class="input" id="art-q" type="search" placeholder="Rechercher…" value="${esc(f.q)}"></div>
@@ -2509,7 +2504,6 @@
       const th = e.target.closest("[data-sort]");
       if (th) { if (f.sort === th.dataset.sort) f.dir = -f.dir; else { f.sort = th.dataset.sort; f.dir = 1; } return drawTable(); }
       if (e.target.closest("#art-new")) return articleForm(null);
-      if (e.target.closest("#art-scan")) return scanDialog();
       if (e.target.closest("#art-labels")) return labelsDialog(sel.size ? [...sel].map(artById).filter(Boolean) : apply());
       if (e.target.closest("#sel-qr")) return labelsDialog([...sel].map(artById).filter(Boolean));
       if (e.target.closest("#sel-clear")) { sel.clear(); $$("#art-table [data-sel]").forEach(cb => { cb.checked = false; cb.closest("tr").classList.remove("row-sel"); }); return selBar(); }
