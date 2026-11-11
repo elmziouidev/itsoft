@@ -679,3 +679,21 @@ body.has-dock .view { padding-bottom: calc(var(--dock-h, 0px) + 40px); }
 .cam-opt input { width: 18px; height: 18px; accent-color: var(--primary); flex-shrink: 0; }
 .cam-prev { margin-top: 12px; border-radius: var(--radius); overflow: hidden; background: #111; max-width: 480px; }
 .cam-prev video { width: 100%; display: block; max-height: 320px; object-fit: contain; }
+.scan-wrap { position: relative; }
+.scan-wait { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; color: #eee; padding: 20px; font-size: 15px; line-height: 1.6; pointer-events: none; }
+.scan-wait span { color: #bbb; font-size: 13.5px; }
+.scan-wait[hidden] { display: none; }
+/* confirmation du prix relevé pendant le scan */
+.scan-flash { position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%); width: min(92%, 460px); display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 12px 16px; border-radius: 12px; color: #fff; text-align: center; box-shadow: 0 8px 24px rgba(0,0,0,.35); pointer-events: none; z-index: 3; }
+.scan-flash.ok { background: rgba(22, 128, 61, .94); }
+.scan-flash.bad { background: rgba(185, 28, 28, .94); }
+.scan-flash[hidden] { display: none; }
+.scan-flash.pop { animation: sfPop .28s ease-out; }
+@keyframes sfPop { from { transform: translateX(-50%) scale(.85); opacity: 0; } to { transform: translateX(-50%) scale(1); opacity: 1; } }
+.sf-name { font-size: 15px; font-weight: 700; text-transform: uppercase; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sf-price { font-size: 30px; font-weight: 800; line-height: 1.15; }
+.sf-note { font-size: 13px; opacity: .92; }
+.scan-total { display: flex; align-items: center; gap: 10px; margin-top: 10px; padding: 10px 12px; border-radius: var(--radius); background: var(--primary-soft); color: var(--primary); font-size: 15px; }
+.scan-total:empty { display: none; }
+.scan-total .num { margin-left: auto; font-size: 18px; }
+.scan-total svg { width: 20px; height: 20px; }

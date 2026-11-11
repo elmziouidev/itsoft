@@ -1310,7 +1310,8 @@
     const fromCart = !!opts.fromCart;
     const m = openModal({
       title: "Scanner des articles", size: "cart",
-      body: `<div class="scan-wrap"><div id="scan-cam" class="scan-cam"><div class="scan-msg">Démarrage de la caméra…</div></div></div>
+      body: `<div class="scan-wrap"><div id="scan-cam" class="scan-cam"></div><div class="scan-wait" id="scan-wait">Démarrage de la caméra…<br><span>Si le navigateur affiche « Utiliser les caméras », cliquez sur <strong>Autoriser</strong>.</span></div><div class="scan-flash" id="scan-flash" hidden></div></div>
+        <div class="scan-total" id="scan-total"></div>
         <div class="form-grid" style="margin-top:10px">
           <label class="field" id="scan-cam-field" hidden>Caméra<select class="input" id="scan-cam-sel"></select></label>
           <label class="field">Code (lecteur code-barres ou saisie)<input class="input" id="scan-input" placeholder="Scannez ou tapez le code puis Entrée" autocomplete="off" enterkeyhint="done"></label>
@@ -1334,15 +1335,35 @@
       if (!logged++) box.innerHTML = "";
       box.insertAdjacentHTML("afterbegin", `<div class="scan-item ${cls || ""}">${html}</div>`);
     };
+    /* confirmation bien visible : nom + prix relevé sur l'image, total du panier dessous */
+    let flashT = null;
+    const flash = (ok, name, price, note) => {
+      const f = $("#scan-flash", m); if (!f) return;
+      f.className = "scan-flash " + (ok ? "ok" : "bad");
+      f.innerHTML = ok ? `<span class="sf-name">${esc(name)}</span><span class="sf-price">${esc(moneyR(price))}</span><span class="sf-note">${esc(note)}</span>`
+        : `<span class="sf-name">${esc(name)}</span><span class="sf-note">${esc(note)}</span>`;
+      f.hidden = false; f.classList.remove("pop"); void f.offsetWidth; f.classList.add("pop");
+      clearTimeout(flashT); flashT = setTimeout(() => { f.hidden = true; }, 2600);
+    };
+    const showTotal = () => {
+      const el = $("#scan-total", m); if (!el) return;
+      const ls = cartLines();
+      const nb = ls.reduce((t, x) => t + x.l.qty, 0), tot = ls.reduce((t, x) => t + x.l.qty * (+x.l.price || 0), 0);
+      el.innerHTML = nb ? `${ICON.cart}<span>Panier : <strong>${int(nb)}</strong> article(s)</span><strong class="num">${money(tot)}</strong>` : "";
+    };
+    showTotal();
     const handle = code => {
       code = String(code || "").trim(); if (!code) return;
       const now = Date.now();
       if (code === last.code && now - last.t < 2500) return; // même code encore devant la caméra
       last = { code, t: now };
       const a = articleByCode(code);
-      if (!a) { beep(false); return askAssociate(code); }
+      if (!a) { beep(false); flash(false, "Code non reconnu", 0, code); return askAssociate(code); }
       const ok = cartAdd(a, true);
       beep(ok);
+      if (ok) flash(true, artName(a), artPrice(a), `Ajouté au panier · quantité ${int(cartQty(a.id))}`);
+      else flash(false, artName(a), 0, "Stock insuffisant : non ajouté");
+      showTotal();
       if (ok) log(`<span class="ok-dot"></span><span class="ellipsis">${esc(artName(a))}</span><strong class="num">${money(artPrice(a))}</strong><span class="muted">× ${int(cartQty(a.id))}</span>`, "ok");
       else log(`<span class="bad-dot"></span><span class="ellipsis">${esc(artName(a))}</span><span class="muted">stock insuffisant</span>`, "bad");
     };
@@ -1381,7 +1402,7 @@
 
     // caméra
     const camBox = $("#scan-cam", m);
-    const camMsg = t => { if (camBox) camBox.innerHTML = `<div class="scan-msg">${t}</div>`; };
+    const camMsg = t => { const w = $("#scan-wait", m); if (w) w.hidden = true; if (camBox) camBox.innerHTML = `<div class="scan-msg">${t}</div>`; };
     if (!window.isSecureContext || !navigator.mediaDevices) { camMsg("Caméra indisponible ici (connexion non sécurisée). Utilisez le champ Code ou un lecteur code-barres."); return; }
     try { await loadScript(LIB_SCAN); } catch (e) { camMsg(esc(e.message)); return; }
     if (!document.body.contains(m)) return;
@@ -1394,6 +1415,7 @@
       reader = new window.Html5Qrcode("scan-cam", { formatsToSupport: formats, verbose: false });
       const box = (w, h) => { const s = Math.floor(Math.min(w, h) * 0.75); return { width: Math.min(Math.floor(w * 0.85), Math.max(s, 220)), height: s }; };
       await reader.start(source, { fps: 10, qrbox: box, aspectRatio: 1.333 }, txt => handle(txt), () => {});
+      const wt = $("#scan-wait", m); if (wt) wt.hidden = true;
     };
     try {
       const pref = camGet() || null;
