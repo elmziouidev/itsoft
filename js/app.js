@@ -1349,51 +1349,116 @@
   }
 
   /* Impression d'étiquettes : nom, prix de vente et QR code */
+  /* Tailles d'étiquettes adaptées au matériel (dimensions réelles en mm, QR code compris) */
+  const LABEL_SIZES = {
+    qr:   { name: "QR seul", w: 20, h: 20, qr: 17, use: "très petits objets : câbles, cartes mémoire, clés USB, pièces" },
+    mini: { name: "Mini", w: 32, h: 16, qr: 13, use: "accessoires : chargeurs, écouteurs, batteries, coques" },
+    s:    { name: "Petite", w: 40, h: 25, qr: 19, use: "téléphones, afficheurs, petites boîtes" },
+    m:    { name: "Moyenne", w: 50, h: 30, qr: 23, use: "boîtes de téléphones, tablettes, enceintes" },
+    l:    { name: "Grande", w: 70, h: 40, qr: 32, use: "ordinateurs, imprimantes, écrans, cartons" }
+  };
+  const sizeLabel = k => { const S = LABEL_SIZES[k]; return `${S.name} — ${S.w} × ${S.h} mm`; };
+  /* Taille proposée automatiquement d'après la catégorie et le nom de l'article */
+  function autoLabelSize(a) {
+    const t = norm(`${F(a, "categorie") || ""} ${artName(a) || ""}`);
+    if (/cable|carte ?sd|microsd|memoire|cle ?usb|adaptateur|otg|connecteur|nappe/.test(t)) return "qr";
+    if (/chargeur|ecouteur|kit main|casque|batterie|accessoire|coque|protection|verre|film|souris|support|power ?bank|montre/.test(t)) return "mini";
+    if (/laptop|portable pc|ordinateur|\bpc\b|imprimante|moniteur|ecran pc|television|\btv\b|console|carton/.test(t)) return "l";
+    if (/telephone|smartphone|afficheur|lcd|ecran/.test(t)) return "s";
+    return "m";
+  }
+  /* Une étiquette : QR code + « MODELE - Prix : PRIX » (taille réelle en mm) */
+  function labelHTML(a, k, svg) {
+    const S = LABEL_SIZES[k] || LABEL_SIZES.m, ref = F(a, "reference");
+    const qr = `<div class="label-qr" style="width:${S.qr}mm;height:${S.qr}mm">${svg}</div>`;
+    if (k === "qr") return `<div class="label lbz-qr" style="width:${S.w}mm;height:${S.h}mm">${qr}</div>`;
+    if (k === "mini") return `<div class="label lbz-mini" style="width:${S.w}mm;height:${S.h}mm">${qr}<div class="label-txt">
+        <div class="label-line">${esc(String(artName(a)).trim())} -</div><div class="label-pr">Prix : ${esc(labelPrice(artPrice(a)))}</div></div></div>`;
+    return `<div class="label lbz-${k}" style="width:${S.w}mm;height:${S.h}mm"><div class="label-txt"><div class="label-line">${esc(labelText(a))}</div>
+        <div class="label-ref">${esc(cfg.nomEntreprise)}${ref != null && ref !== "" ? " · " + esc(ref) : ""}</div></div>${qr}</div>`;
+  }
+
+  /* Génération des QR codes / étiquettes des articles choisis */
   async function labelsDialog(list) {
     const arts = list.filter(a => a && a.id);
     if (!arts.length) return toast("Aucun article à étiqueter.", "bad");
+    const sizeOpts = sel => Object.keys(LABEL_SIZES).map(k => `<option value="${k}" ${k === sel ? "selected" : ""}>${esc(sizeLabel(k))}</option>`).join("");
     const m = openModal({
-      title: "Étiquettes de prix", size: "cart",
-      body: `<p class="muted" style="margin:0 0 10px">${int(arts.length)} article(s) — ceux affichés dans la liste (utilisez la recherche ou les filtres pour choisir). Chaque étiquette porte le nom, le prix de vente et un QR code lu par le bouton « Scanner ».</p>
-        <div class="form-grid">
+      title: `QR codes à imprimer — ${int(arts.length)} article(s)`, size: "cart lb-modal",
+      body: `<p class="muted" style="margin:0 0 12px;font-size:14px">Chaque étiquette porte un <strong>QR code</strong> lu par le bouton « Scanner » et le texte <strong>« MODELE - Prix : PRIX »</strong>. Sa taille est choisie selon le matériel sur lequel elle sera collée.</p>
+        <div class="form-grid lb-opts">
+          <label class="field">Taille pour tous<select class="input" id="lb-size"><option value="auto">Automatique selon la catégorie (recommandé)</option>${sizeOpts("")}</select></label>
           <label class="field">Nombre d'étiquettes<select class="input" id="lb-mode"><option value="one">1 par article</option><option value="stock">1 par pièce en stock</option></select></label>
-          <label class="field">Taille<select class="input" id="lb-size"><option value="m">Moyenne (50 × 30 mm)</option><option value="s">Petite (38 × 25 mm)</option><option value="l">Grande (70 × 40 mm)</option></select></label>
+          <label class="field">Support d'impression<select class="input" id="lb-media"><option value="a4">Feuille A4 (planche d'étiquettes autocollantes)</option><option value="roll">Imprimante d'étiquettes (rouleau, 1 étiquette par page)</option></select></label>
         </div>
+        <div class="lb-legend">${Object.keys(LABEL_SIZES).map(k => `<span><strong>${esc(LABEL_SIZES[k].name)}</strong> ${LABEL_SIZES[k].w}×${LABEL_SIZES[k].h} mm : ${esc(LABEL_SIZES[k].use)}</span>`).join("")}</div>
+        <div class="lb-preview-wrap"><div class="muted" style="font-size:13px">Aperçu à la taille réelle de <strong id="lb-prev-name"></strong> :</div><div class="lb-preview" id="lb-preview"></div></div>
         <div class="lb-list" id="lb-list"></div>`,
-      foot: `<button class="btn" data-close>Fermer</button><button class="btn primary" id="lb-print">${ICON.print} Imprimer</button>`
+      foot: `<span class="muted" id="lb-count" style="margin-right:auto;font-size:14px"></span><button class="btn" data-close>Fermer</button><button class="btn primary" id="lb-print">${ICON.print} Imprimer les QR codes</button>`
     });
-    const qty = {};
+    const qty = {}, size = {};
+    let prevId = arts[0].id, qrReady = false;
+    arts.forEach(a => { size[a.id] = autoLabelSize(a); });
+    const count = () => {
+      const n = arts.reduce((t, a) => t + (qty[a.id] || 0), 0);
+      $("#lb-count", m).textContent = `${int(n)} étiquette(s) à imprimer`;
+    };
+    const preview = () => {
+      const a = artById(prevId) || arts[0];
+      $("#lb-prev-name", m).textContent = `${artName(a)} (${LABEL_SIZES[size[a.id]].name.toLowerCase()})`;
+      $("#lb-preview", m).innerHTML = qrReady ? labelHTML(a, size[a.id], qrSVG(labelCode(a))) : `<span class="muted">Chargement…</span>`;
+    };
     const draw = () => {
       const mode = $("#lb-mode", m).value;
       arts.forEach(a => { qty[a.id] = mode === "stock" ? Math.max(0, hasStock() ? artStock(a) : 1) : 1; });
-      $("#lb-list", m).innerHTML = arts.slice(0, 300).map(a => `<div class="lb-row" data-id="${esc(a.id)}">
-          <span class="ellipsis">${esc(artName(a))}</span><span class="muted num">${money(artPrice(a))}</span>
+      $("#lb-list", m).innerHTML = `<div class="lb-row lb-head"><span>Article</span><span>Prix</span><span>Taille de l'étiquette</span><span>Nombre</span></div>`
+        + arts.slice(0, 400).map(a => `<div class="lb-row ${a.id === prevId ? "sel" : ""}" data-id="${esc(a.id)}">
+          <span class="ellipsis" title="Voir l'aperçu"><strong>${esc(artName(a))}</strong> <span class="muted">${esc(F(a, "categorie") || "")}</span></span>
+          <span class="muted num">${money(artPrice(a))}</span>
+          <select class="input" data-lbs aria-label="Taille de l'étiquette">${sizeOpts(size[a.id])}</select>
           <input class="input" type="number" min="0" step="1" value="${qty[a.id]}" data-lbq inputmode="numeric" aria-label="Nombre d'étiquettes"></div>`).join("")
-        + (arts.length > 300 ? `<div class="muted" style="padding:8px">… et ${int(arts.length - 300)} autre(s) (quantité selon le choix ci-dessus).</div>` : "");
+        + (arts.length > 400 ? `<div class="muted" style="padding:8px">… et ${int(arts.length - 400)} autre(s) (taille et nombre selon les choix ci-dessus).</div>` : "");
+      count(); preview();
     };
     draw();
+    loadScript(LIB_QR).then(() => { qrReady = true; preview(); }).catch(e => toast(e.message, "bad"));
     $("#lb-mode", m).addEventListener("change", draw);
+    $("#lb-size", m).addEventListener("change", e => {
+      const v = e.target.value;
+      arts.forEach(a => { size[a.id] = v === "auto" ? autoLabelSize(a) : v; });
+      $$("#lb-list [data-lbs]", m).forEach(s => { s.value = size[s.closest(".lb-row").dataset.id]; });
+      preview();
+    });
     $("#lb-list", m).addEventListener("input", e => {
-      const i = e.target.closest("[data-lbq]"); if (!i) return;
-      qty[i.closest(".lb-row").dataset.id] = Math.max(0, parseInt(i.value, 10) || 0);
+      const row = e.target.closest(".lb-row[data-id]"); if (!row) return;
+      if (e.target.matches("[data-lbq]")) { qty[row.dataset.id] = Math.max(0, parseInt(e.target.value, 10) || 0); count(); }
+    });
+    $("#lb-list", m).addEventListener("change", e => {
+      const row = e.target.closest(".lb-row[data-id]"); if (!row || !e.target.matches("[data-lbs]")) return;
+      size[row.dataset.id] = e.target.value; prevId = row.dataset.id;
+      $$("#lb-list .lb-row", m).forEach(r => r.classList.toggle("sel", r === row)); preview();
+    });
+    $("#lb-list", m).addEventListener("click", e => {
+      const row = e.target.closest(".lb-row[data-id]"); if (!row || e.target.closest("input,select")) return;
+      prevId = row.dataset.id; $$("#lb-list .lb-row", m).forEach(r => r.classList.toggle("sel", r === row)); preview();
     });
     $("#lb-print", m).addEventListener("click", async () => {
-      const btn = $("#lb-print", m);
+      const btn = $("#lb-print", m), roll = $("#lb-media", m).value === "roll";
       const items = [];
       for (const a of arts) for (let k = 0; k < (qty[a.id] || 0); k++) items.push(a);
-      if (!items.length) return toast("Aucune étiquette à imprimer (quantités à 0).", "bad");
-      if (items.length > 2000) return toast("Trop d'étiquettes en une fois (2000 maximum). Filtrez la liste.", "bad");
+      if (!items.length) return toast("Aucune étiquette à imprimer (nombres à 0).", "bad");
+      if (items.length > 2000) return toast("Trop d'étiquettes en une fois (2000 maximum).", "bad");
+      const sizes = [...new Set(items.map(a => size[a.id]))];
+      if (roll && sizes.length > 1) return toast("Imprimante d'étiquettes : choisissez une seule taille pour tous (le rouleau a une taille fixe).", "bad");
       busy(btn, true, "Préparation…");
       try { await loadScript(LIB_QR); } catch (e) { busy(btn, false); return toast(e.message, "bad"); }
       const svg = {};
-      $("#print-area").innerHTML = `<div class="labels lb-${$("#lb-size", m).value}">${items.map(a => {
-        if (!svg[a.id]) svg[a.id] = qrSVG(labelCode(a));
-        const ref = F(a, "reference");
-        // texte de l'étiquette : MODELE - Prix : PRIX DE VENTE (ex. « HONOR PLAY 10 - Prix : 110 »)
-        return `<div class="label"><div class="label-txt"><div class="label-line">${esc(labelText(a))}</div>
-          <div class="label-ref">${esc(cfg.nomEntreprise)}${ref != null && ref !== "" ? " · " + esc(ref) : ""}</div></div>
-          <div class="label-qr">${svg[a.id]}</div></div>`;
-      }).join("")}</div>`;
+      const S = LABEL_SIZES[sizes[0]];
+      $("#print-area").innerHTML = (roll ? `<style>@page { size: ${S.w}mm ${S.h}mm; margin: 0; }</style>` : "")
+        + `<div class="labels ${roll ? "roll" : ""}">${items.map(a => {
+          if (!svg[a.id]) svg[a.id] = qrSVG(labelCode(a));
+          return labelHTML(a, size[a.id], svg[a.id]);
+        }).join("")}</div>`;
       busy(btn, false);
       window.print();
     });
@@ -1963,12 +2028,26 @@
           ${cats.length || catCanAdd ? `<select class="input" id="art-cat" style="width:auto;flex:0 1 190px"><option value="">Toutes catégories</option>${catCanAdd ? `<option value="__new__">＋ Nouvelle catégorie…</option>` : ""}${cats.map(c => `<option ${f.cat === c ? "selected" : ""}>${esc(c)}</option>`).join("")}</select>` : ""}
           ${hasStock() ? `<select class="input" id="art-stock" style="width:auto;flex:0 1 160px"><option value="">Tout le stock</option><option value="low" ${f.stock === "low" ? "selected" : ""}>Stock faible</option><option value="out" ${f.stock === "out" ? "selected" : ""}>En rupture</option></select>` : ""}
           ${state.map.photo && cfg.afficherPhotos ? `<a class="btn" href="#/photos" title="Rechercher des photos par catégorie">${ICON.search}<span class="hide-sm">Photos</span></a>` : ""}
-          <button class="btn" id="art-labels" title="Imprimer les étiquettes de prix des articles affichés">${ICON.tag}<span class="hide-sm">Étiquettes</span></button>
+          <button class="btn" id="art-labels" title="Générer les QR codes des articles cochés (ou de ceux affichés)">${ICON.tag}<span class="hide-sm">QR codes</span></button>
           <button class="btn" id="art-export" title="Exporter en CSV">${ICON.download}<span class="hide-sm">Exporter</span></button>
           <button class="btn primary" id="art-new">${ICON.plus} Nouvel article</button>
         </div>
+        <div class="sel-bar" id="sel-bar" hidden></div>
         <div id="art-table"></div>
       </div>`;
+
+    /* Sélection d'articles (cases à cocher) pour générer leurs QR codes */
+    const sel = state.qrSel || (state.qrSel = new Set());
+    const selBar = () => {
+      [...sel].forEach(id => { if (!artById(id)) sel.delete(id); });
+      const b = $("#sel-bar"); if (!b) return;
+      b.hidden = !sel.size;
+      b.innerHTML = sel.size ? `<span class="sel-n">☑ <strong>${int(sel.size)}</strong> article(s) sélectionné(s)</span>
+        <button class="btn primary sel-go" id="sel-qr" type="button">${ICON.tag} Générer les QR codes</button>
+        <button class="btn ghost" id="sel-clear" type="button">Tout désélectionner</button>` : "";
+      const all = $("#sel-all"); if (all) { const vis = apply(); const n = vis.filter(a => sel.has(a.id)).length; all.checked = !!vis.length && n === vis.length; all.indeterminate = n > 0 && n < vis.length; }
+    };
+    const selTd = a => `<td class="sel-col" data-label="Sélection"><input type="checkbox" class="sel-cb" data-sel="${esc(a.id)}" ${sel.has(a.id) ? "checked" : ""} aria-label="Sélectionner ${esc(artName(a))}"></td>`;
 
     const tdHTML = (a, c) => {
       if (c.virtual) return `<td class="num ca" data-label="${esc(colTitle(c))}">${money(artCA(a))}</td>`;
@@ -1976,12 +2055,12 @@
       if (c.name === state.map.designation) return `<td class="sellable primary-cell" data-sell="${esc(a.id)}" data-label="${esc(colTitle(c))}" title="Cliquer pour vendre cet article">${cellHTML(a, c)}</td>`;
       return `<td class="editable ${isNumCol(c) ? "num" : ""}" data-col="${esc(c.name)}" data-label="${esc(colTitle(c))}" title="Cliquer pour modifier">${cellHTML(a, c)}</td>`;
     };
-    const rowInner = a => layout.map(c => tdHTML(a, c)).join("") +
+    const rowInner = a => selTd(a) + layout.map(c => tdHTML(a, c)).join("") +
       `<td class="actions"><button class="btn sm icon ghost sell-btn ${cartQty(a.id) ? "in-cart" : ""}" data-addcart="${esc(a.id)}" title="${cartQty(a.id) ? "Retirer du panier" : "Ajouter au panier"}" aria-label="${cartQty(a.id) ? "Retirer du panier" : "Ajouter au panier"}">${ICON.cartPlus}${cartQty(a.id) ? `<span class="cart-badge">${cartQty(a.id)}</span>` : ""}</button><button class="btn sm icon ghost rcv-btn ${pcartQty(a.id) ? "in-cart" : ""}" data-rcv="${esc(a.id)}" title="${pcartQty(a.id) ? "Retirer du bon de réception" : "Ajouter au bon de réception (entrée en stock)"}" aria-label="${pcartQty(a.id) ? "Retirer du bon de réception" : "Ajouter au bon de réception"}">📦${pcartQty(a.id) ? `<span class="cart-badge buy">${pcartQty(a.id)}</span>` : ""}</button><button class="btn sm icon ghost" data-edit="${esc(a.id)}" title="Modifier (formulaire complet)" aria-label="Modifier dans un formulaire">${ICON.edit}</button><button class="btn sm icon ghost danger" data-del="${esc(a.id)}" title="Supprimer" aria-label="Supprimer">${ICON.trash}</button></td>`;
     /* Lignes fixes « Article non classé » et « Service » : prix et nature saisis à la vente */
     const freeRows = () => (f.cat || f.stock) ? "" : ["divers", "service"].filter(k => !norm(f.q) || norm(FREE[k].label).includes(norm(f.q))).map(k => {
       const K = FREE[k];
-      return `<tr class="free-row" data-free="${k}">${layout.map(c => {
+      return `<tr class="free-row" data-free="${k}"><td class="sel-col"></td>${layout.map(c => {
         const lab = esc(colTitle(c));
         if (c.name === state.map.designation) return `<td class="sellable primary-cell" data-free-sell="${k}" data-label="${lab}" title="Vendre : prix et nature saisis dans le panier"><span class="name-cell"><span class="thumb svc-ico ${k}">${ICON[K.ico]}</span><span class="name-text"><strong>${K.label}</strong></span></span></td>`;
         if (c.name === state.map.prix) return `<td class="num" data-label="${lab}"><span class="muted">Prix libre</span></td>`;
@@ -2028,13 +2107,14 @@
       const list = apply();
       curList = list; shown = Math.min(PAGE, list.length);
       $("#art-table").innerHTML = list.length ? `<div class="table-scroll"><table class="table responsive compact">
-        <thead><tr>${layout.map(c => `<th class="sortable ${isNumCol(c) ? "num" : ""}" data-sort="${esc(c.name)}" draggable="true" title="Cliquer pour trier · glisser pour déplacer la colonne"><span class="grip" aria-hidden="true">⋮⋮</span>${esc(colTitle(c))}${f.sort === c.name ? (f.dir > 0 ? " ▲" : " ▼") : ""}</th>`).join("")}<th></th></tr></thead>
+        <thead><tr><th class="sel-col"><input type="checkbox" class="sel-cb" id="sel-all" title="Sélectionner tous les articles affichés" aria-label="Sélectionner tous les articles affichés"></th>${layout.map(c => `<th class="sortable ${isNumCol(c) ? "num" : ""}" data-sort="${esc(c.name)}" draggable="true" title="Cliquer pour trier · glisser pour déplacer la colonne"><span class="grip" aria-hidden="true">⋮⋮</span>${esc(colTitle(c))}${f.sort === c.name ? (f.dir > 0 ? " ▲" : " ▼") : ""}</th>`).join("")}<th></th></tr></thead>
         <tbody>${freeRows()}${list.slice(0, shown).map(a => `<tr data-id="${esc(a.id)}">${rowInner(a)}</tr>`).join("")}</tbody></table>
         ${shown < list.length ? `<button class="more-row" id="art-more" type="button">Afficher plus d'articles…</button>` : ""}</div>
         <div class="table-foot" id="art-foot">${footHTML(list)}</div>`
         : `<div class="empty">Aucun article ne correspond aux critères.</div>`;
       setupMore();
       pinFree();
+      selBar();
     };
     /* position des lignes figées : juste sous l'en-tête, l'une sous l'autre */
     const pinFree = () => requestAnimationFrame(() => {
@@ -2216,7 +2296,21 @@
       if (th) { if (f.sort === th.dataset.sort) f.dir = -f.dir; else { f.sort = th.dataset.sort; f.dir = 1; } return drawTable(); }
       if (e.target.closest("#art-new")) return articleForm(null);
       if (e.target.closest("#art-scan")) return scanDialog();
-      if (e.target.closest("#art-labels")) return labelsDialog(apply());
+      if (e.target.closest("#art-labels")) return labelsDialog(sel.size ? [...sel].map(artById).filter(Boolean) : apply());
+      if (e.target.closest("#sel-qr")) return labelsDialog([...sel].map(artById).filter(Boolean));
+      if (e.target.closest("#sel-clear")) { sel.clear(); $$("#art-table [data-sel]").forEach(cb => { cb.checked = false; cb.closest("tr").classList.remove("row-sel"); }); return selBar(); }
+      if (e.target.id === "sel-all") {
+        const vis = apply(), on = e.target.checked;
+        vis.forEach(a => on ? sel.add(a.id) : sel.delete(a.id));
+        $$("#art-table [data-sel]").forEach(cb => { cb.checked = sel.has(cb.dataset.sel); cb.closest("tr").classList.toggle("row-sel", cb.checked); });
+        return selBar();
+      }
+      if (e.target.matches("[data-sel]")) {
+        const id = e.target.dataset.sel; if (e.target.checked) sel.add(id); else sel.delete(id);
+        e.target.closest("tr").classList.toggle("row-sel", e.target.checked);
+        return selBar();
+      }
+      if (e.target.closest(".sel-col")) return;
       if (e.target.closest("#art-export")) {
         return downloadCSV("articles.csv", [layout.map(c => colTitle(c)), ...apply().map(a => layout.map(c => val(a, c)))]);
       }

@@ -768,3 +768,46 @@ body.has-dock .view { padding-bottom: calc(var(--dock-h, 0px) + 40px); }
 .label-line { font-size: 10pt; font-weight: 800; line-height: 1.2; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; word-break: break-word; }
 .lb-s .label-line { font-size: 8pt; }
 .lb-l .label-line { font-size: 13pt; -webkit-line-clamp: 4; }
+
+/* ============ Sélection d'articles et génération des QR codes ============ */
+.table .sel-col { width: 38px; text-align: center; padding-left: 10px; padding-right: 4px; }
+.sel-cb { width: 18px; height: 18px; accent-color: var(--primary); cursor: pointer; vertical-align: middle; }
+.table tr:has(> td.sel-col .sel-cb:checked) td { background: color-mix(in srgb, var(--primary) 9%, var(--surface)); }
+.sel-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 0 14px 10px; padding: 10px 14px; border-radius: 12px; background: var(--primary-soft); border: 1px solid color-mix(in srgb, var(--primary) 35%, transparent); }
+.sel-bar[hidden] { display: none; }
+.sel-bar .sel-n { font-size: 15px; color: var(--primary); }
+.sel-bar .sel-go { margin-left: auto; }
+@media (max-width: 640px) { .table.responsive td.sel-col { order: -2; justify-content: flex-start; width: auto; padding: 0 0 4px; } .table.responsive td.sel-col::before { content: "Sélectionner"; } .sel-bar .sel-go { margin-left: 0; } }
+
+.modal.lb-modal { max-width: min(980px, 96vw); width: 96vw; }
+.lb-opts { grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+.lb-legend { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 10px 0; font-size: 12.5px; color: var(--muted); }
+.lb-legend strong { color: var(--text); }
+.lb-preview-wrap { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; padding: 12px; border-radius: 12px; background: var(--surface-2); border: 1px dashed var(--border); }
+.lb-preview { display: flex; align-items: center; min-height: 20mm; }
+.lb-preview .label { box-shadow: 0 2px 10px rgba(0,0,0,.15); }
+.lb-list .lb-row { grid-template-columns: minmax(0, 1fr) 100px 230px 76px; }
+.lb-list .lb-head { font-size: 12px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .3px; position: sticky; top: 0; background: var(--surface); z-index: 1; }
+.lb-list .lb-row[data-id] { cursor: pointer; }
+.lb-list .lb-row.sel { background: var(--primary-soft); }
+.lb-list select.input { padding: 6px 8px; font-size: 13px; }
+@media (max-width: 760px) { .lb-list .lb-row { grid-template-columns: minmax(0, 1fr) 70px; } .lb-list .lb-row select { grid-column: 1; } .lb-list .lb-head { display: none; } }
+
+/* étiquettes : dimensions réelles en mm (données dans le HTML), texte adapté à chaque taille */
+.label { box-sizing: border-box; display: flex; align-items: center; gap: 1.2mm; padding: 1.2mm 1.6mm; overflow: hidden; color: #000; background: #fff; border: 0.25mm dashed #999; border-radius: 1.2mm; font-family: Arial, Helvetica, sans-serif; break-inside: avoid; page-break-inside: avoid; }
+.label-qr { flex-shrink: 0; }
+.label-qr svg { width: 100%; height: 100%; display: block; }
+.label .label-txt { flex: 1; min-width: 0; height: 100%; display: flex; flex-direction: column; justify-content: center; gap: .8mm; }
+.label .label-line { font-weight: 800; line-height: 1.15; overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; word-break: break-word; }
+.label .label-ref { font-size: 5.5pt; color: #444; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lbz-qr { justify-content: center; padding: 1.5mm; }
+.lbz-mini .label-line { font-size: 5.6pt; -webkit-line-clamp: 2; font-weight: 700; }
+.lbz-mini .label-pr { font-size: 7.5pt; font-weight: 800; white-space: nowrap; }
+.lbz-s .label-line { font-size: 7pt; -webkit-line-clamp: 3; }
+.lbz-m .label-line { font-size: 8.5pt; -webkit-line-clamp: 3; }
+.lbz-l .label-line { font-size: 12pt; -webkit-line-clamp: 3; }
+.lbz-l .label-ref { font-size: 7pt; }
+.labels { display: flex; flex-wrap: wrap; gap: 2mm; align-content: flex-start; }
+.labels.roll { display: block; }
+.labels.roll .label { border: 0; border-radius: 0; page-break-after: always; break-after: page; }
+@media print { .print-area:has(.labels.roll) { padding: 0 !important; } }
