@@ -1349,15 +1349,34 @@
   }
 
   /* Impression d'étiquettes : nom, prix de vente et QR code */
-  /* Tailles d'étiquettes adaptées au matériel (dimensions réelles en mm, QR code compris) */
+  /* Tailles d'étiquettes (dimensions réelles en mm). g = groupe affiché dans la liste. */
   const LABEL_SIZES = {
-    qr:   { name: "QR seul", w: 20, h: 20, qr: 17, use: "très petits objets : câbles, cartes mémoire, clés USB, pièces" },
-    mini: { name: "Mini", w: 32, h: 16, qr: 13, use: "accessoires : chargeurs, écouteurs, batteries, coques" },
-    s:    { name: "Petite", w: 40, h: 25, qr: 19, use: "téléphones, afficheurs, petites boîtes" },
-    m:    { name: "Moyenne", w: 50, h: 30, qr: 23, use: "boîtes de téléphones, tablettes, enceintes" },
-    l:    { name: "Grande", w: 70, h: 40, qr: 32, use: "ordinateurs, imprimantes, écrans, cartons" }
+    qr:   { g: "Selon le matériel", name: "QR seul", w: 20, h: 20, use: "très petits objets : câbles, cartes mémoire, clés USB, pièces" },
+    mini: { g: "Selon le matériel", name: "Mini", w: 32, h: 16, use: "accessoires : chargeurs, écouteurs, batteries, coques" },
+    s:    { g: "Selon le matériel", name: "Petite", w: 40, h: 25, use: "téléphones, afficheurs, petites boîtes" },
+    m:    { g: "Selon le matériel", name: "Moyenne", w: 50, h: 30, use: "boîtes de téléphones, tablettes, enceintes" },
+    l:    { g: "Selon le matériel", name: "Grande", w: 70, h: 40, use: "ordinateurs, imprimantes, écrans, cartons" },
+    a65:  { g: "Planches A4 du commerce", name: "65 étiquettes par feuille", w: 38.1, h: 21.2 },
+    a44:  { g: "Planches A4 du commerce", name: "44 étiquettes par feuille", w: 48.5, h: 25.4 },
+    a40:  { g: "Planches A4 du commerce", name: "40 étiquettes par feuille", w: 52.5, h: 29.7 },
+    a24:  { g: "Planches A4 du commerce", name: "24 étiquettes par feuille", w: 70, h: 37 },
+    a21:  { g: "Planches A4 du commerce", name: "21 étiquettes par feuille", w: 63.5, h: 38.1 },
+    r4030:{ g: "Rouleaux d'imprimante d'étiquettes", name: "Rouleau", w: 40, h: 30 },
+    r5025:{ g: "Rouleaux d'imprimante d'étiquettes", name: "Rouleau", w: 50, h: 25 },
+    r5030:{ g: "Rouleaux d'imprimante d'étiquettes", name: "Rouleau", w: 50, h: 30 },
+    r5732:{ g: "Rouleaux d'imprimante d'étiquettes", name: "Rouleau", w: 57, h: 32 },
+    r6040:{ g: "Rouleaux d'imprimante d'étiquettes", name: "Rouleau", w: 60, h: 40 },
+    custom: { g: "Personnalisée", name: "Taille personnalisée", w: 45, h: 28 }
   };
-  const sizeLabel = k => { const S = LABEL_SIZES[k]; return `${S.name} — ${S.w} × ${S.h} mm`; };
+  const mm = n => String(Math.round(n * 10) / 10).replace(".", ",");
+  const sizeLabel = k => { const S = LABEL_SIZES[k]; return `${S.name} — ${mm(S.w)} × ${mm(S.h)} mm`; };
+  /* liste déroulante des tailles, regroupées */
+  const sizeOptions = (sel, withAuto) => {
+    const groups = {};
+    Object.keys(LABEL_SIZES).forEach(k => { (groups[LABEL_SIZES[k].g] = groups[LABEL_SIZES[k].g] || []).push(k); });
+    return (withAuto ? `<option value="auto" ${sel === "auto" ? "selected" : ""}>Automatique selon la catégorie</option>` : "")
+      + Object.entries(groups).map(([g, ks]) => `<optgroup label="${esc(g)}">${ks.map(k => `<option value="${k}" ${k === sel ? "selected" : ""}>${esc(sizeLabel(k))}</option>`).join("")}</optgroup>`).join("");
+  };
   /* Taille proposée automatiquement d'après la catégorie et le nom de l'article */
   function autoLabelSize(a) {
     const t = norm(`${F(a, "categorie") || ""} ${artName(a) || ""}`);
@@ -1367,31 +1386,47 @@
     if (/telephone|smartphone|afficheur|lcd|ecran/.test(t)) return "s";
     return "m";
   }
-  /* Une étiquette : QR code + « MODELE - Prix : PRIX » (taille réelle en mm) */
+  /* Une étiquette : QR code + « MODELE - Prix : PRIX », mise en page calculée d'après ses dimensions réelles */
   function labelHTML(a, k, svg) {
     const S = LABEL_SIZES[k] || LABEL_SIZES.m, ref = F(a, "reference");
-    const qr = `<div class="label-qr" style="width:${S.qr}mm;height:${S.qr}mm">${svg}</div>`;
-    if (k === "qr") return `<div class="label lbz-qr" style="width:${S.w}mm;height:${S.h}mm">${qr}</div>`;
-    if (k === "mini") return `<div class="label lbz-mini" style="width:${S.w}mm;height:${S.h}mm">${qr}<div class="label-txt">
-        <div class="label-line">${esc(String(artName(a)).trim())} -</div><div class="label-pr">Prix : ${esc(labelPrice(artPrice(a)))}</div></div></div>`;
-    return `<div class="label lbz-${k}" style="width:${S.w}mm;height:${S.h}mm"><div class="label-txt"><div class="label-line">${esc(labelText(a))}</div>
-        <div class="label-ref">${esc(cfg.nomEntreprise)}${ref != null && ref !== "" ? " · " + esc(ref) : ""}</div></div>${qr}</div>`;
+    const pad = S.h <= 18 ? 1 : 1.5, qrmm = Math.max(10, Math.min(S.h - 2 * pad, S.w <= 24 ? S.w : S.w * 0.46));
+    const qr = `<div class="label-qr" style="width:${qrmm}mm;height:${qrmm}mm">${svg}</div>`;
+    const box = `width:${S.w}mm;height:${S.h}mm;padding:${pad}mm ${pad + 0.4}mm`;
+    if (S.w <= 24) return `<div class="label lbz-qr" style="${box}">${qr}</div>`; // trop petit pour du texte
+    const fs = Math.max(5.2, Math.min(13, S.h * 0.27)), lines = S.h <= 18 ? 2 : 3;
+    if (S.h <= 18) return `<div class="label lbz-mini" style="${box}">${qr}<div class="label-txt">
+        <div class="label-line" style="font-size:${fs}pt;-webkit-line-clamp:${lines}">${esc(String(artName(a)).trim())} -</div><div class="label-pr" style="font-size:${fs + 1.6}pt">Prix : ${esc(labelPrice(artPrice(a)))}</div></div></div>`;
+    // « MODELE - » puis « Prix : PRIX » sur sa propre ligne : le prix n'est jamais coupé, même avec un nom long
+    return `<div class="label" style="${box}"><div class="label-txt"><div class="label-line" style="font-size:${fs}pt;-webkit-line-clamp:${lines - 1}">${esc(String(artName(a)).trim())} -</div>
+        <div class="label-pr" style="font-size:${Math.min(14, fs + (labelPrice(artPrice(a)).length > 3 ? 0.3 : 1.2))}pt">Prix : ${esc(labelPrice(artPrice(a)))}</div>
+        <div class="label-ref" style="font-size:${Math.max(5, fs * 0.62)}pt">${esc(cfg.nomEntreprise)}${ref != null && ref !== "" ? " · " + esc(ref) : ""}</div></div>${qr}</div>`;
   }
 
   /* Génération des QR codes / étiquettes des articles choisis */
   async function labelsDialog(list) {
-    const arts = list.filter(a => a && a.id);
+    const cat = a => String(F(a, "categorie") || "Sans catégorie");
+    // articles rangés par catégorie puis par nom (même ordre qu'à l'impression)
+    const arts = list.filter(a => a && a.id).sort((a, b) => cat(a).localeCompare(cat(b), "fr") || String(artName(a)).localeCompare(String(artName(b)), "fr", { numeric: true }));
     if (!arts.length) return toast("Aucun article à étiqueter.", "bad");
-    const sizeOpts = sel => Object.keys(LABEL_SIZES).map(k => `<option value="${k}" ${k === sel ? "selected" : ""}>${esc(sizeLabel(k))}</option>`).join("");
     const m = openModal({
       title: `QR codes à imprimer — ${int(arts.length)} article(s)`, size: "cart lb-modal",
-      body: `<p class="muted" style="margin:0 0 12px;font-size:14px">Chaque étiquette porte un <strong>QR code</strong> lu par le bouton « Scanner » et le texte <strong>« MODELE - Prix : PRIX »</strong>. Sa taille est choisie selon le matériel sur lequel elle sera collée.</p>
-        <div class="form-grid lb-opts">
-          <label class="field">Taille pour tous<select class="input" id="lb-size"><option value="auto">Automatique selon la catégorie (recommandé)</option>${sizeOpts("")}</select></label>
-          <label class="field">Nombre d'étiquettes<select class="input" id="lb-mode"><option value="one">1 par article</option><option value="stock">1 par pièce en stock</option></select></label>
-          <label class="field">Support d'impression<select class="input" id="lb-media"><option value="a4">Feuille A4 (planche d'étiquettes autocollantes)</option><option value="roll">Imprimante d'étiquettes (rouleau, 1 étiquette par page)</option></select></label>
+      body: `<div class="alert info lb-unique">${ICON.info}<div class="grow"><strong>Un seul QR code par article</strong> (ex. <code>ITS:62</code>) : il ne change jamais. Chaque étiquette porte ce QR code et le texte « MODELE - Prix : PRIX ».</div></div>
+        <div class="lb-all">
+          <label class="field lb-all-size">Taille des étiquettes<select class="input" id="lb-size">${sizeOptions("auto", true)}</select></label>
+          <label class="field lb-custom" hidden>Largeur (mm)<input class="input" id="lb-cw" type="number" min="15" max="120" step="0.5" value="${LABEL_SIZES.custom.w}" inputmode="decimal"></label>
+          <label class="field lb-custom" hidden>Hauteur (mm)<input class="input" id="lb-ch" type="number" min="12" max="80" step="0.5" value="${LABEL_SIZES.custom.h}" inputmode="decimal"></label>
+          <button class="btn primary lb-apply" id="lb-apply" type="button">Appliquer à tous les articles (${int(arts.length)})</button>
         </div>
-        <div class="lb-legend">${Object.keys(LABEL_SIZES).map(k => `<span><strong>${esc(LABEL_SIZES[k].name)}</strong> ${LABEL_SIZES[k].w}×${LABEL_SIZES[k].h} mm : ${esc(LABEL_SIZES[k].use)}</span>`).join("")}</div>
+        <div class="form-grid lb-opts">
+          <label class="field">Nombre d'étiquettes<select class="input" id="lb-mode"><option value="one">1 par article</option><option value="stock">1 par pièce en stock (copies du même QR code)</option></select></label>
+          <label class="field">Support d'impression<select class="input" id="lb-media"><option value="a4">Feuille A4 (planche d'étiquettes ou papier)</option><option value="roll">Imprimante d'étiquettes (rouleau, 1 étiquette par page)</option></select></label>
+        </div>
+        <div class="lb-checks">
+          <label><input type="checkbox" id="lb-sort" checked> Trier les QR codes par catégorie</label>
+          <label><input type="checkbox" id="lb-titles"> Titre de catégorie entre les groupes (papier à découper)</label>
+          <label><input type="checkbox" id="lb-cut" checked> Étiquettes jointives avec repères de découpe (même taille pour tous)</label>
+        </div>
+        <div class="lb-legend">${["qr", "mini", "s", "m", "l"].map(k => `<span><strong>${esc(LABEL_SIZES[k].name)}</strong> ${LABEL_SIZES[k].w}×${LABEL_SIZES[k].h} mm : ${esc(LABEL_SIZES[k].use)}</span>`).join("")}</div>
         <div class="lb-preview-wrap"><div class="muted" style="font-size:13px">Aperçu à la taille réelle de <strong id="lb-prev-name"></strong> :</div><div class="lb-preview" id="lb-preview"></div></div>
         <div class="lb-list" id="lb-list"></div>`,
       foot: `<span class="muted" id="lb-count" style="margin-right:auto;font-size:14px"></span><button class="btn" data-close>Fermer</button><button class="btn primary" id="lb-print">${ICON.print} Imprimer les QR codes</button>`
@@ -1401,34 +1436,55 @@
     arts.forEach(a => { size[a.id] = autoLabelSize(a); });
     const count = () => {
       const n = arts.reduce((t, a) => t + (qty[a.id] || 0), 0);
-      $("#lb-count", m).textContent = `${int(n)} étiquette(s) à imprimer`;
+      const ks = [...new Set(arts.filter(a => qty[a.id]).map(a => size[a.id]))];
+      $("#lb-count", m).innerHTML = `${int(n)} étiquette(s) à imprimer · ${ks.length === 1 ? `taille unique <strong>${mm(LABEL_SIZES[ks[0]].w)} × ${mm(LABEL_SIZES[ks[0]].h)} mm</strong>` : `${ks.length} tailles différentes`}`;
     };
     const preview = () => {
       const a = artById(prevId) || arts[0];
-      $("#lb-prev-name", m).textContent = `${artName(a)} (${LABEL_SIZES[size[a.id]].name.toLowerCase()})`;
+      $("#lb-prev-name", m).textContent = `${artName(a)} (${mm(LABEL_SIZES[size[a.id]].w)} × ${mm(LABEL_SIZES[size[a.id]].h)} mm)`;
       $("#lb-preview", m).innerHTML = qrReady ? labelHTML(a, size[a.id], qrSVG(labelCode(a))) : `<span class="muted">Chargement…</span>`;
     };
     const draw = () => {
       const mode = $("#lb-mode", m).value;
       arts.forEach(a => { qty[a.id] = mode === "stock" ? Math.max(0, hasStock() ? artStock(a) : 1) : 1; });
+      let lastCat = null;
       $("#lb-list", m).innerHTML = `<div class="lb-row lb-head"><span>Article</span><span>Prix</span><span>Taille de l'étiquette</span><span>Nombre</span></div>`
-        + arts.slice(0, 400).map(a => `<div class="lb-row ${a.id === prevId ? "sel" : ""}" data-id="${esc(a.id)}">
-          <span class="ellipsis" title="Voir l'aperçu"><strong>${esc(artName(a))}</strong> <span class="muted">${esc(F(a, "categorie") || "")}</span></span>
+        + arts.slice(0, 400).map(a => {
+          const head = cat(a) !== lastCat ? `<div class="lb-cat-row">${esc(cat(a))}</div>` : ""; lastCat = cat(a);
+          return head + `<div class="lb-row ${a.id === prevId ? "sel" : ""}" data-id="${esc(a.id)}">
+          <span class="ellipsis" title="Voir l'aperçu"><strong>${esc(artName(a))}</strong><span class="lb-code" title="Code unique de cet article : il ne change jamais">QR ${esc(labelCode(a))}</span></span>
           <span class="muted num">${money(artPrice(a))}</span>
-          <select class="input" data-lbs aria-label="Taille de l'étiquette">${sizeOpts(size[a.id])}</select>
-          <input class="input" type="number" min="0" step="1" value="${qty[a.id]}" data-lbq inputmode="numeric" aria-label="Nombre d'étiquettes"></div>`).join("")
+          <select class="input" data-lbs aria-label="Taille de l'étiquette">${sizeOptions(size[a.id], false)}</select>
+          <input class="input" type="number" min="0" step="1" value="${qty[a.id]}" data-lbq inputmode="numeric" aria-label="Nombre d'étiquettes"></div>`;
+        }).join("")
         + (arts.length > 400 ? `<div class="muted" style="padding:8px">… et ${int(arts.length - 400)} autre(s) (taille et nombre selon les choix ci-dessus).</div>` : "");
       count(); preview();
     };
     draw();
     loadScript(LIB_QR).then(() => { qrReady = true; preview(); }).catch(e => toast(e.message, "bad"));
-    $("#lb-mode", m).addEventListener("change", draw);
-    $("#lb-size", m).addEventListener("change", e => {
-      const v = e.target.value;
+    const syncCustom = () => {
+      const on = $("#lb-size", m).value === "custom";
+      $$(".lb-custom", m).forEach(x => { x.hidden = !on; });
+      const w = Math.min(120, Math.max(15, parseFloat(String($("#lb-cw", m).value).replace(",", ".")) || 45));
+      const h = Math.min(80, Math.max(12, parseFloat(String($("#lb-ch", m).value).replace(",", ".")) || 28));
+      LABEL_SIZES.custom.w = w; LABEL_SIZES.custom.h = h;
+    };
+    // taille unique appliquée à tous les articles : découpe simple et uniforme
+    const applyAll = () => {
+      syncCustom();
+      const v = $("#lb-size", m).value;
       arts.forEach(a => { size[a.id] = v === "auto" ? autoLabelSize(a) : v; });
-      $$("#lb-list [data-lbs]", m).forEach(s => { s.value = size[s.closest(".lb-row").dataset.id]; });
-      preview();
+      $$("#lb-list [data-lbs]", m).forEach(s => { s.innerHTML = sizeOptions(size[s.closest(".lb-row").dataset.id], false); });
+      count(); preview();
+    };
+    $("#lb-size", m).addEventListener("change", () => { syncCustom(); applyAll(); });
+    $("#lb-apply", m).addEventListener("click", () => {
+      applyAll();
+      const v = $("#lb-size", m).value;
+      toast(v === "auto" ? "Taille automatique appliquée selon la catégorie." : `Taille ${mm(LABEL_SIZES[v].w)} × ${mm(LABEL_SIZES[v].h)} mm appliquée à tous les articles.`, "ok");
     });
+    ["#lb-cw", "#lb-ch"].forEach(id => $(id, m).addEventListener("input", () => { syncCustom(); $("#lb-size", m).innerHTML = sizeOptions("custom", true); $$("#lb-list [data-lbs]", m).forEach(s => { s.innerHTML = sizeOptions(size[s.closest(".lb-row").dataset.id], false); }); count(); preview(); }));
+    $("#lb-mode", m).addEventListener("change", draw);
     $("#lb-list", m).addEventListener("input", e => {
       const row = e.target.closest(".lb-row[data-id]"); if (!row) return;
       if (e.target.matches("[data-lbq]")) { qty[row.dataset.id] = Math.max(0, parseInt(e.target.value, 10) || 0); count(); }
@@ -1436,7 +1492,7 @@
     $("#lb-list", m).addEventListener("change", e => {
       const row = e.target.closest(".lb-row[data-id]"); if (!row || !e.target.matches("[data-lbs]")) return;
       size[row.dataset.id] = e.target.value; prevId = row.dataset.id;
-      $$("#lb-list .lb-row", m).forEach(r => r.classList.toggle("sel", r === row)); preview();
+      $$("#lb-list .lb-row", m).forEach(r => r.classList.toggle("sel", r === row)); count(); preview();
     });
     $("#lb-list", m).addEventListener("click", e => {
       const row = e.target.closest(".lb-row[data-id]"); if (!row || e.target.closest("input,select")) return;
@@ -1444,21 +1500,27 @@
     });
     $("#lb-print", m).addEventListener("click", async () => {
       const btn = $("#lb-print", m), roll = $("#lb-media", m).value === "roll";
+      const sorted = $("#lb-sort", m).checked, titles = $("#lb-titles", m).checked && !roll;
+      const order = sorted ? arts : list.filter(a => a && a.id && arts.includes(a));
       const items = [];
-      for (const a of arts) for (let k = 0; k < (qty[a.id] || 0); k++) items.push(a);
+      for (const a of order) for (let k = 0; k < (qty[a.id] || 0); k++) items.push(a);
       if (!items.length) return toast("Aucune étiquette à imprimer (nombres à 0).", "bad");
       if (items.length > 2000) return toast("Trop d'étiquettes en une fois (2000 maximum).", "bad");
       const sizes = [...new Set(items.map(a => size[a.id]))];
-      if (roll && sizes.length > 1) return toast("Imprimante d'étiquettes : choisissez une seule taille pour tous (le rouleau a une taille fixe).", "bad");
+      if (roll && sizes.length > 1) return toast("Imprimante d'étiquettes : appliquez une seule taille à tous (le rouleau a une taille fixe).", "bad");
       busy(btn, true, "Préparation…");
       try { await loadScript(LIB_QR); } catch (e) { busy(btn, false); return toast(e.message, "bad"); }
-      const svg = {};
-      const S = LABEL_SIZES[sizes[0]];
+      const svg = {}, S = LABEL_SIZES[sizes[0]];
+      const grid = !roll && sizes.length === 1 && $("#lb-cut", m).checked; // planche jointive : découpe droite et uniforme
+      let lastCat = null, html = "";
+      for (const a of items) {
+        if (titles && sorted && cat(a) !== lastCat) html += `<div class="lb-cat">${esc(cat(a))}</div>`;
+        lastCat = cat(a);
+        if (!svg[a.id]) svg[a.id] = qrSVG(labelCode(a));
+        html += labelHTML(a, size[a.id], svg[a.id]);
+      }
       $("#print-area").innerHTML = (roll ? `<style>@page { size: ${S.w}mm ${S.h}mm; margin: 0; }</style>` : "")
-        + `<div class="labels ${roll ? "roll" : ""}">${items.map(a => {
-          if (!svg[a.id]) svg[a.id] = qrSVG(labelCode(a));
-          return labelHTML(a, size[a.id], svg[a.id]);
-        }).join("")}</div>`;
+        + `<div class="labels ${roll ? "roll" : ""} ${grid ? "cut" : ""}" ${grid ? `style="grid-template-columns:repeat(auto-fill, ${S.w}mm)"` : ""}>${html}</div>`;
       busy(btn, false);
       window.print();
     });
@@ -1631,7 +1693,7 @@
       const box = $("#scan-unknown", m); if (!box) return;
       const isLabel = /^ITS[:\-]?\d+$/i.test(code);
       box.innerHTML = `<div class="alert warn" style="margin-top:10px">${ICON.warn}<div class="grow">
-        <strong>Code inconnu : ${esc(code)}</strong>${isLabel ? "<br>Cette étiquette correspond à un article supprimé." : `<br>Associez-le à un article : les prochains scans de ce code l'ajouteront directement.${codeCol() ? "" : ` <span class="muted">(la colonne ${CODE_FIELD} sera ajoutée à ${esc(cfg.articlesList)}, une seule fois)</span>`}
+        <strong>Code inconnu : ${esc(code)}</strong>${isLabel ? "<br>Cette étiquette correspond à un article supprimé." : `<br>Associez-le à un article : les prochains scans de ce code l'ajouteront directement. Un article n'a qu'un seul code-barres : s'il en avait déjà un, il est remplacé.${codeCol() ? "" : ` <span class="muted">(la colonne ${CODE_FIELD} sera ajoutée à ${esc(cfg.articlesList)}, une seule fois)</span>`}
         <div class="row" style="gap:8px;margin-top:8px;flex-wrap:wrap"><input class="input" id="scan-assoc" list="dl-scan-arts" placeholder="Rechercher l'article…" style="flex:1 1 220px">
         <datalist id="dl-scan-arts">${state.articles.slice(0, 2000).map(a => `<option value="${esc(artName(a))}${F(a, "reference") != null ? " · " + esc(F(a, "reference")) : ""}" data-id="${esc(a.id)}"></option>`).join("")}</datalist>
         <button class="btn primary" id="scan-assoc-ok" type="button">Associer et ajouter</button><button class="btn" id="scan-assoc-no" type="button">Ignorer</button></div>`}</div></div>`;
@@ -1646,7 +1708,9 @@
         try {
           if (!codeCol()) { const c = await DS.addArticleColumn(CODE_FIELD); state.columns.push(c); }
           const col = codeCol();
-          const val = codesOf(a).concat(code).join(" ");
+          const val = code; // un seul code-barres par article : l'ancien éventuel est remplacé
+          const old = codesOf(a).filter(x => x !== code);
+          if (old.length) toast(`Ancien code-barres de « ${artName(a)} » remplacé : ${old.join(", ")}.`, "ok");
           Object.assign(a, await DS.updateArticle(a.id, { [col.name]: val }));
           box.innerHTML = "";
           last = { code: "", t: 0 };

@@ -811,3 +811,23 @@ body.has-dock .view { padding-bottom: calc(var(--dock-h, 0px) + 40px); }
 .labels.roll { display: block; }
 .labels.roll .label { border: 0; border-radius: 0; page-break-after: always; break-after: page; }
 @media print { .print-area:has(.labels.roll) { padding: 0 !important; } }
+.lb-code { margin-left: 8px; padding: 1px 6px; border-radius: 6px; background: var(--surface-2); border: 1px solid var(--border); font: 600 11.5px ui-monospace, Consolas, monospace; color: var(--muted); white-space: nowrap; }
+.lb-unique { margin: 0 0 12px; padding: 10px 12px; font-size: 13.5px; }
+/* QR codes : taille unique pour tous, options, tri par catégorie, découpe */
+.lb-all { display: flex; align-items: flex-end; gap: 10px; flex-wrap: wrap; padding: 12px; margin-bottom: 10px; border-radius: 12px; background: var(--primary-soft); border: 1px solid color-mix(in srgb, var(--primary) 30%, transparent); }
+.lb-all .field { margin: 0; }
+.lb-all-size { flex: 1 1 320px; }
+.lb-all .lb-custom { flex: 0 1 120px; }
+.lb-all .lb-custom[hidden] { display: none; }
+.lb-apply { height: 42px; }
+.lb-checks { display: flex; flex-wrap: wrap; gap: 8px 18px; margin: 10px 0 4px; font-size: 14px; }
+.lb-checks label { display: inline-flex; align-items: center; gap: 7px; cursor: pointer; }
+.lb-checks input { width: 17px; height: 17px; accent-color: var(--primary); }
+.lb-cat-row { padding: 8px 2px 4px; font-size: 12.5px; font-weight: 800; letter-spacing: .4px; color: var(--primary); text-transform: uppercase; border-bottom: 2px solid var(--primary-soft); }
+.label { gap: 1mm; }
+.lbz-mini .label-pr { font-weight: 800; white-space: nowrap; }
+/* impression : titres de catégorie et planche jointive (repères de découpe) */
+.labels .lb-cat { flex-basis: 100%; grid-column: 1 / -1; font: 800 9pt Arial, sans-serif; text-transform: uppercase; letter-spacing: .4pt; padding: 2mm 0 1mm; border-bottom: 0.3mm solid #000; margin-bottom: 1mm; }
+.labels.cut { display: grid; gap: 0; justify-content: start; }
+.labels.cut .label { border: 0.2mm dashed #888; border-radius: 0; margin: -0.1mm 0 0 -0.1mm; }
+.label .label-pr { font-weight: 800; white-space: nowrap; line-height: 1.1; }
