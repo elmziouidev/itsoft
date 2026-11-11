@@ -456,6 +456,8 @@
     // retirer du panier les articles disparus
     state.cart = state.cart.filter(l => l.svc || state.articles.some(a => a.id === l.id));
     state.loaded = true;
+    // préchargement de la lecture des codes : la fenêtre « Scanner » s'ouvre ensuite sans attente
+    setTimeout(() => { loadScript(LIB_SCAN).catch(() => {}); }, 1500);
   }
 
   /* ============ Routage ============ */
@@ -1268,15 +1270,24 @@
   }
   function qrSVG(text) {
     const q = window.qrcode(0, "M"); q.addData(text); q.make();
-    return q.createSvgTag({ cellSize: 4, margin: 0, scalable: true });
+    return q.createSvgTag({ cellSize: 4, margin: 0, scalable: true }).replace("<svg ", '<svg shape-rendering="crispEdges" ');
   }
   function beep(ok) {
     try {
       const C = window.AudioContext || window.webkitAudioContext; if (!C) return;
       const ctx = beep.ctx || (beep.ctx = new C());
-      const o = ctx.createOscillator(), g = ctx.createGain();
-      o.frequency.value = ok ? 1150 : 300; o.type = "square"; g.gain.value = 0.06;
-      o.connect(g); g.connect(ctx.destination); o.start(); o.stop(ctx.currentTime + (ok ? 0.09 : 0.3));
+      if (ctx.state === "suspended") ctx.resume();
+      // volume maximal : onde carrée à pleine amplitude, à la fréquence où l'oreille est la plus sensible
+      // (≈ 2,7 kHz, comme les lecteurs de caisse) ; erreur : deux bips graves
+      const tone = (freq, t0, dur) => {
+        const o = ctx.createOscillator(), g = ctx.createGain();
+        o.type = "square"; o.frequency.value = freq;
+        g.gain.setValueAtTime(1, ctx.currentTime + t0);
+        o.connect(g); g.connect(ctx.destination);
+        o.start(ctx.currentTime + t0); o.stop(ctx.currentTime + t0 + dur);
+      };
+      if (ok) tone(2700, 0, 0.12);
+      else { tone(420, 0, 0.18); tone(420, 0.25, 0.18); }
     } catch (_) {}
   }
 
@@ -1336,7 +1347,7 @@
     const fromCart = !!opts.fromCart;
     const m = openModal({
       title: "Scanner des articles", size: "cart",
-      body: `<div class="seg scan-mode" id="scan-mode" role="tablist"><button type="button" class="on" data-mode="code">${ICON.scan} QR / code-barres</button><button type="button" data-mode="price"><span class="seg-num">123</span> Prix écrit</button></div>
+      body: `<div class="scan-mode-info" id="scan-mode-info"></div>
         <div class="scan-wrap"><div id="scan-cam" class="scan-cam"></div><div class="price-guide" id="price-guide" hidden><span id="price-guide-txt">Placez le prix dans le cadre</span></div><div class="scan-wait" id="scan-wait">Démarrage de la caméra…<br><span>Si le navigateur affiche « Utiliser les caméras », cliquez sur <strong>Autoriser</strong>.</span></div><div class="scan-flash" id="scan-flash" hidden></div></div>
         <div class="scan-total" id="scan-total"></div>
         <div id="price-panel"></div>
@@ -1383,7 +1394,7 @@
     const handle = code => {
       code = String(code || "").trim(); if (!code) return;
       const now = Date.now();
-      if (code === last.code && now - last.t < 2500) return; // même code encore devant la caméra
+      if (code === last.code && now - last.t < 1500) return; // même code encore devant la caméra
       last = { code, t: now };
       const a = articleByCode(code);
       if (!a) { beep(false); flash(false, "Code non reconnu", 0, code); return askAssociate(code); }
@@ -1428,6 +1439,8 @@
     inp.addEventListener("keydown", e => {
       if (e.key !== "Enter") return;
       e.preventDefault();
+      // Entrée sur un champ vide : on passe au panier pour encaisser
+      if (!inp.value.trim()) { if (state.cart.length) $("#scan-cart", m).click(); return; }
       if (mode === "price") { const p = parsePrice(inp.value); if (p == null) toast("Prix non valide.", "bad"); else showPrice(p); }
       else { last = { code: "", t: 0 }; handle(inp.value); }
       inp.value = "";
@@ -1438,7 +1451,9 @@
     const guideTxt = s => { const g = $("#price-guide-txt", m); if (g) g.textContent = s; };
     const setMode = md => {
       mode = md;
-      $$("#scan-mode button", m).forEach(b => b.classList.toggle("on", b.dataset.mode === md));
+      $("#scan-mode-info", m).innerHTML = md === "price"
+        ? `<span class="seg-num">123</span><span>Lecture du <strong>prix écrit</strong> (ex. 150,50 DH)</span><a href="#/parametres" data-close data-goset>Changer dans Paramètres</a>`
+        : `${ICON.scan}<span>Lecture des <strong>étiquettes QR</strong> et codes-barres</span><a href="#/parametres" data-close data-goset>Changer dans Paramètres</a>`;
       $("#price-guide", m).hidden = md !== "price";
       $("#scan-input-lab", m).textContent = md === "price" ? "Prix (saisie manuelle, puis Entrée)" : "Code (lecteur code-barres ou saisie)";
       inp.placeholder = md === "price" ? "Ex. 1030" : "Scannez ou tapez le code puis Entrée";
@@ -1447,7 +1462,6 @@
       ocrPaused = false; ocrPrev = null;
       ocrLoop();
     };
-    $("#scan-mode", m).addEventListener("click", e => { const b = e.target.closest("[data-mode]"); if (b && b.dataset.mode !== mode) setMode(b.dataset.mode); });
     /* image du cadre central, en noir et blanc, agrandie pour la lecture */
     const grab = () => {
       const v = $("#scan-cam video", m);
@@ -1569,6 +1583,8 @@
       };
     };
     if (opts.code) handle(opts.code);
+    setMode(opts.code ? "code" : scanModeGet()); // mode choisi dans Paramètres
+    m.addEventListener("click", e => { if (e.target.closest("[data-goset]")) m.dataset.toCart = "1"; }, true); // vers Paramètres : ne pas rouvrir le panier
 
     // caméra
     const camBox = $("#scan-cam", m);
@@ -1577,14 +1593,20 @@
     try { await loadScript(LIB_SCAN); } catch (e) { camMsg(esc(e.message)); return; }
     if (!document.body.contains(m)) return;
     const F_ = window.Html5QrcodeSupportedFormats;
-    const formats = F_ ? [F_.QR_CODE, F_.EAN_13, F_.EAN_8, F_.UPC_A, F_.UPC_E, F_.CODE_128, F_.CODE_39] : undefined;
+    // formats utiles seulement : chaque format en plus ralentit l'analyse de chaque image
+    const formats = F_ ? [F_.QR_CODE, F_.EAN_13, F_.EAN_8, F_.UPC_A, F_.CODE_128] : undefined;
     const start = async source => {
       await stop();
       if (!document.body.contains(m)) return;
       camBox.innerHTML = "";
-      reader = new window.Html5Qrcode("scan-cam", { formatsToSupport: formats, verbose: false });
+      // décodeur natif du navigateur quand il existe (beaucoup plus rapide), sinon décodeur JavaScript
+      reader = new window.Html5Qrcode("scan-cam", { formatsToSupport: formats, verbose: false, experimentalFeatures: { useBarCodeDetectorIfSupported: true } });
       const box = (w, h) => { const s = Math.floor(Math.min(w, h) * 0.75); return { width: Math.min(Math.floor(w * 0.85), Math.max(s, 220)), height: s }; };
-      await reader.start(source, { fps: 10, qrbox: box, aspectRatio: 1.333 }, txt => { if (mode === "code") handle(txt); }, () => {});
+      // 25 analyses par seconde, pas de lecture en miroir, image HD pour lire de plus loin
+      await reader.start(source, {
+        fps: 25, qrbox: box, aspectRatio: 1.333, disableFlip: true,
+        videoConstraints: { ...source, width: { ideal: 1280 }, height: { ideal: 720 } }
+      }, txt => { if (mode === "code") handle(txt); }, () => {});
       const wt = $("#scan-wait", m); if (wt) wt.hidden = true;
     };
     try {
@@ -1613,6 +1635,8 @@
   (function wedgeScanner() {
     let buf = "", lastT = 0;
     document.addEventListener("keydown", e => {
+      // F2 : ouvre « Scanner » de n'importe quelle page
+      if (e.key === "F2" && state.loaded && !$("#modal-root").children.length) { e.preventDefault(); scanDialog(); return; }
       const t = e.target, tag = t && t.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || (t && t.isContentEditable)) { buf = ""; return; }
       if ($("#modal-root").children.length || !state.loaded) { buf = ""; return; }
@@ -3403,6 +3427,9 @@
 
   /* ============ Paramètres : choix de la caméra utilisée pour le scan ============ */
   const CAM_KEY = "itsoft-camera";
+  const SCAN_MODE_KEY = "itsoft-scan-mode";
+  const scanModeGet = () => { try { return localStorage.getItem(SCAN_MODE_KEY) === "price" ? "price" : "code"; } catch (_) { return "code"; } };
+  const scanModeSet = md => { try { localStorage.setItem(SCAN_MODE_KEY, md === "price" ? "price" : "code"); } catch (_) {} };
   const camGet = () => { try { return localStorage.getItem(CAM_KEY) || ""; } catch (_) { return ""; } };
   const camSet = id => { try { if (id) localStorage.setItem(CAM_KEY, id); else localStorage.removeItem(CAM_KEY); } catch (_) {} };
   let camStream = null;
@@ -3417,9 +3444,20 @@
 
   const camSectionHTML = () => `
         <div class="card" id="cam-card">
-          <div class="card-head"><h2>Caméra de scan</h2><button class="btn sm" id="cam-detect" type="button">${ICON.search} Détecter les caméras</button></div>
+          <div class="card-head"><h2>Scan des prix</h2></div>
           <div class="card-pad">
-            <p class="muted" style="margin:0 0 12px;font-size:14px">Caméra utilisée par le bouton « Scanner » pour lire les étiquettes de prix et les codes-barres. Le choix est mémorisé sur cet appareil (ordinateur ou téléphone).</p>
+            <h3 class="set-sub">Ce que lit le bouton « Scanner » (F2)</h3>
+            <div class="cam-list" id="scan-mode-list">
+              <label class="cam-opt"><input type="radio" name="scanmode" value="code" ${scanModeGet() === "code" ? "checked" : ""}>
+                <span><strong>${ICON.scan} Étiquettes QR / codes-barres</strong><span class="muted">Le plus rapide et le plus sûr : l'article est reconnu directement avec son prix</span></span></label>
+              <label class="cam-opt"><input type="radio" name="scanmode" value="price" ${scanModeGet() === "price" ? "checked" : ""}>
+                <span><strong><span class="seg-num">123</span> Prix écrit</strong><span class="muted">Lecture d'un prix écrit à la main ou imprimé (ex. 150,50 DH), puis choix de l'article</span></span></label>
+            </div>
+            <div class="row" style="justify-content:space-between;align-items:center;margin:20px 0 10px;gap:8px;flex-wrap:wrap">
+              <h3 class="set-sub" style="margin:0">Caméra</h3>
+              <div class="row" style="gap:8px"><button class="btn sm" id="beep-test" type="button">🔊 Tester le bip</button><button class="btn sm" id="cam-detect" type="button">${ICON.search} Détecter les caméras</button></div>
+            </div>
+            <p class="muted" style="margin:0 0 12px;font-size:14px">Caméra utilisée pour le scan. Les choix sont mémorisés sur cet appareil (ordinateur ou téléphone).</p>
             <div id="cam-list" class="cam-list"><div class="muted" style="padding:6px 0">Recherche des caméras…</div></div>
             <div class="cam-prev" id="cam-prev" hidden><video playsinline muted autoplay></video></div>
             <div class="row" style="margin-top:12px;gap:8px">
@@ -3487,7 +3525,10 @@
       if (e.target.closest("#cam-test")) return camPreviewStart();
       if (e.target.closest("#cam-stop")) return camPreviewStop();
     });
+    card.addEventListener("click", e => { if (e.target.closest("#beep-test")) { beep(true); setTimeout(() => beep(false), 450); } });
     card.addEventListener("change", e => {
+      const sm = e.target.closest('input[name="scanmode"]');
+      if (sm) { scanModeSet(sm.value); toast(sm.value === "price" ? "Scan : lecture du prix écrit." : "Scan : étiquettes QR / codes-barres.", "ok"); return; }
       const r = e.target.closest('input[name="cam"]'); if (!r) return;
       camSet(r.value);
       const lab = r.closest(".cam-opt").querySelector("strong").textContent;
