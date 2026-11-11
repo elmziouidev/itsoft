@@ -1695,12 +1695,16 @@
     const addItem = (a, price) => {
       if (!auto) {
         if (!a) { state.cart.push({ id: "svc-" + Date.now(), svc: true, kind: "divers", name: "", qty: 1, price }); cartSave(); renderCartBar(); return Promise.resolve({ ok: true, qty: 1 }); }
+        // un article déjà dans le panier n'est jamais ajouté une 2e fois : la quantité se saisit dans le panier
+        if (cartQty(a.id)) return Promise.resolve({ ok: false, why: "deja", qty: cartQty(a.id) });
         const ok = cartAdd(a, true);
         if (ok && price != null) { const l = state.cart.find(x => x.id === String(a.id)); if (l) { l.price = price; cartSave(); renderCartBar(); } }
         return Promise.resolve({ ok, qty: cartQty(a.id), why: ok ? "" : "stock" });
       }
       // vente en cours : ajout instantané (rien n'est enregistré avant « Valider la vente »)
       const p = price != null ? price : artPrice(a);
+      // un article déjà dans la vente n'est JAMAIS ajouté une 2e fois par un scan : on saisit sa quantité
+      if (a) { const L1 = sess.lines.find(x => x.a === a); if (L1) return Promise.resolve({ ok: false, why: "deja", L: L1, qty: L1.qty }); }
       if (a && hasStock()) {
         const inSale = sess.lines.filter(x => x.a === a).reduce((t, x) => t + x.qty, 0);
         if (artStock(a) - inSale < 1) return Promise.resolve({ ok: false, why: "stock" });
@@ -1713,6 +1717,18 @@
     };
     const itemDone = (a, price, r) => {
       const name = a ? artName(a) : FREE.divers.label;
+      if (r.why === "deja") {
+        // déjà scanné dans cette vente : rien n'est ajouté, le curseur va sur sa quantité
+        beep(false);
+        flash(false, name, 0, auto ? "Déjà dans la vente : saisissez la quantité" : "Déjà dans le panier : quantité à régler dans le panier");
+        if (auto && r.L) {
+          const i = sess.lines.indexOf(r.L);
+          // la ligne clignote (pas de curseur forcé : un lecteur USB taperait sinon le code suivant dans la quantité)
+          const row = $(`.sc-row[data-li="${i}"]`, m);
+          if (row) { row.classList.remove("sc-flag"); void row.offsetWidth; row.classList.add("sc-flag"); row.scrollIntoView({ block: "nearest" }); }
+        }
+        return;
+      }
       beep(r.ok);
       const where = auto ? "Ajouté à la vente en cours" : "Ajouté au panier";
       if (r.ok) {
@@ -2166,7 +2182,10 @@
           // page Ventes avec le scanner intégré : le code y est traité directement
           if (state.scanPanelHandle && document.body.contains(state.scanPanelHandle.m)) { state.scanPanelHandle.code(code); return; }
           const a = articleByCode(code);
-          if (a && !(scanAutoGet() && state.ventesReady)) { const ok = cartAdd(a, true); beep(ok); }
+          if (a && !(scanAutoGet() && state.ventesReady)) {
+            if (cartQty(a.id)) { beep(false); toast(`« ${artName(a)} » est déjà dans le panier : réglez la quantité dans le panier.`, "bad"); }
+            else { const ok = cartAdd(a, true); beep(ok); }
+          }
           else if (a) scanDialog({ code });
           else { beep(false); scanDialog({ code }); }
         }
