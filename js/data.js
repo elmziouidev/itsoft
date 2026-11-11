@@ -574,6 +574,14 @@
         { method: "POST", body: JSON.stringify({ fields }) });
       return resolveLookups({ ...it.fields, id: String(it.id) }, this.columns);
     },
+    /* Ajoute une colonne texte à la liste des articles (ex. CodeBarre) */
+    async addArticleColumn(name) {
+      const c = await this.call(`/sites/${this.siteId}/lists/${this.articlesListId}/columns`,
+        { method: "POST", body: JSON.stringify({ name, displayName: name, text: {} }) }, ["Sites.Manage.All"]);
+      const n = normalizeColumn(c);
+      this.columns.push(n);
+      return n;
+    },
     async updateArticle(id, fields) {
       const f = await this.call(`/sites/${this.siteId}/lists/${this.articlesListId}/items/${id}/fields`,
         { method: "PATCH", body: JSON.stringify(fields) });
@@ -724,6 +732,11 @@
     async createArticle(fields) {
       const a = { ...fields, id: String(this.db.nextId++) };
       this.db.articles.push(a); this.persist(); return this.resolve(a);
+    },
+    async addArticleColumn(name) {
+      const c = { name, displayName: name, type: "text" };
+      if (!this.db.columns.some(x => x.name === name)) { this.db.columns.push(c); this.persist(); }
+      return { ...c };
     },
     async updateArticle(id, fields) {
       const a = this.db.articles.find(x => x.id === String(id));

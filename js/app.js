@@ -43,7 +43,9 @@
     info: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>',
     cartPlus: '<svg viewBox="0 0 24 24"><circle cx="9" cy="20" r="1.5"/><circle cx="18" cy="20" r="1.5"/><path d="M2 3h3l2.7 12.4a1 1 0 0 0 1 .8h9.6a1 1 0 0 0 1-.8L21 7H6"/><path d="M13.5 8.5v5M11 11h5"/></svg>',
     settings: '<svg viewBox="0 0 24 24"><path d="M4 6h8M16 6h4M4 12h2M10 12h10M4 18h11M19 18h1"/><circle cx="14" cy="6" r="2"/><circle cx="8" cy="12" r="2"/><circle cx="17" cy="18" r="2"/></svg>',
+    scan: '<svg viewBox="0 0 24 24"><path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3"/><path d="M7 12h10"/></svg>',
     tag: '<svg viewBox="0 0 24 24"><path d="M20.6 13.4 13.4 20.6a2 2 0 0 1-2.8 0L3 13V3h10l7.6 7.6a2 2 0 0 1 0 2.8z"/><circle cx="7.5" cy="7.5" r="1.5"/></svg>',
+    truck: '<svg viewBox="0 0 24 24"><path d="M3 6h11v10H3z"/><path d="M14 9h4l3 3.5V16h-7"/><circle cx="7" cy="17.5" r="1.8"/><circle cx="17" cy="17.5" r="1.8"/></svg>',
     service: '<svg viewBox="0 0 24 24"><path d="M14.7 6.3a4 4 0 0 0-5.4 5.2L3 17.8V21h3.2l6.3-6.3a4 4 0 0 0 5.2-5.4l-2.6 2.6-2.4-.6-.6-2.4z"/></svg>',
     logout: '<svg viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5M21 12H9"/></svg>'
   };
@@ -479,6 +481,7 @@
     document.title = VIEWS[k].title + " · " + (cfg.nomEntreprise || "Gestion des ventes");
     $$("#nav a").forEach(a => a.classList.toggle("active", a.dataset.view === (VIEWS[k].nav || k)));
     $$(".settings-btn, #btn-settings-top").forEach(b => b.classList.toggle("active", k === "parametres"));
+    $$(".achats-btn").forEach(b => b.classList.toggle("active", k === "achats"));
     const view = $("#view");
     // réinitialise les gestionnaires d'événements laissés par la vue précédente
     for (const h of ["onclick", "onchange", "oninput", "onkeydown", "ondragstart", "ondragover", "ondrop", "ondragend"]) view[h] = null;
@@ -785,7 +788,7 @@
         </div>`;
       }).join("") : `<div class="empty" style="padding:18px">Le panier est vide.<br><span style="font-size:13px">Ajoutez des articles depuis la page Articles avec le bouton ${ICON.cart}, ou un service ci-dessous.</span>
           <div style="margin-top:10px"><a class="btn sm" href="#/articles" data-close>Aller aux articles</a></div></div>`)
-        + `<div class="add-free"><button type="button" class="add-svc" data-add-svc="divers">${ICON.plus} Article non classé</button><button type="button" class="add-svc" data-add-svc="service">${ICON.plus} Service</button></div>`;
+        + `<div class="add-free"><button type="button" class="add-svc scan-add" data-scan-cart>${ICON.scan} Scanner</button><button type="button" class="add-svc" data-add-svc="divers">${ICON.plus} Article non classé</button><button type="button" class="add-svc" data-add-svc="service">${ICON.plus} Service</button></div>`;
       totals();
     };
     const changed = id => { cartSave(); renderCartBar(); const a = artById(id); if (a && currentView() === "articles" && state.refreshArticle) state.refreshArticle(a, true); };
@@ -793,6 +796,7 @@
     if (opts && opts.focusLast) { const ins = $$(".svc-name", m); if (ins.length) setTimeout(() => ins[ins.length - 1].focus(), 50); }
 
     $("#cart-lines", m).addEventListener("click", e => {
+      if (e.target.closest("[data-scan-cart]")) { closeModal(); return scanDialog({ fromCart: true }); }
       const addF = e.target.closest("[data-add-svc]");
       if (addF) {
         state.cart.push({ id: "svc-" + Date.now(), svc: true, kind: addF.dataset.addSvc === "divers" ? "divers" : "service", name: "", qty: 1, price: 0 });
@@ -1210,6 +1214,233 @@
     }
   }
 
+  /* ============ Étiquettes de prix (QR code) et scan à la vente ============ */
+  const LIB_QR = "https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js";
+  const LIB_SCAN = "https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js";
+  const libCache = {};
+  function loadScript(url) {
+    if (!libCache[url]) libCache[url] = new Promise((ok, ko) => {
+      const s = document.createElement("script");
+      s.src = url; s.async = true;
+      s.onload = () => ok(); s.onerror = () => { delete libCache[url]; ko(new Error("Bibliothèque non chargée : vérifiez la connexion Internet.")); };
+      document.head.appendChild(s);
+    });
+    return libCache[url];
+  }
+  const CODE_FIELD = "CodeBarre";
+  const codeCol = () => findCol(CODE_FIELD);
+  const labelCode = a => "ITS:" + a.id; // contenu du QR code de l'étiquette
+  const codesOf = a => { const c = codeCol(); return c && a[c.name] ? String(a[c.name]).split(/[\s,;]+/).filter(Boolean) : []; };
+  /* Article correspondant à un code lu (étiquette ITSoft, code-barres associé ou référence) */
+  function articleByCode(raw) {
+    const code = String(raw || "").trim();
+    if (!code) return null;
+    const m = /^ITS[:\-]?(\d+)$/i.exec(code);
+    if (m) return artById(m[1]) || null;
+    return state.articles.find(a => codesOf(a).includes(code))
+      || state.articles.find(a => { const r = F(a, "reference"); return r != null && String(r) === code; }) || null;
+  }
+  function qrSVG(text) {
+    const q = window.qrcode(0, "M"); q.addData(text); q.make();
+    return q.createSvgTag({ cellSize: 4, margin: 0, scalable: true });
+  }
+  function beep(ok) {
+    try {
+      const C = window.AudioContext || window.webkitAudioContext; if (!C) return;
+      const ctx = beep.ctx || (beep.ctx = new C());
+      const o = ctx.createOscillator(), g = ctx.createGain();
+      o.frequency.value = ok ? 1150 : 300; o.type = "square"; g.gain.value = 0.06;
+      o.connect(g); g.connect(ctx.destination); o.start(); o.stop(ctx.currentTime + (ok ? 0.09 : 0.3));
+    } catch (_) {}
+  }
+
+  /* Impression d'étiquettes : nom, prix de vente et QR code */
+  async function labelsDialog(list) {
+    const arts = list.filter(a => a && a.id);
+    if (!arts.length) return toast("Aucun article à étiqueter.", "bad");
+    const m = openModal({
+      title: "Étiquettes de prix", size: "cart",
+      body: `<p class="muted" style="margin:0 0 10px">${int(arts.length)} article(s) — ceux affichés dans la liste (utilisez la recherche ou les filtres pour choisir). Chaque étiquette porte le nom, le prix de vente et un QR code lu par le bouton « Scanner ».</p>
+        <div class="form-grid">
+          <label class="field">Nombre d'étiquettes<select class="input" id="lb-mode"><option value="one">1 par article</option><option value="stock">1 par pièce en stock</option></select></label>
+          <label class="field">Taille<select class="input" id="lb-size"><option value="m">Moyenne (50 × 30 mm)</option><option value="s">Petite (38 × 25 mm)</option><option value="l">Grande (70 × 40 mm)</option></select></label>
+        </div>
+        <div class="lb-list" id="lb-list"></div>`,
+      foot: `<button class="btn" data-close>Fermer</button><button class="btn primary" id="lb-print">${ICON.print} Imprimer</button>`
+    });
+    const qty = {};
+    const draw = () => {
+      const mode = $("#lb-mode", m).value;
+      arts.forEach(a => { qty[a.id] = mode === "stock" ? Math.max(0, hasStock() ? artStock(a) : 1) : 1; });
+      $("#lb-list", m).innerHTML = arts.slice(0, 300).map(a => `<div class="lb-row" data-id="${esc(a.id)}">
+          <span class="ellipsis">${esc(artName(a))}</span><span class="muted num">${money(artPrice(a))}</span>
+          <input class="input" type="number" min="0" step="1" value="${qty[a.id]}" data-lbq inputmode="numeric" aria-label="Nombre d'étiquettes"></div>`).join("")
+        + (arts.length > 300 ? `<div class="muted" style="padding:8px">… et ${int(arts.length - 300)} autre(s) (quantité selon le choix ci-dessus).</div>` : "");
+    };
+    draw();
+    $("#lb-mode", m).addEventListener("change", draw);
+    $("#lb-list", m).addEventListener("input", e => {
+      const i = e.target.closest("[data-lbq]"); if (!i) return;
+      qty[i.closest(".lb-row").dataset.id] = Math.max(0, parseInt(i.value, 10) || 0);
+    });
+    $("#lb-print", m).addEventListener("click", async () => {
+      const btn = $("#lb-print", m);
+      const items = [];
+      for (const a of arts) for (let k = 0; k < (qty[a.id] || 0); k++) items.push(a);
+      if (!items.length) return toast("Aucune étiquette à imprimer (quantités à 0).", "bad");
+      if (items.length > 2000) return toast("Trop d'étiquettes en une fois (2000 maximum). Filtrez la liste.", "bad");
+      busy(btn, true, "Préparation…");
+      try { await loadScript(LIB_QR); } catch (e) { busy(btn, false); return toast(e.message, "bad"); }
+      const svg = {};
+      $("#print-area").innerHTML = `<div class="labels lb-${$("#lb-size", m).value}">${items.map(a => {
+        if (!svg[a.id]) svg[a.id] = qrSVG(labelCode(a));
+        const ref = F(a, "reference");
+        return `<div class="label"><div class="label-txt"><div class="label-name">${esc(artName(a))}</div>
+          <div class="label-price">${esc(moneyR(artPrice(a)))}</div>
+          <div class="label-ref">${esc(cfg.nomEntreprise)}${ref != null && ref !== "" ? " · " + esc(ref) : ""}</div></div>
+          <div class="label-qr">${svg[a.id]}</div></div>`;
+      }).join("")}</div>`;
+      busy(btn, false);
+      window.print();
+    });
+  }
+
+  /* Fenêtre de scan : caméra (téléphone, webcam, caméra USB) ou lecteur code-barres / saisie */
+  async function scanDialog(opts = {}) {
+    const fromCart = !!opts.fromCart;
+    const m = openModal({
+      title: "Scanner des articles", size: "cart",
+      body: `<div class="scan-wrap"><div id="scan-cam" class="scan-cam"><div class="scan-msg">Démarrage de la caméra…</div></div></div>
+        <div class="form-grid" style="margin-top:10px">
+          <label class="field" id="scan-cam-field" hidden>Caméra<select class="input" id="scan-cam-sel"></select></label>
+          <label class="field">Code (lecteur code-barres ou saisie)<input class="input" id="scan-input" placeholder="Scannez ou tapez le code puis Entrée" autocomplete="off" enterkeyhint="done"></label>
+        </div>
+        <div id="scan-unknown"></div>
+        <div class="scan-log" id="scan-log"><div class="muted" style="padding:8px 2px">Visez l'étiquette (QR code) ou le code-barres : l'article est ajouté au panier avec son prix.</div></div>`,
+      foot: `<button class="btn" data-close>Terminer</button><button class="btn primary" id="scan-cart">${ICON.cart} Voir le panier</button>`
+    });
+    let reader = null, last = { code: "", t: 0 }, logged = 0;
+    const stop = async () => { const r = reader; reader = null; if (r) { try { await r.stop(); } catch (_) {} try { r.clear(); } catch (_) {} } };
+    const obs = new MutationObserver(() => {
+      if (document.body.contains(m)) return;
+      obs.disconnect(); stop();
+      if (fromCart && !m.dataset.toCart) sellDialog(null);
+    });
+    obs.observe($("#modal-root"), { childList: true });
+    $("#scan-cart", m).addEventListener("click", () => { m.dataset.toCart = "1"; closeModal(); sellDialog(null); });
+
+    const log = (html, cls) => {
+      const box = $("#scan-log", m); if (!box) return;
+      if (!logged++) box.innerHTML = "";
+      box.insertAdjacentHTML("afterbegin", `<div class="scan-item ${cls || ""}">${html}</div>`);
+    };
+    const handle = code => {
+      code = String(code || "").trim(); if (!code) return;
+      const now = Date.now();
+      if (code === last.code && now - last.t < 2500) return; // même code encore devant la caméra
+      last = { code, t: now };
+      const a = articleByCode(code);
+      if (!a) { beep(false); return askAssociate(code); }
+      const ok = cartAdd(a, true);
+      beep(ok);
+      if (ok) log(`<span class="ok-dot"></span><span class="ellipsis">${esc(artName(a))}</span><strong class="num">${money(artPrice(a))}</strong><span class="muted">× ${int(cartQty(a.id))}</span>`, "ok");
+      else log(`<span class="bad-dot"></span><span class="ellipsis">${esc(artName(a))}</span><span class="muted">stock insuffisant</span>`, "bad");
+    };
+    /* code-barres inconnu (ex. EAN du fabricant) : on le rattache une fois à un article */
+    const askAssociate = code => {
+      const box = $("#scan-unknown", m); if (!box) return;
+      const isLabel = /^ITS[:\-]?\d+$/i.test(code);
+      box.innerHTML = `<div class="alert warn" style="margin-top:10px">${ICON.warn}<div class="grow">
+        <strong>Code inconnu : ${esc(code)}</strong>${isLabel ? "<br>Cette étiquette correspond à un article supprimé." : `<br>Associez-le à un article : les prochains scans de ce code l'ajouteront directement.${codeCol() ? "" : ` <span class="muted">(la colonne ${CODE_FIELD} sera ajoutée à ${esc(cfg.articlesList)}, une seule fois)</span>`}
+        <div class="row" style="gap:8px;margin-top:8px;flex-wrap:wrap"><input class="input" id="scan-assoc" list="dl-scan-arts" placeholder="Rechercher l'article…" style="flex:1 1 220px">
+        <datalist id="dl-scan-arts">${state.articles.slice(0, 2000).map(a => `<option value="${esc(artName(a))}${F(a, "reference") != null ? " · " + esc(F(a, "reference")) : ""}" data-id="${esc(a.id)}"></option>`).join("")}</datalist>
+        <button class="btn primary" id="scan-assoc-ok" type="button">Associer et ajouter</button><button class="btn" id="scan-assoc-no" type="button">Ignorer</button></div>`}</div></div>`;
+      const no = $("#scan-assoc-no", box); if (no) no.onclick = () => { box.innerHTML = ""; $("#scan-input", m).focus(); };
+      const okb = $("#scan-assoc-ok", box); if (!okb) return;
+      okb.onclick = async () => {
+        const v = $("#scan-assoc", box).value.trim();
+        const opt = [...$("#dl-scan-arts", box).options].find(o => o.value === v);
+        const a = opt ? artById(opt.dataset.id) : state.articles.find(x => norm(artName(x)) === norm(v));
+        if (!a) return toast("Choisissez un article dans la liste proposée.", "bad");
+        busy(okb, true, "Association…");
+        try {
+          if (!codeCol()) { const c = await DS.addArticleColumn(CODE_FIELD); state.columns.push(c); }
+          const col = codeCol();
+          const val = codesOf(a).concat(code).join(" ");
+          Object.assign(a, await DS.updateArticle(a.id, { [col.name]: val }));
+          box.innerHTML = "";
+          last = { code: "", t: 0 };
+          handle(code);
+        } catch (e) { busy(okb, false); toast(e.message, "bad"); }
+      };
+      setTimeout(() => { const i = $("#scan-assoc", box); if (i) i.focus(); }, 50);
+    };
+    const inp = $("#scan-input", m);
+    inp.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); last = { code: "", t: 0 }; handle(inp.value); inp.value = ""; } });
+    if (opts.code) handle(opts.code);
+
+    // caméra
+    const camBox = $("#scan-cam", m);
+    const camMsg = t => { if (camBox) camBox.innerHTML = `<div class="scan-msg">${t}</div>`; };
+    if (!window.isSecureContext || !navigator.mediaDevices) { camMsg("Caméra indisponible ici (connexion non sécurisée). Utilisez le champ Code ou un lecteur code-barres."); return; }
+    try { await loadScript(LIB_SCAN); } catch (e) { camMsg(esc(e.message)); return; }
+    if (!document.body.contains(m)) return;
+    const F_ = window.Html5QrcodeSupportedFormats;
+    const formats = F_ ? [F_.QR_CODE, F_.EAN_13, F_.EAN_8, F_.UPC_A, F_.UPC_E, F_.CODE_128, F_.CODE_39] : undefined;
+    const start = async source => {
+      await stop();
+      if (!document.body.contains(m)) return;
+      camBox.innerHTML = "";
+      reader = new window.Html5Qrcode("scan-cam", { formatsToSupport: formats, verbose: false });
+      const box = (w, h) => { const s = Math.floor(Math.min(w, h) * 0.75); return { width: Math.min(Math.floor(w * 0.85), Math.max(s, 220)), height: s }; };
+      await reader.start(source, { fps: 10, qrbox: box, aspectRatio: 1.333 }, txt => handle(txt), () => {});
+    };
+    try {
+      const pref = camGet() || null;
+      await start(pref ? { deviceId: { exact: pref } } : { facingMode: "environment" }).catch(() => start({ facingMode: "environment" }));
+      const cams = await window.Html5Qrcode.getCameras().catch(() => []);
+      if (cams.length > 1 && document.body.contains(m)) {
+        const sel = $("#scan-cam-sel", m);
+        sel.innerHTML = cams.map(c => `<option value="${esc(c.id)}" ${c.id === pref ? "selected" : ""}>${esc(c.label || "Caméra")}</option>`).join("");
+        $("#scan-cam-field", m).hidden = false;
+        sel.addEventListener("change", async () => {
+          camSet(sel.value);
+          try { await start({ deviceId: { exact: sel.value } }); } catch (e) { camMsg("Caméra non disponible : " + esc(e.message || e)); }
+        });
+      }
+    } catch (e) {
+      const msg = String(e && (e.name || e.message) || e);
+      camMsg(/NotAllowed|Permission/i.test(msg) ? "Accès à la caméra refusé. Autorisez la caméra pour ce site dans le navigateur, ou utilisez le champ Code."
+        : /NotFound|no camera|Requested device/i.test(msg) ? "Aucune caméra détectée. Branchez une caméra ou utilisez un lecteur code-barres (champ Code)."
+        : "Caméra indisponible : " + esc(msg));
+    }
+  }
+
+  /* Lecteur code-barres USB/Bluetooth (« douchette ») : il tape le code très vite puis Entrée.
+     Hors champ de saisie et sans fenêtre ouverte, le code scanné est ajouté directement au panier. */
+  (function wedgeScanner() {
+    let buf = "", lastT = 0;
+    document.addEventListener("keydown", e => {
+      const t = e.target, tag = t && t.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || (t && t.isContentEditable)) { buf = ""; return; }
+      if ($("#modal-root").children.length || !state.loaded) { buf = ""; return; }
+      const now = Date.now();
+      if (now - lastT > 80) buf = "";
+      lastT = now;
+      if (e.key === "Enter") {
+        if (buf.length >= 4) {
+          e.preventDefault();
+          const code = buf; buf = "";
+          const a = articleByCode(code);
+          if (a) { const ok = cartAdd(a, true); beep(ok); }
+          else { beep(false); scanDialog({ code }); }
+        }
+        buf = ""; return;
+      }
+      if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) buf += e.key;
+    });
+  })();
+
   function viewArticles(el) {
     const f = state.filters.articles;
     const cats = categories(true); // catégories des articles + celles de la liste des catégories
@@ -1252,6 +1483,8 @@
           ${cats.length || catCanAdd ? `<select class="input" id="art-cat" style="width:auto;flex:0 1 190px"><option value="">Toutes catégories</option>${catCanAdd ? `<option value="__new__">＋ Nouvelle catégorie…</option>` : ""}${cats.map(c => `<option ${f.cat === c ? "selected" : ""}>${esc(c)}</option>`).join("")}</select>` : ""}
           ${hasStock() ? `<select class="input" id="art-stock" style="width:auto;flex:0 1 160px"><option value="">Tout le stock</option><option value="low" ${f.stock === "low" ? "selected" : ""}>Stock faible</option><option value="out" ${f.stock === "out" ? "selected" : ""}>En rupture</option></select>` : ""}
           ${state.map.photo && cfg.afficherPhotos ? `<a class="btn" href="#/photos" title="Rechercher des photos par catégorie">${ICON.search}<span class="hide-sm">Photos</span></a>` : ""}
+          <button class="btn scan-btn" id="art-scan" title="Scanner une étiquette ou un code-barres (caméra ou lecteur)">${ICON.scan}<span>Scanner</span></button>
+          <button class="btn" id="art-labels" title="Imprimer les étiquettes de prix des articles affichés">${ICON.tag}<span class="hide-sm">Étiquettes</span></button>
           <button class="btn" id="art-export" title="Exporter en CSV">${ICON.download}<span class="hide-sm">Exporter</span></button>
           <button class="btn primary" id="art-new">${ICON.plus} Nouvel article</button>
         </div>
@@ -1503,6 +1736,8 @@
       const th = e.target.closest("[data-sort]");
       if (th) { if (f.sort === th.dataset.sort) f.dir = -f.dir; else { f.sort = th.dataset.sort; f.dir = 1; } return drawTable(); }
       if (e.target.closest("#art-new")) return articleForm(null);
+      if (e.target.closest("#art-scan")) return scanDialog();
+      if (e.target.closest("#art-labels")) return labelsDialog(apply());
       if (e.target.closest("#art-export")) {
         return downloadCSV("articles.csv", [layout.map(c => colTitle(c)), ...apply().map(a => layout.map(c => val(a, c)))]);
       }
@@ -2974,6 +3209,101 @@
         <tbody>${rows}</tbody></table></div></div>`;
   }
 
+  /* ============ Paramètres : choix de la caméra utilisée pour le scan ============ */
+  const CAM_KEY = "itsoft-camera";
+  const camGet = () => { try { return localStorage.getItem(CAM_KEY) || ""; } catch (_) { return ""; } };
+  const camSet = id => { try { if (id) localStorage.setItem(CAM_KEY, id); else localStorage.removeItem(CAM_KEY); } catch (_) {} };
+  let camStream = null;
+  function camPreviewStop() {
+    if (camStream) { camStream.getTracks().forEach(t => t.stop()); camStream = null; }
+    const v = $("#cam-prev video"); if (v) v.srcObject = null;
+    const p = $("#cam-prev"); if (p) p.hidden = true;
+    const s = $("#cam-stop"); if (s) s.hidden = true;
+    const t = $("#cam-test"); if (t) t.hidden = false;
+  }
+  window.addEventListener("hashchange", camPreviewStop);
+
+  const camSectionHTML = () => `
+        <div class="card" id="cam-card">
+          <div class="card-head"><h2>Caméra de scan</h2><button class="btn sm" id="cam-detect" type="button">${ICON.search} Détecter les caméras</button></div>
+          <div class="card-pad">
+            <p class="muted" style="margin:0 0 12px;font-size:14px">Caméra utilisée par le bouton « Scanner » pour lire les étiquettes de prix et les codes-barres. Le choix est mémorisé sur cet appareil (ordinateur ou téléphone).</p>
+            <div id="cam-list" class="cam-list"><div class="muted" style="padding:6px 0">Recherche des caméras…</div></div>
+            <div class="cam-prev" id="cam-prev" hidden><video playsinline muted autoplay></video></div>
+            <div class="row" style="margin-top:12px;gap:8px">
+              <button class="btn" id="cam-test" type="button">${ICON.scan} Tester la caméra choisie</button>
+              <button class="btn" id="cam-stop" type="button" hidden>Arrêter l'aperçu</button>
+            </div>
+          </div>
+        </div>`;
+
+  async function camRefresh(askPermission) {
+    const box = $("#cam-list"); if (!box) return;
+    if (!window.isSecureContext || !navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) {
+      box.innerHTML = `<div class="alert warn">${ICON.warn}<div class="grow">Caméras inaccessibles depuis cette page (connexion non sécurisée ou navigateur non compatible).</div></div>`;
+      return;
+    }
+    let devs = (await navigator.mediaDevices.enumerateDevices().catch(() => [])).filter(d => d.kind === "videoinput");
+    // sans autorisation, le navigateur cache le nom des caméras : on la demande puis on relit la liste
+    if (askPermission && (!devs.length || devs.some(d => !d.label))) {
+      try {
+        const s = await navigator.mediaDevices.getUserMedia({ video: true });
+        s.getTracks().forEach(t => t.stop());
+        devs = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === "videoinput");
+      } catch (e) {
+        const msg = String(e && (e.name || e.message) || e);
+        box.innerHTML = `<div class="alert warn">${ICON.warn}<div class="grow">${/NotAllowed|Permission/i.test(msg)
+          ? "Accès à la caméra refusé. Cliquez sur le cadenas à gauche de l'adresse, mettez <strong>Caméra</strong> sur <strong>Autoriser</strong>, puis cliquez à nouveau sur « Détecter les caméras »."
+          : /NotFound/i.test(msg) ? "Aucune caméra détectée. Branchez une caméra puis cliquez sur « Détecter les caméras »." : "Caméra indisponible : " + esc(msg)}</div></div>`;
+        return;
+      }
+    }
+    const cur = camGet();
+    const named = devs.some(d => d.label);
+    const curFound = !cur || devs.some(d => d.deviceId === cur);
+    box.innerHTML = (devs.length ? "" : `<div class="muted" style="padding:6px 0">Aucune caméra trouvée. Branchez une caméra puis cliquez sur « Détecter les caméras ».</div>`)
+      + `<label class="cam-opt"><input type="radio" name="cam" value="" ${!cur || !curFound ? "checked" : ""}><span><strong>Automatique</strong><span class="muted">Caméra arrière sur téléphone, caméra par défaut sur ordinateur</span></span></label>`
+      + devs.map((d, i) => `<label class="cam-opt"><input type="radio" name="cam" value="${esc(d.deviceId)}" ${d.deviceId && d.deviceId === cur ? "checked" : ""}>
+          <span><strong>${esc(d.label || `Caméra ${i + 1}`)}</strong><span class="muted">${/usb|general|logitech|external|externe/i.test(d.label) ? "Caméra externe" : /integrated|intégrée|built-in|facetime|front|avant/i.test(d.label) ? "Caméra intégrée" : /back|rear|arrière|environment/i.test(d.label) ? "Caméra arrière" : "Caméra"}</span></span>
+          ${d.deviceId && d.deviceId === cur ? '<span class="badge ok">Active</span>' : ""}</label>`).join("")
+      + (cur && !curFound ? `<div class="muted" style="font-size:13px;margin-top:6px">La caméra choisie précédemment n'est plus branchée : le mode automatique est utilisé.</div>` : "")
+      + (devs.length && !named ? `<div class="muted" style="font-size:13px;margin-top:6px">Cliquez sur « Détecter les caméras » pour afficher leurs noms (le navigateur demandera l'autorisation).</div>` : "");
+  }
+
+  async function camPreviewStart() {
+    camPreviewStop();
+    const p = $("#cam-prev"); if (!p) return;
+    const id = camGet();
+    try {
+      camStream = await navigator.mediaDevices.getUserMedia({ video: id ? { deviceId: { exact: id } } : { facingMode: "environment" } })
+        .catch(() => navigator.mediaDevices.getUserMedia({ video: true }));
+      if (!document.body.contains(p)) return camPreviewStop();
+      const v = p.querySelector("video"); v.srcObject = camStream;
+      p.hidden = false; $("#cam-stop").hidden = false; $("#cam-test").hidden = true;
+      camRefresh(false);
+    } catch (e) {
+      camPreviewStop();
+      toast("Caméra indisponible : " + (e.message || e.name || e), "bad");
+    }
+  }
+
+  function camSectionInit() {
+    const card = $("#cam-card"); if (!card) return;
+    camRefresh(false);
+    card.addEventListener("click", e => {
+      if (e.target.closest("#cam-detect")) return camRefresh(true);
+      if (e.target.closest("#cam-test")) return camPreviewStart();
+      if (e.target.closest("#cam-stop")) return camPreviewStop();
+    });
+    card.addEventListener("change", e => {
+      const r = e.target.closest('input[name="cam"]'); if (!r) return;
+      camSet(r.value);
+      const lab = r.closest(".cam-opt").querySelector("strong").textContent;
+      toast(`Caméra de scan : ${lab}.`, "ok");
+      if (camStream) camPreviewStart(); else camRefresh(false);
+    });
+  }
+
   function viewParametres(el) {
     const theme = store.get("ventesit-theme", "auto");
     const opts = (k) => {
@@ -3012,6 +3342,7 @@
             <p class="muted" style="font-size:13px;margin:14px 0 0">Colonnes modifiables trouvées : ${state.columns.map(c => `<code>${esc(c.name)}</code>`).join(", ") || "aucune"}.</p>
           </div>
         </div>
+        ${camSectionHTML()}
         <div class="card">
           <div class="card-head"><h2>Affichage</h2></div>
           <div class="card-pad"><label class="field" style="max-width:260px">Thème<select class="input" id="theme-sel">
@@ -3020,6 +3351,7 @@
             <option value="dark" ${theme === "dark" ? "selected" : ""}>Sombre</option></select></label></div>
         </div>
       </div>`;
+    camSectionInit();
     const seuilFilter = () => {
       const q = norm(($("#seuil-q") || {}).value || "");
       $$("#seuil-table tbody tr").forEach(tr => { tr.hidden = q && !norm(tr.dataset.cat).includes(q); });
@@ -3094,6 +3426,7 @@
     const email = Auth.account ? Auth.account.username : "";
     $("#user-box").innerHTML = `<div class="user" title="${esc(email)}"><span class="avatar">${esc(initials)}</span>
       <div style="min-width:0;flex:1"><div class="user-name">${esc(name)}</div><div class="muted ellipsis" style="font-size:12px">${DS.mode === "demo" ? "Mode démo" : esc(email || "SharePoint")}</div></div>
+      <a class="btn sm icon ghost achats-btn" href="#/achats" title="Achats" aria-label="Achats">${ICON.truck}</a>
       <a class="btn sm icon ghost settings-btn" href="#/parametres" title="Paramètres" aria-label="Paramètres">${ICON.settings}</a>
       ${Auth.enabled ? `<button class="btn sm icon ghost logout-btn" data-logout title="Se déconnecter" aria-label="Se déconnecter">${ICON.logout}</button>` : ""}</div>`;
     // sur mobile, le profil est masqué : bouton de déconnexion dans la barre du haut
