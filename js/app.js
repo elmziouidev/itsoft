@@ -1632,10 +1632,19 @@
     async function recordItem(a, price) {
       let fresh = null;
       if (a && hasStock()) {
+        // stock et prix relus sur SharePoint : la vente est enregistrée avec les valeurs exactes du moment
         const f = await DS.getArticle(a.id); fresh = +f[state.map.stock] || 0;
-        if (fresh < 1) return { ok: false, why: "stock" };
+        if (fresh < 1) { Object.assign(a, f); return { ok: false, why: "stock" }; }
+        const sp = state.map.prix ? +f[state.map.prix] : NaN;
+        if (sp > 0 && Math.abs(sp - price) > 0.005 && Math.abs(price - artPrice(a)) < 0.005) { // prix modifié ailleurs entre-temps
+          toast(`Prix de « ${artName(a)} » mis à jour : ${money(sp)} (au lieu de ${money(price)}).`, "ok");
+          price = sp;
+        }
+        Object.assign(a, f);
       }
       if (!sess.num) { sess.date = new Date(); sess.num = saleNumber(sess.date); }
+      // la pièce est retirée du stock EN MÊME TEMPS que la ligne de vente est écrite (2 requêtes en parallèle)
+      const stockP = a && hasStock() ? DS.updateArticle(a.id, { [state.map.stock]: fresh - 1 }) : null;
       let L = a ? sess.lines.find(x => x.a === a && x.price === price) : null;
       if (L) {
         L.qty++;
@@ -1654,9 +1663,9 @@
         state.ventes.push(v);
         L = { v, a, qty: 1, price, unitCost }; sess.lines.push(L);
       }
-      if (a && hasStock()) Object.assign(a, await DS.updateArticle(a.id, { [state.map.stock]: fresh - 1 }));
+      if (stockP) Object.assign(a, await stockP);
       sess.hist.push(L);
-      return { ok: true, L };
+      return { ok: true, L, price };
     }
     /* Annule le dernier article scanné : ligne retirée de la vente et pièce remise en stock */
     async function undoLast() {
@@ -1680,12 +1689,30 @@
         if (ok && price != null) { const l = state.cart.find(x => x.id === String(a.id)); if (l) { l.price = price; cartSave(); renderCartBar(); } }
         return Promise.resolve({ ok, qty: cartQty(a.id), why: ok ? "" : "stock" });
       }
+      // vente directe : confirmation IMMÉDIATE (bip + bandeau) d'après le stock connu localement,
+      // l'enregistrement sur SharePoint se fait ensuite en arrière-plan, dans l'ordre des scans
       const p = price != null ? price : artPrice(a);
-      const job = queue.then(() => recordItem(a, p)).then(r => ({ ok: r.ok, why: r.why, qty: r.ok ? r.L.qty : 0 }),
-        e => { toast("Non enregistré : " + e.message, "bad"); return { ok: false, why: "erreur" }; });
+      const key = a ? String(a.id) : "";
+      const inFlight = key ? (pending.get(key) || 0) : 0;
+      if (a && hasStock() && artStock(a) - inFlight < 1) return Promise.resolve({ ok: false, why: "stock" });
+      if (key) pending.set(key, inFlight + 1);
+      const L0 = a ? sess.lines.find(x => x.a === a && x.price === p) : null;
+      const predicted = (L0 ? L0.qty : 0) + inFlight + 1;
+      const job = queue.then(() => recordItem(a, p)).then(r => r, e => ({ ok: false, why: "erreur", err: e }));
       queue = job.then(() => {});
-      return job;
+      job.then(r => {
+        if (key) pending.set(key, Math.max(0, (pending.get(key) || 1) - 1));
+        if (!r.ok) { // la vérification sur SharePoint a refusé : on le signale clairement
+          const name = a ? artName(a) : FREE.divers.label;
+          const why = r.why === "stock" ? "Annulé : plus de stock sur SharePoint" : "Annulé : non enregistré" + (r.err ? " (" + r.err.message + ")" : "");
+          beep(false); flash(false, name, 0, why);
+          log(`<span class="bad-dot"></span><span class="ellipsis">${esc(name)}</span><span class="muted">${esc(why.toLowerCase())}</span>`, "bad");
+        }
+        showTotal(); if (opts.onChange) opts.onChange(sess.num);
+      });
+      return Promise.resolve({ ok: true, qty: predicted });
     };
+    const pending = new Map(); // article → pièces scannées en cours d'enregistrement
     const itemDone = (a, price, r) => {
       const name = a ? artName(a) : FREE.divers.label;
       beep(r.ok);
