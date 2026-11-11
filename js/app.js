@@ -1239,8 +1239,8 @@
     if (!ocrWorkerP) ocrWorkerP = (async () => {
       await loadScript(LIB_OCR);
       const w = await window.Tesseract.createWorker("eng", 1);
-      // chiffres + lettres de la devise (DH, MAD) : « 150,50 DH » ne doit pas se lire « 150,504 »
-      await w.setParameters({ tessedit_char_whitelist: "0123456789.,DHMAdh ", tessedit_pageseg_mode: "7" });
+      // lettres + chiffres : étiquettes « MODELE - Prix : PRIX » et prix seuls (« 150,50 DH »)
+      await w.setParameters({ tessedit_char_whitelist: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-:,./+ ", tessedit_pageseg_mode: "7" });
       return w;
     })().catch(e => { ocrWorkerP = null; throw e; });
     return ocrWorkerP;
@@ -1258,9 +1258,45 @@
     const n = parseFloat(s);
     return isFinite(n) && n > 0 && n < 1e6 ? Math.round(n * 100) / 100 : null;
   }
+  /* Lecture d'une étiquette « MODELE - Prix : PRIX » (ou d'un prix seul) → { model, price } */
+  const digitFix = s => String(s).replace(/[Oo]/g, "0").replace(/[Il|]/g, "1").replace(/[Ss]/g, "5").replace(/B/g, "8").replace(/[Zz]/g, "2");
+  function parseLabel(text) {
+    const t = String(text || "").replace(/\s+/g, " ").trim();
+    if (!t) return { model: "", price: null };
+    const mp = /p\s*r\s*[i1l|]\s*x\s*[:;.=]?\s*([0-9OoIlSsBZz][0-9OoIlSsBZz\s.,]*)/i.exec(t); // « Prix : 110 »
+    if (mp) return { model: t.slice(0, mp.index).replace(/[\s\-–—:]+$/, "").trim(), price: parsePrice(digitFix(mp[1])) };
+    const end = /([0-9][0-9OoIlSs\s.,]*)\s*(?:dhs?|mad)?\s*$/i.exec(t); // prix en fin de ligne
+    if (end) return { model: t.slice(0, end.index).replace(/[\s\-–—:]+$/, "").trim(), price: parsePrice(digitFix(end[1])) };
+    return { model: t, price: null };
+  }
+  /* Ressemblance entre le modèle lu et le nom d'un article (0 à 1), tolérante aux confusions de lecture */
+  const simKey = s => String(s || "").toUpperCase().replace(/[^A-Z0-9]/g, "").replace(/O/g, "0").replace(/[IL]/g, "1").replace(/S/g, "5").replace(/B/g, "8").replace(/Z/g, "2");
+  function similarity(a, b) {
+    a = simKey(a); b = simKey(b);
+    if (!a || !b) return 0;
+    if (a === b) return 1;
+    const m = a.length, n = b.length; let prev = Array.from({ length: n + 1 }, (_, j) => j);
+    for (let i = 1; i <= m; i++) { const cur = [i]; for (let j = 1; j <= n; j++) cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1)); prev = cur; }
+    return 1 - prev[n] / Math.max(m, n);
+  }
+  /* Article désigné par une étiquette lue : même prix et nom suffisamment ressemblant */
+  function articleFromLabel(model, price) {
+    if (!model || price == null) return null;
+    let best = null, bs = 0;
+    for (const a of state.articles) {
+      if (Math.abs(artPrice(a) - price) > 0.005) continue;
+      const s = similarity(model, artName(a));
+      if (s > bs) { bs = s; best = a; }
+    }
+    return bs >= 0.6 ? best : null;
+  }
   const CODE_FIELD = "CodeBarre";
   const codeCol = () => findCol(CODE_FIELD);
   const labelCode = a => "ITS:" + a.id; // contenu du QR code de l'étiquette
+  /* prix tel qu'écrit sur l'étiquette : 110 ou 150,50 (sans devise) */
+  const labelPrice = n => { const v = Math.round((+n || 0) * 100) / 100; return Number.isInteger(v) ? String(v) : v.toFixed(2).replace(".", ","); };
+  /* formule de l'étiquette : colonne MODELE + « - Prix : » + colonne PRIX DE VENTE */
+  const labelText = a => `${String(artName(a)).trim()} - Prix : ${labelPrice(artPrice(a))}`;
   const codesOf = a => { const c = codeCol(); return c && a[c.name] ? String(a[c.name]).split(/[\s,;]+/).filter(Boolean) : []; };
   /* Article correspondant à un code lu (étiquette ITSoft, code-barres associé ou référence) */
   function articleByCode(raw) {
@@ -1335,8 +1371,8 @@
       $("#print-area").innerHTML = `<div class="labels lb-${$("#lb-size", m).value}">${items.map(a => {
         if (!svg[a.id]) svg[a.id] = qrSVG(labelCode(a));
         const ref = F(a, "reference");
-        return `<div class="label"><div class="label-txt"><div class="label-name">${esc(artName(a))}</div>
-          <div class="label-price">${esc(moneyR(artPrice(a)))}</div>
+        // texte de l'étiquette : MODELE - Prix : PRIX DE VENTE (ex. « HONOR PLAY 10 - Prix : 110 »)
+        return `<div class="label"><div class="label-txt"><div class="label-line">${esc(labelText(a))}</div>
           <div class="label-ref">${esc(cfg.nomEntreprise)}${ref != null && ref !== "" ? " · " + esc(ref) : ""}</div></div>
           <div class="label-qr">${svg[a.id]}</div></div>`;
       }).join("")}</div>`;
@@ -1542,7 +1578,11 @@
       e.preventDefault();
       // Entrée sur un champ vide : on passe au panier pour encaisser
       if (!inp.value.trim()) { if (auto ? sess.num : state.cart.length) $("#scan-cart", m).click(); return; }
-      if (mode === "price") { const p = parsePrice(inp.value); if (p == null) toast("Prix non valide.", "bad"); else showPrice(p); }
+      if (mode === "price") {
+        const lab = parseLabel(inp.value), p = lab.price;
+        if (p == null) toast("Prix non valide.", "bad");
+        else { const a = articleFromLabel(lab.model, p); if (a) addItem(a, p).then(res => itemDone(a, p, res)); else showPrice(p, false, lab.model); }
+      }
       else { last = { code: "", t: 0 }; handle(inp.value); }
       inp.value = "";
     });
@@ -1692,13 +1732,22 @@
             else if (c === "vide") { guideTxt("Placez le prix dans le cadre"); ocrPrev = null; if (lastPrice.p != null) lastPrice = { p: null, t: 0 }; }
             else {
               const r = await w.recognize(c);
-              const p = parsePrice(r.data.text);              // ce que la caméra lit, en direct
-              guideTxt(p != null ? `Lu : ${String(p).replace(".", ",")} DH — vérification…` : "Écriture détectée — rapprochez ou redressez l'étiquette");              // le même prix n'est relu qu'après avoir été retiré du cadre (ou après 15 s)
+              const lab = parseLabel(r.data.text), p = lab.price;
+              // ce que la caméra lit, en direct
+              guideTxt(p != null ? `Lu : ${lab.model ? lab.model + " - " : ""}Prix : ${labelPrice(p)} — vérification…` : "Écriture détectée — rapprochez ou redressez l'étiquette");
+              // le même prix n'est relu qu'après avoir été retiré du cadre (ou après 15 s)
               if (lastPrice.p != null && (p !== lastPrice.p || Date.now() - lastPrice.t > 15000)) lastPrice = { p: null, t: 0 };
-              if (p != null && r.data.confidence >= 25 && p !== lastPrice.p) {
-                // lecture très nette : acceptée tout de suite ; sinon il faut la même valeur deux fois de suite
-                if ((r.data.confidence >= 85 || ocrPrev === p) && mode === "price" && !ocrPaused) { ocrPaused = true; showPrice(p); }
-                ocrPrev = p;
+              if (p != null && r.data.confidence >= 25 && p !== lastPrice.p && mode === "price" && !ocrPaused) {
+                // étiquette « MODELE - Prix : PRIX » reconnue : l'article est vendu directement, sans question
+                const a = articleFromLabel(lab.model, p);
+                if (a) {
+                  ocrPaused = true; lastPrice = { p, t: Date.now() }; ocrPrev = null;
+                  addItem(a, p).then(res => { itemDone(a, p, res); ocrPaused = false; });
+                } else {
+                  // prix seul : lecture très nette acceptée tout de suite ; sinon la même valeur deux fois de suite
+                  if (r.data.confidence >= 85 || ocrPrev === p) { ocrPaused = true; showPrice(p, false, lab.model); }
+                  ocrPrev = p;
+                }
               } else if (p == null) ocrPrev = null;
             }
           }
@@ -1707,12 +1756,13 @@
       } finally { ocrRunning = false; }
     }
     /* Prix lu : articles vendus à ce prix, ou article non classé */
-    const showPrice = (p, silent) => {
+    const showPrice = (p, silent, model) => {
       ocrPaused = true;
       if (!silent) beep(true);
       const panel = $("#price-panel", m); if (!panel) return;
       const list = state.articles.filter(x => Math.abs(artPrice(x) - p) < 0.005)
-        .sort((a, b) => (artStock(b) > 0) - (artStock(a) > 0) || String(artName(a)).localeCompare(String(artName(b)), "fr"));
+        // le modèle lu (même partiellement) remonte en tête de liste
+        .sort((a, b) => (model ? similarity(model, artName(b)) - similarity(model, artName(a)) : 0) || (artStock(b) > 0) - (artStock(a) > 0) || String(artName(a)).localeCompare(String(artName(b)), "fr"));
       panel.innerHTML = `<div class="price-res">
         <div class="pr-head"><span class="muted">Prix lu</span>
           <span class="pr-edit-wrap"><input class="pr-edit" id="pr-edit" value="${esc(String(p).replace(".", ","))}" inputmode="decimal" aria-label="Prix lu (modifiable)" title="Prix incorrect ? Corrigez-le ici puis Entrée"><span>${esc(cfg.devise)}</span></span>
@@ -1862,13 +1912,17 @@
     };
 
     el.innerHTML = `
+      <button type="button" class="scan-hero" id="art-scan" title="Scanner une étiquette, un code-barres ou un prix écrit">
+        <span class="scan-hero-ico">${ICON.scan}</span>
+        <span class="scan-hero-txt"><strong>Scanner un article</strong><small>Caméra ou lecteur code-barres · l'article est vendu et retiré du stock</small></span>
+        <kbd>F2</kbd>
+      </button>
       <div class="card">
         <div class="card-head compact-head">
           <div class="search">${ICON.search}<input class="input" id="art-q" type="search" placeholder="Rechercher…" value="${esc(f.q)}"></div>
           ${cats.length || catCanAdd ? `<select class="input" id="art-cat" style="width:auto;flex:0 1 190px"><option value="">Toutes catégories</option>${catCanAdd ? `<option value="__new__">＋ Nouvelle catégorie…</option>` : ""}${cats.map(c => `<option ${f.cat === c ? "selected" : ""}>${esc(c)}</option>`).join("")}</select>` : ""}
           ${hasStock() ? `<select class="input" id="art-stock" style="width:auto;flex:0 1 160px"><option value="">Tout le stock</option><option value="low" ${f.stock === "low" ? "selected" : ""}>Stock faible</option><option value="out" ${f.stock === "out" ? "selected" : ""}>En rupture</option></select>` : ""}
           ${state.map.photo && cfg.afficherPhotos ? `<a class="btn" href="#/photos" title="Rechercher des photos par catégorie">${ICON.search}<span class="hide-sm">Photos</span></a>` : ""}
-          <button class="btn scan-btn" id="art-scan" title="Scanner une étiquette ou un code-barres (caméra ou lecteur)">${ICON.scan}<span>Scanner</span></button>
           <button class="btn" id="art-labels" title="Imprimer les étiquettes de prix des articles affichés">${ICON.tag}<span class="hide-sm">Étiquettes</span></button>
           <button class="btn" id="art-export" title="Exporter en CSV">${ICON.download}<span class="hide-sm">Exporter</span></button>
           <button class="btn primary" id="art-new">${ICON.plus} Nouvel article</button>
@@ -3912,6 +3966,7 @@
     } else {
       try { await loadData(); render(); } catch (e) { return showFatal(e); }
     }
+    $("#btn-scan-top").addEventListener("click", () => { if (state.loaded) scanDialog(); });
     $("#btn-refresh").addEventListener("click", async e => {
       const b = e.currentTarget; if (b.classList.contains("spinning")) return;
       setSyncing(true);
