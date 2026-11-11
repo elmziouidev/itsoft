@@ -1363,14 +1363,106 @@
       foot: `<button class="btn" data-close>Terminer</button><button class="btn primary" id="scan-cart">${ICON.cart} Voir le panier</button>`
     });
     let reader = null, last = { code: "", t: 0 }, logged = 0;
+    // vente automatique : chaque article scanné est enregistré tout de suite dans Ventes (sauf depuis le panier)
+    const auto = !fromCart && scanAutoGet() && state.ventesReady;
+    const sess = { num: null, date: null, lines: [], hist: [] };
+    let queue = Promise.resolve();
     const stop = async () => { const r = reader; reader = null; if (r) { try { await r.stop(); } catch (_) {} try { r.clear(); } catch (_) {} } };
     const obs = new MutationObserver(() => {
       if (document.body.contains(m)) return;
       obs.disconnect(); stop();
       if (fromCart && !m.dataset.toCart) sellDialog(null);
+      if (auto) queue.then(() => {
+        if (!sess.lines.length) return;
+        const tot = sess.lines.reduce((t, L) => t + L.qty * L.price, 0), nb = sess.lines.reduce((t, L) => t + L.qty, 0);
+        toast(`Vente ${sess.num} enregistrée : ${int(nb)} article(s), ${money(tot)}.`, "ok");
+        if (currentView() === "articles" && state.refreshArticle) sess.lines.forEach(L => { if (L.a) state.refreshArticle(L.a, true); }); else render();
+        if (m.dataset.ticket) showSale(sess.num);
+      });
     });
     obs.observe($("#modal-root"), { childList: true });
-    $("#scan-cart", m).addEventListener("click", () => { m.dataset.toCart = "1"; closeModal(); sellDialog(null); });
+    $("#scan-cart", m).addEventListener("click", () => {
+      if (auto) { if (!sess.num) return toast("Aucun article scanné pour l'instant.", "bad"); m.dataset.ticket = "1"; m.dataset.toCart = "1"; return closeModal(); }
+      m.dataset.toCart = "1"; closeModal(); sellDialog(null);
+    });
+    if (auto) {
+      $("#scan-cart", m).innerHTML = `${ICON.print} Terminer et voir le ticket`;
+      $("#scan-log", m).innerHTML = `<div class="muted" style="padding:8px 2px">Visez l'étiquette : chaque article est <strong>enregistré directement dans Ventes</strong> (client ${esc(cfg.clientParDefaut || "comptoir")}, paiement ${esc((cfg.modesPaiement || ["Espèces"])[0])}) et retiré du stock.</div>`;
+    }
+
+    /* Enregistre un article scanné dans la vente en cours (a = null : article non classé) */
+    const r2 = n => Math.round(n * 100) / 100;
+    async function recordItem(a, price) {
+      let fresh = null;
+      if (a && hasStock()) {
+        const f = await DS.getArticle(a.id); fresh = +f[state.map.stock] || 0;
+        if (fresh < 1) return { ok: false, why: "stock" };
+      }
+      if (!sess.num) { sess.date = new Date(); sess.num = saleNumber(sess.date); }
+      let L = a ? sess.lines.find(x => x.a === a && x.price === price) : null;
+      if (L) {
+        L.qty++;
+        const upd = { Quantite: L.qty, Montant: r2(L.qty * price), Cout: L.unitCost != null ? r2(L.unitCost * L.qty) : null };
+        await DS.updateVenteLine(L.v.id, upd); Object.assign(L.v, upd);
+      } else {
+        const lp = a && lastPurchase(a), unitCost = a && lp ? (+lp.PrixAchat || 0) : null;
+        const ref = a ? F(a, "reference") : null;
+        const v = await DS.createVenteLine({
+          Title: sess.num, ArticleId: a ? parseInt(a.id, 10) : 0, Article: a ? String(artName(a)) : FREE.divers.label,
+          Reference: a ? (ref == null ? "" : String(ref)) : FREE.divers.label,
+          Quantite: 1, PrixUnitaire: price, Montant: r2(price), Client: cfg.clientParDefaut || "Client comptoir",
+          ModePaiement: (cfg.modesPaiement || ["Espèces"])[0], Vendeur: Auth.userName(), DateVente: sess.date.toISOString(),
+          TypeOperation: "Vente", Cout: unitCost != null ? r2(unitCost) : null
+        });
+        state.ventes.push(v);
+        L = { v, a, qty: 1, price, unitCost }; sess.lines.push(L);
+      }
+      if (a && hasStock()) Object.assign(a, await DS.updateArticle(a.id, { [state.map.stock]: fresh - 1 }));
+      sess.hist.push(L);
+      return { ok: true, L };
+    }
+    /* Annule le dernier article scanné : ligne retirée de la vente et pièce remise en stock */
+    async function undoLast() {
+      const L = sess.hist.pop(); if (!L) return;
+      if (L.a && hasStock()) { const f = await DS.getArticle(L.a.id); Object.assign(L.a, await DS.updateArticle(L.a.id, { [state.map.stock]: (+f[state.map.stock] || 0) + 1 })); }
+      if (L.qty > 1) {
+        L.qty--;
+        const upd = { Quantite: L.qty, Montant: r2(L.qty * L.price), Cout: L.unitCost != null ? r2(L.unitCost * L.qty) : null };
+        await DS.updateVenteLine(L.v.id, upd); Object.assign(L.v, upd);
+      } else {
+        await DS.deleteVenteLine(L.v.id);
+        state.ventes = state.ventes.filter(v => v !== L.v);
+        sess.lines = sess.lines.filter(x => x !== L);
+      }
+    }
+    /* Ajoute un article : vente directe (mode automatique) ou panier. a = null : article non classé au prix donné */
+    const addItem = (a, price) => {
+      if (!auto) {
+        if (!a) { state.cart.push({ id: "svc-" + Date.now(), svc: true, kind: "divers", name: "", qty: 1, price }); cartSave(); renderCartBar(); return Promise.resolve({ ok: true, qty: 1 }); }
+        const ok = cartAdd(a, true);
+        if (ok && price != null) { const l = state.cart.find(x => x.id === String(a.id)); if (l) { l.price = price; cartSave(); renderCartBar(); } }
+        return Promise.resolve({ ok, qty: cartQty(a.id), why: ok ? "" : "stock" });
+      }
+      const p = price != null ? price : artPrice(a);
+      const job = queue.then(() => recordItem(a, p)).then(r => ({ ok: r.ok, why: r.why, qty: r.ok ? r.L.qty : 0 }),
+        e => { toast("Non enregistré : " + e.message, "bad"); return { ok: false, why: "erreur" }; });
+      queue = job.then(() => {});
+      return job;
+    };
+    const itemDone = (a, price, r) => {
+      const name = a ? artName(a) : FREE.divers.label;
+      beep(r.ok);
+      const where = auto ? "Enregistré dans Ventes" : "Ajouté au panier";
+      if (r.ok) {
+        flash(true, name, price, `${where} · quantité ${int(r.qty)}`);
+        log(`<span class="ok-dot"></span><span class="ellipsis">${esc(name)}</span><strong class="num">${money(price)}</strong><span class="muted">× ${int(r.qty)}</span>`, "ok");
+      } else {
+        const why = r.why === "stock" ? "Stock insuffisant : non ajouté" : "Non enregistré";
+        flash(false, name, 0, why);
+        log(`<span class="bad-dot"></span><span class="ellipsis">${esc(name)}</span><span class="muted">${why.toLowerCase()}</span>`, "bad");
+      }
+      showTotal();
+    };
 
     const log = (html, cls) => {
       const box = $("#scan-log", m); if (!box) return;
@@ -1389,6 +1481,12 @@
     };
     const showTotal = () => {
       const el = $("#scan-total", m); if (!el) return;
+      if (auto) {
+        const nb = sess.lines.reduce((t, L) => t + L.qty, 0), tot = sess.lines.reduce((t, L) => t + L.qty * L.price, 0);
+        el.innerHTML = nb ? `${ICON.cart}<span>Vente <strong>${esc(sess.num)}</strong> : <strong>${int(nb)}</strong> article(s)</span>
+          <button type="button" class="btn sm" data-undo title="Retire le dernier article scanné de la vente et le remet en stock">↶ Annuler le dernier</button><strong class="num">${money(tot)}</strong>` : "";
+        return;
+      }
       const ls = cartLines();
       const nb = ls.reduce((t, x) => t + x.l.qty, 0), tot = ls.reduce((t, x) => t + x.l.qty * (+x.l.price || 0), 0);
       el.innerHTML = nb ? `${ICON.cart}<span>Panier : <strong>${int(nb)}</strong> article(s)</span><strong class="num">${money(tot)}</strong>` : "";
@@ -1401,14 +1499,14 @@
       last = { code, t: now };
       const a = articleByCode(code);
       if (!a) { beep(false); flash(false, "Code non reconnu", 0, code); return askAssociate(code); }
-      const ok = cartAdd(a, true);
-      beep(ok);
-      if (ok) flash(true, artName(a), artPrice(a), `Ajouté au panier · quantité ${int(cartQty(a.id))}`);
-      else flash(false, artName(a), 0, "Stock insuffisant : non ajouté");
-      showTotal();
-      if (ok) log(`<span class="ok-dot"></span><span class="ellipsis">${esc(artName(a))}</span><strong class="num">${money(artPrice(a))}</strong><span class="muted">× ${int(cartQty(a.id))}</span>`, "ok");
-      else log(`<span class="bad-dot"></span><span class="ellipsis">${esc(artName(a))}</span><span class="muted">stock insuffisant</span>`, "bad");
+      addItem(a, artPrice(a)).then(r => itemDone(a, artPrice(a), r));
     };
+    $("#scan-total", m).addEventListener("click", e => {
+      const b = e.target.closest("[data-undo]"); if (!b) return;
+      busy(b, true, "Annulation…");
+      queue = queue.then(undoLast).then(() => { beep(true); log(`<span class="bad-dot"></span><span class="ellipsis">Dernier article annulé</span><span class="muted">remis en stock</span>`, "bad"); },
+        err => toast("Annulation impossible : " + err.message, "bad")).then(() => showTotal());
+    });
     /* code-barres inconnu (ex. EAN du fabricant) : on le rattache une fois à un article */
     const askAssociate = code => {
       const box = $("#scan-unknown", m); if (!box) return;
@@ -1443,7 +1541,7 @@
       if (e.key !== "Enter") return;
       e.preventDefault();
       // Entrée sur un champ vide : on passe au panier pour encaisser
-      if (!inp.value.trim()) { if (state.cart.length) $("#scan-cart", m).click(); return; }
+      if (!inp.value.trim()) { if (auto ? sess.num : state.cart.length) $("#scan-cart", m).click(); return; }
       if (mode === "price") { const p = parsePrice(inp.value); if (p == null) toast("Prix non valide.", "bad"); else showPrice(p); }
       else { last = { code: "", t: 0 }; handle(inp.value); }
       inp.value = "";
@@ -1625,7 +1723,7 @@
         <div class="pr-list">${list.slice(0, 12).map(a => `<button type="button" class="pr-art" data-pr-art="${esc(a.id)}" ${hasStock() && artStock(a) <= 0 ? "disabled" : ""}>
             <strong class="ellipsis">${esc(artName(a))}</strong><span class="muted ellipsis">${esc(F(a, "categorie") || "")}${hasStock() ? ` · stock ${int(artStock(a))}` : ""}</span></button>`).join("")}
           ${list.length > 12 ? `<div class="muted" style="font-size:13px">… et ${int(list.length - 12)} autre(s) : utilisez la recherche ci-dessous.</div>` : ""}
-          <button type="button" class="pr-art pr-free" data-pr-free><strong>Article non classé</strong><span class="muted">vendu ${esc(moneyR(p))}, nature à préciser dans le panier</span></button>
+          <button type="button" class="pr-art pr-free" data-pr-free><strong>Article non classé</strong><span class="muted">vendu ${esc(moneyR(p))}${auto ? "" : ", nature à préciser dans le panier"}</span></button>
         </div>
         <div class="row" style="gap:8px;margin-top:8px;flex-wrap:wrap"><input class="input" id="pr-other" list="dl-pr-arts" placeholder="Autre article vendu à ce prix…" style="flex:1 1 220px">
           <datalist id="dl-pr-arts">${state.articles.slice(0, 2000).map(a => `<option value="${esc(artName(a))}${F(a, "reference") != null ? " · " + esc(F(a, "reference")) : ""}" data-id="${esc(a.id)}"></option>`).join("")}</datalist>
@@ -1635,26 +1733,11 @@
       const reprice = () => { const q = parsePrice(ed.value); if (q == null) return toast("Prix non valide.", "bad"); if (q !== p) showPrice(q, true); };
       ed.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); reprice(); } });
       ed.addEventListener("change", reprice);
-      const addArt = a => {
-        const ok = cartAdd(a, true);
-        if (ok) { const l = state.cart.find(x => x.id === String(a.id)); if (l) { l.price = p; cartSave(); renderCartBar(); } }
-        beep(ok);
-        if (ok) {
-          flash(true, artName(a), p, `Ajouté au panier · quantité ${int(cartQty(a.id))}`);
-          log(`<span class="ok-dot"></span><span class="ellipsis">${esc(artName(a))}</span><strong class="num">${money(p)}</strong><span class="muted">× ${int(cartQty(a.id))}</span>`, "ok");
-        } else flash(false, artName(a), 0, "Stock insuffisant : non ajouté");
-        done();
-      };
+      const addArt = a => { done(); addItem(a, p).then(r => itemDone(a, p, r)); };
       panel.onclick = e => {
         if (e.target.closest("[data-pr-retry]")) { panel.innerHTML = ""; ocrPrev = null; ocrPaused = false; return; }
         const b = e.target.closest("[data-pr-art]"); if (b) { const a = artById(b.dataset.prArt); if (a) addArt(a); return; }
-        if (e.target.closest("[data-pr-free]")) {
-          state.cart.push({ id: "svc-" + Date.now(), svc: true, kind: "divers", name: "", qty: 1, price: p });
-          cartSave(); renderCartBar();
-          flash(true, "Article non classé", p, "Nature à préciser dans le panier");
-          log(`<span class="ok-dot"></span><span class="ellipsis">Article non classé</span><strong class="num">${money(p)}</strong><span class="muted">× 1</span>`, "ok");
-          return done();
-        }
+        if (e.target.closest("[data-pr-free]")) { done(); addItem(null, p).then(r => itemDone(null, p, r)); return; }
         if (e.target.closest("[data-pr-other]")) {
           const v = $("#pr-other", panel).value.trim();
           const opt = [...$("#dl-pr-arts", panel).options].find(o => o.value === v);
@@ -1733,7 +1816,8 @@
           e.preventDefault();
           const code = buf; buf = "";
           const a = articleByCode(code);
-          if (a) { const ok = cartAdd(a, true); beep(ok); }
+          if (a && !(scanAutoGet() && state.ventesReady)) { const ok = cartAdd(a, true); beep(ok); }
+          else if (a) scanDialog({ code });
           else { beep(false); scanDialog({ code }); }
         }
         buf = ""; return;
@@ -3512,7 +3596,10 @@
 
   /* ============ Paramètres : choix de la caméra utilisée pour le scan ============ */
   const CAM_KEY = "itsoft-camera";
-  const SCAN_MODE_KEY = "itsoft-scan-mode";
+  const SCAN_MODE_KEY = "itsoft-scan-mode", SCAN_AUTO_KEY = "itsoft-scan-auto";
+  /* vente automatique au scan : activée par défaut */
+  const scanAutoGet = () => { try { return localStorage.getItem(SCAN_AUTO_KEY) !== "0"; } catch (_) { return true; } };
+  const scanAutoSet = on => { try { localStorage.setItem(SCAN_AUTO_KEY, on ? "1" : "0"); } catch (_) {} };
   const scanModeGet = () => { try { return localStorage.getItem(SCAN_MODE_KEY) === "price" ? "price" : "code"; } catch (_) { return "code"; } };
   const scanModeSet = md => { try { localStorage.setItem(SCAN_MODE_KEY, md === "price" ? "price" : "code"); } catch (_) {} };
   const camGet = () => { try { return localStorage.getItem(CAM_KEY) || ""; } catch (_) { return ""; } };
@@ -3537,6 +3624,13 @@
                 <span><strong>${ICON.scan} Étiquettes QR / codes-barres</strong><span class="muted">Le plus rapide et le plus sûr : l'article est reconnu directement avec son prix</span></span></label>
               <label class="cam-opt"><input type="radio" name="scanmode" value="price" ${scanModeGet() === "price" ? "checked" : ""}>
                 <span><strong><span class="seg-num">123</span> Prix écrit</strong><span class="muted">Lecture d'un prix écrit à la main ou imprimé (ex. 150,50 DH), puis choix de l'article</span></span></label>
+            </div>
+            <h3 class="set-sub" style="margin-top:20px">Après le scan</h3>
+            <div class="cam-list">
+              <label class="cam-opt"><input type="radio" name="scanauto" value="1" ${scanAutoGet() ? "checked" : ""}>
+                <span><strong>Enregistrer directement dans Ventes</strong><span class="muted">Chaque article scanné est vendu tout de suite (client ${esc(cfg.clientParDefaut || "comptoir")}, paiement ${esc((cfg.modesPaiement || ["Espèces"])[0])}) et retiré du stock ; « Annuler le dernier » corrige une erreur</span></span></label>
+              <label class="cam-opt"><input type="radio" name="scanauto" value="0" ${scanAutoGet() ? "" : "checked"}>
+                <span><strong>Ajouter au panier</strong><span class="muted">Les articles scannés vont dans le panier ; la vente est enregistrée au clic sur « Vendre » (choix du client et du paiement)</span></span></label>
             </div>
             <div class="row" style="justify-content:space-between;align-items:center;margin:20px 0 10px;gap:8px;flex-wrap:wrap">
               <h3 class="set-sub" style="margin:0">Caméra</h3>
@@ -3613,6 +3707,8 @@
     card.addEventListener("click", e => { if (e.target.closest("#beep-test")) { beep(true); setTimeout(() => beep(false), 450); } });
     card.addEventListener("change", e => {
       const sm = e.target.closest('input[name="scanmode"]');
+      const sa = e.target.closest('input[name="scanauto"]');
+      if (sa) { scanAutoSet(sa.value === "1"); toast(sa.value === "1" ? "Scan : vente enregistrée directement dans Ventes." : "Scan : articles ajoutés au panier.", "ok"); return; }
       if (sm) { scanModeSet(sm.value); if (sm.value === "price") ocrWorker().catch(() => {}); toast(sm.value === "price" ? "Scan : lecture du prix écrit." : "Scan : étiquettes QR / codes-barres.", "ok"); return; }
       const r = e.target.closest('input[name="cam"]'); if (!r) return;
       camSet(r.value);

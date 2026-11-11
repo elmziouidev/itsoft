@@ -600,6 +600,11 @@
     async deleteVenteLine(id) {
       await this.call(`/sites/${this.siteId}/lists/${this.ventesListId}/items/${id}`, { method: "DELETE" });
     },
+    /* Modifie une ligne de vente (ex. quantité d'un article scanné plusieurs fois) */
+    async updateVenteLine(id, fields) {
+      await this.call(`/sites/${this.siteId}/lists/${this.ventesListId}/items/${id}/fields`,
+        { method: "PATCH", body: JSON.stringify(this.toVente(fields)) });
+    },
 
     async createVentesList() {
       const scopes = ["Sites.Manage.All"];
@@ -752,6 +757,9 @@
     },
     async deleteVenteLine(id) {
       this.db.ventes = this.db.ventes.filter(v => v.id !== String(id)); this.persist();
+    },
+    async updateVenteLine(id, fields) {
+      const v = this.db.ventes.find(x => x.id === String(id)); if (v) { Object.assign(v, fields); this.persist(); }
     },
     async createVentesList() {},
     ventesColumnsMissing() { return []; },
