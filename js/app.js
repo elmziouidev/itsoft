@@ -1346,7 +1346,7 @@
   async function scanDialog(opts = {}) {
     const fromCart = !!opts.fromCart;
     const m = openModal({
-      title: "Scanner des articles", size: "cart",
+      title: "Scanner des articles", size: "cart scan-modal",
       body: `<div class="scan-mode-info" id="scan-mode-info"></div>
         <div class="scan-wrap"><div id="scan-cam" class="scan-cam"></div><div class="price-guide" id="price-guide" hidden><span id="price-guide-txt">Placez le prix dans le cadre</span></div><div class="scan-wait" id="scan-wait">Démarrage de la caméra…<br><span>Si le navigateur affiche « Utiliser les caméras », cliquez sur <strong>Autoriser</strong>.</span></div><div class="scan-flash" id="scan-flash" hidden></div></div>
         <div class="scan-total" id="scan-total"></div>
@@ -1466,8 +1466,8 @@
     const grab = () => {
       const v = $("#scan-cam video", m);
       if (!v || !v.videoWidth) return null;
-      const vw = v.videoWidth, vh = v.videoHeight, cw = Math.round(vw * 0.6), ch = Math.round(vh * 0.3);
-      const scale = Math.min(3, 110 / ch);
+      const vw = v.videoWidth, vh = v.videoHeight, cw = Math.round(vw * 0.86), ch = Math.round(vh * 0.5); // même zone que le cadre affiché
+      const scale = Math.min(3, 200 / ch);
       const c = document.createElement("canvas");
       c.width = Math.round(cw * scale); c.height = Math.round(ch * scale);
       const x = c.getContext("2d", { willReadFrequently: true });
@@ -1601,10 +1601,11 @@
       camBox.innerHTML = "";
       // décodeur natif du navigateur quand il existe (beaucoup plus rapide), sinon décodeur JavaScript
       reader = new window.Html5Qrcode("scan-cam", { formatsToSupport: formats, verbose: false, experimentalFeatures: { useBarCodeDetectorIfSupported: true } });
-      const box = (w, h) => { const s = Math.floor(Math.min(w, h) * 0.75); return { width: Math.min(Math.floor(w * 0.85), Math.max(s, 220)), height: s }; };
+      // zone de lecture = toute l'image : le code est reconnu où qu'il soit, sans viser
+      const box = (w, h) => ({ width: Math.max(50, Math.floor(w * 0.98)), height: Math.max(50, Math.floor(h * 0.98)) });
       // 25 analyses par seconde, pas de lecture en miroir, image HD pour lire de plus loin
       await reader.start(source, {
-        fps: 25, qrbox: box, aspectRatio: 1.333, disableFlip: true,
+        fps: 25, qrbox: box, disableFlip: true, // pas de format imposé : tout le champ de la caméra est utilisé
         videoConstraints: { ...source, width: { ideal: 1280 }, height: { ideal: 720 } }
       }, txt => { if (mode === "code") handle(txt); }, () => {});
       const wt = $("#scan-wait", m); if (wt) wt.hidden = true;
