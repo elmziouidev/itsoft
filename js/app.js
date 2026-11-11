@@ -1551,12 +1551,18 @@
   }
 
   /* Fenêtre de scan : caméra (téléphone, webcam, caméra USB) ou lecteur code-barres / saisie */
+  let scanSeq = 0;
+  /* Bouton « Scanner » / F2 : sur la page Ventes, le scanner intégré à droite ; ailleurs, la fenêtre de scan */
+  function openScanner() {
+    if (currentView() === "ventes" && state.ventesScanStart && $("#scan-dock")) return state.ventesScanStart();
+    return scanDialog();
+  }
   async function scanDialog(opts = {}) {
     const fromCart = !!opts.fromCart;
-    const m = openModal({
-      title: "Scanner des articles", size: "cart scan-modal",
-      body: `<div class="scan-mode-info" id="scan-mode-info"></div>
-        <div class="scan-wrap"><div id="scan-cam" class="scan-cam"></div><div class="price-guide" id="price-guide" hidden><span id="price-guide-txt">Placez le prix dans le cadre</span></div><div class="scan-wait" id="scan-wait">Démarrage de la caméra…<br><span>Si le navigateur affiche « Utiliser les caméras », cliquez sur <strong>Autoriser</strong>.</span></div><div class="scan-flash" id="scan-flash" hidden></div></div>
+    const panel = opts.container || null; // scanner intégré dans une page (Ventes) au lieu d'une fenêtre
+    const camId = "scan-cam-" + (++scanSeq);
+    const scanBody = `<div class="scan-mode-info" id="scan-mode-info"></div>
+        <div class="scan-wrap"><div id="${camId}" class="scan-cam"></div><div class="price-guide" id="price-guide" hidden><span id="price-guide-txt">Placez le prix dans le cadre</span></div><div class="scan-wait" id="scan-wait">Démarrage de la caméra…<br><span>Si le navigateur affiche « Utiliser les caméras », cliquez sur <strong>Autoriser</strong>.</span></div><div class="scan-flash" id="scan-flash" hidden></div></div>
         <div class="scan-total" id="scan-total"></div>
         <div id="price-panel"></div>
         <div class="form-grid" style="margin-top:10px">
@@ -1564,29 +1570,55 @@
           <label class="field"><span id="scan-input-lab">Code (lecteur code-barres ou saisie)</span><input class="input" id="scan-input" placeholder="Scannez ou tapez le code puis Entrée" autocomplete="off" enterkeyhint="done"></label>
         </div>
         <div id="scan-unknown"></div>
-        <div class="scan-log" id="scan-log"><div class="muted" style="padding:8px 2px">Visez l'étiquette (QR code) ou le code-barres : l'article est ajouté au panier avec son prix.</div></div>`,
+        <div class="scan-log" id="scan-log"><div class="muted" style="padding:8px 2px">Visez l'étiquette (QR code) ou le code-barres : l'article est ajouté au panier avec son prix.</div></div>`;
+    let m;
+    if (panel) {
+      panel.innerHTML = `<div class="scan-panel"><div class="sp-head"><h2>${ICON.scan} Scanner</h2><button class="btn sm ghost" id="sp-stop" type="button" title="Arrêter la caméra">Arrêter</button></div>
+        <div class="sp-body">${scanBody}</div>
+        <div class="sp-foot"><button class="btn" id="scan-new" type="button">Nouvelle vente</button><button class="btn primary" id="scan-cart" type="button">${ICON.print} Ticket</button></div></div>`;
+      m = panel.firstElementChild;
+    } else m = openModal({
+      title: "Scanner des articles", size: "cart scan-modal", body: scanBody,
       foot: `<button class="btn" data-close>Terminer</button><button class="btn primary" id="scan-cart">${ICON.cart} Voir le panier</button>`
     });
     let reader = null, last = { code: "", t: 0 }, logged = 0;
     // vente automatique : chaque article scanné est enregistré tout de suite dans Ventes (sauf depuis le panier)
-    const auto = !fromCart && scanAutoGet() && state.ventesReady;
+    const auto = !fromCart && (panel || scanAutoGet()) && state.ventesReady;
     const sess = { num: null, date: null, lines: [], hist: [] };
     let queue = Promise.resolve();
     const stop = async () => { const r = reader; reader = null; if (r) { try { await r.stop(); } catch (_) {} try { r.clear(); } catch (_) {} } };
     const obs = new MutationObserver(() => {
       if (document.body.contains(m)) return;
       obs.disconnect(); stop();
+      if (state.scanPanelHandle && state.scanPanelHandle.m === m) state.scanPanelHandle = null;
       if (fromCart && !m.dataset.toCart) sellDialog(null);
       if (auto) queue.then(() => {
         if (!sess.lines.length) return;
+        if (panel) return; // page quittée : la vente est déjà enregistrée
         const tot = sess.lines.reduce((t, L) => t + L.qty * L.price, 0), nb = sess.lines.reduce((t, L) => t + L.qty, 0);
         toast(`Vente ${sess.num} enregistrée : ${int(nb)} article(s), ${money(tot)}.`, "ok");
         if (currentView() === "articles" && state.refreshArticle) sess.lines.forEach(L => { if (L.a) state.refreshArticle(L.a, true); }); else render();
         if (m.dataset.ticket) showSale(sess.num);
       });
     });
-    obs.observe($("#modal-root"), { childList: true });
+    obs.observe(panel ? $("#view") : $("#modal-root"), { childList: true, subtree: !!panel });
+    /* scanner intégré : « Nouvelle vente » clôt la vente en cours, « Ticket » l'affiche puis passe au client suivant */
+    const finishSession = () => {
+      if (sess.lines.length) {
+        const tot = sess.lines.reduce((t, L) => t + L.qty * L.price, 0), nb = sess.lines.reduce((t, L) => t + L.qty, 0);
+        toast(`Vente ${sess.num} enregistrée : ${int(nb)} article(s), ${money(tot)}.`, "ok");
+      }
+      sess.num = null; sess.date = null; sess.lines = []; sess.hist = []; logged = 0;
+      $("#scan-log", m).innerHTML = `<div class="muted" style="padding:8px 2px">Nouvelle vente : visez l'étiquette du premier article.</div>`;
+      showTotal(); if (opts.onChange) opts.onChange(null);
+    };
+    if (panel) {
+      $("#scan-new", m).addEventListener("click", () => queue.then(finishSession));
+      $("#sp-stop", m).addEventListener("click", () => { queue.then(() => { finishSession(); if (opts.onStop) opts.onStop(); }); });
+      state.scanPanelHandle = { m, code: c => { last = { code: "", t: 0 }; handle(c); }, focus: () => { const i = $("#scan-input", m); if (i) i.focus(); } };
+    }
     $("#scan-cart", m).addEventListener("click", () => {
+      if (panel) { if (!sess.num) return toast("Aucun article scanné pour l'instant.", "bad"); const n = sess.num; return queue.then(() => { finishSession(); showSale(n); }); }
       if (auto) { if (!sess.num) return toast("Aucun article scanné pour l'instant.", "bad"); m.dataset.ticket = "1"; m.dataset.toCart = "1"; return closeModal(); }
       m.dataset.toCart = "1"; closeModal(); sellDialog(null);
     });
@@ -1667,6 +1699,7 @@
         log(`<span class="bad-dot"></span><span class="ellipsis">${esc(name)}</span><span class="muted">${why.toLowerCase()}</span>`, "bad");
       }
       showTotal();
+      if (r.ok && opts.onChange) opts.onChange(sess.num); // tableau des ventes mis à jour en direct
     };
 
     const log = (html, cls) => {
@@ -1710,7 +1743,7 @@
       const b = e.target.closest("[data-undo]"); if (!b) return;
       busy(b, true, "Annulation…");
       queue = queue.then(undoLast).then(() => { beep(true); log(`<span class="bad-dot"></span><span class="ellipsis">Dernier article annulé</span><span class="muted">remis en stock</span>`, "bad"); },
-        err => toast("Annulation impossible : " + err.message, "bad")).then(() => showTotal());
+        err => toast("Annulation impossible : " + err.message, "bad")).then(() => { showTotal(); if (opts.onChange) opts.onChange(sess.num); });
     });
     /* code-barres inconnu (ex. EAN du fabricant) : on le rattache une fois à un article */
     const askAssociate = code => {
@@ -1776,7 +1809,7 @@
     };
     /* image du cadre central, en noir et blanc, agrandie pour la lecture */
     const grab = () => {
-      const v = $("#scan-cam video", m);
+      const v = $(".scan-cam video", m);
       if (!v || !v.videoWidth) return null;
       const vw = v.videoWidth, vh = v.videoHeight, cw = Math.round(vw * 0.86), ch = Math.round(vh * 0.5); // même zone que le cadre affiché
       const scale = Math.min(2, 170 / ch); // image d'analyse légère : rapide à traiter
@@ -1981,7 +2014,7 @@
     m.addEventListener("click", e => { if (e.target.closest("[data-goset]")) m.dataset.toCart = "1"; }, true); // vers Paramètres : ne pas rouvrir le panier
 
     // caméra
-    const camBox = $("#scan-cam", m);
+    const camBox = $(".scan-cam", m);
     const camMsg = t => { const w = $("#scan-wait", m); if (w) w.hidden = true; if (camBox) camBox.innerHTML = `<div class="scan-msg">${t}</div>`; };
     if (!window.isSecureContext || !navigator.mediaDevices) { camMsg("Caméra indisponible ici (connexion non sécurisée). Utilisez le champ Code ou un lecteur code-barres."); return; }
     try { await loadScript(LIB_SCAN); } catch (e) { camMsg(esc(e.message)); return; }
@@ -1994,22 +2027,48 @@
     // les autres codes-barres doivent être lus deux fois à l'identique avant d'être acceptés
     const SAFE = /QR_?CODE|EAN.?13|EAN.?8|UPC.?A|UPC.?E/i;
     let pend = { txt: "", t: 0 };
+    // renvoie true quand le code est pris en compte (false : 1re lecture d'un code-barres sans clé, à confirmer)
     const onCode = (txt, res) => {
       const fmt = String(res && res.result && res.result.format && (res.result.format.formatName || res.result.format) || "");
       if (fmt && !SAFE.test(fmt)) {
         const now = Date.now();
-        if (pend.txt !== txt || now - pend.t > 1200) { pend = { txt, t: now }; return; }
+        if (pend.txt !== txt || now - pend.t > 1200) { pend = { txt, t: now }; return false; }
         pend = { txt: "", t: 0 };
       }
       lastCodeT = Date.now(); // un code vient d'être lu : la lecture des prix écrits se met en retrait
+      last = { code: "", t: 0 }; // la règle anti-doublon est assurée par le suivi de présence ci-dessous
       handle(txt);
+      return true;
+    };
+    /* Suivi de présence : un article n'est compté qu'UNE fois tant qu'il reste devant la caméra.
+       Il ne peut être compté de nouveau qu'après avoir complètement quitté le champ (aucune trace
+       pendant GONE_MS), puis être revenu. Un code encore visible mais illisible (flou, reflet, bougé)
+       compte comme toujours présent. */
+    // « sorti du champ » = absent d'au moins GONE_FRAMES images réellement analysées ET depuis au moins GONE_MS
+    // (un ralentissement de l'ordinateur ne fait donc jamais croire qu'un article immobile est parti)
+    const GONE_MS = 1000, GONE_FRAMES = 8;
+    const pres = new Map(); // texte → { seen, frame : dernière lecture ; counted : déjà compté pendant ce passage }
+    let frameNo = 0, zxActive = false;
+    let lastUnread = 0, lastUnreadFrame = -99; // dernière image contenant un code visible mais illisible
+    const stillThere = (p, now) => {
+      if (!p) return false;
+      if (!zxActive) return now - p.seen < 1500; // décodeur de secours : critère de temps seul
+      const unreadNear = frameNo - lastUnreadFrame < GONE_FRAMES && now - p.seen < 8000;
+      return frameNo - p.frame < GONE_FRAMES || now - p.seen < GONE_MS || unreadNear;
+    };
+    const detect = (txt, fmt) => {
+      const now = Date.now();
+      let p = pres.get(txt);
+      if (!stillThere(p, now)) { p = { seen: now, frame: frameNo, counted: false }; pres.set(txt, p); } // nouvelle arrivée dans le champ
+      p.seen = now; p.frame = frameNo;
+      if (!p.counted && onCode(txt, { result: { format: { formatName: fmt } } })) p.counted = true;
     };
     const start = async source => {
       await stop();
       if (!document.body.contains(m)) return;
       camBox.innerHTML = "";
       // décodeur natif du navigateur quand il existe (beaucoup plus rapide), sinon décodeur JavaScript
-      reader = new window.Html5Qrcode("scan-cam", { formatsToSupport: formats, verbose: false, experimentalFeatures: { useBarCodeDetectorIfSupported: true } });
+      reader = new window.Html5Qrcode(camId, { formatsToSupport: formats, verbose: false, experimentalFeatures: { useBarCodeDetectorIfSupported: true } });
       // zone de lecture = toute l'image : le code est reconnu où qu'il soit, sans viser
       const box = (w, h) => ({ width: Math.max(50, Math.floor(w * 0.98)), height: Math.max(50, Math.floor(h * 0.98)) });
       // QR et codes-barres lus en permanence, dans tous les modes (moins souvent quand le prix écrit est lu aussi),
@@ -2017,7 +2076,7 @@
       await reader.start(source, {
         fps: mode === "price" ? 12 : 25, qrbox: box, disableFlip: true,
         videoConstraints: { ...source, width: { ideal: 1280 }, height: { ideal: 720 }, advanced: [{ focusMode: "continuous" }] }
-      }, onCode, () => {});
+      }, (txt, res) => detect(txt, String(res && res.result && res.result.format && (res.result.format.formatName || res.result.format) || "")), () => {});
       const wt = $("#scan-wait", m); if (wt) wt.hidden = true;
       // décodeur rapide ZXing (WebAssembly) : il lit lui-même l'image de la caméra ; l'ancien décodeur est mis en pause
       fastLoop();
@@ -2032,14 +2091,18 @@
       try { reader.pause(false); } catch (_) {}
       const cvs = document.createElement("canvas"), cx = cvs.getContext("2d", { willReadFrequently: true });
       while (id === fastId && reader && document.body.contains(m)) {
-        const v = $("#scan-cam video", m);
+        const v = $(".scan-cam video", m);
         if (v && v.videoWidth && v.readyState >= 2) {
           if (cvs.width !== v.videoWidth) { cvs.width = v.videoWidth; cvs.height = v.videoHeight; }
           cx.drawImage(v, 0, 0);
           try {
-            const res = await Z.readBarcodes(cx.getImageData(0, 0, cvs.width, cvs.height), { formats: FAST_FORMATS, tryHarder: true, maxNumberOfSymbols: 1 });
-            const r = res && res.find(x => x.isValid && x.text);
-            if (r) onCode(r.text, { result: { format: { formatName: r.format } } });
+            // returnErrors : les codes repérés mais illisibles sur cette image sont aussi signalés (présence)
+            const res = await Z.readBarcodes(cx.getImageData(0, 0, cvs.width, cvs.height), { formats: FAST_FORMATS, tryHarder: true, maxNumberOfSymbols: 4, returnErrors: true });
+            zxActive = true; frameNo++;
+            for (const r of res || []) {
+              if (r.isValid && r.text) detect(r.text, r.format);
+              else { lastUnread = Date.now(); lastUnreadFrame = frameNo; }
+            }
           } catch (_) {}
         }
         // en mode « prix écrit », on laisse du temps à la lecture des chiffres
@@ -2073,7 +2136,7 @@
     let buf = "", lastT = 0;
     document.addEventListener("keydown", e => {
       // F2 : ouvre « Scanner » de n'importe quelle page
-      if (e.key === "F2" && state.loaded && !$("#modal-root").children.length) { e.preventDefault(); scanDialog(); return; }
+      if (e.key === "F2" && state.loaded && !$("#modal-root").children.length) { e.preventDefault(); openScanner(); return; }
       const t = e.target, tag = t && t.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || (t && t.isContentEditable)) { buf = ""; return; }
       if ($("#modal-root").children.length || !state.loaded) { buf = ""; return; }
@@ -2084,6 +2147,8 @@
         if (buf.length >= 4) {
           e.preventDefault();
           const code = buf; buf = "";
+          // page Ventes avec le scanner intégré : le code y est traité directement
+          if (state.scanPanelHandle && document.body.contains(state.scanPanelHandle.m)) { state.scanPanelHandle.code(code); return; }
           const a = articleByCode(code);
           if (a && !(scanAutoGet() && state.ventesReady)) { const ok = cartAdd(a, true); beep(ok); }
           else if (a) scanDialog({ code });
@@ -3784,7 +3849,8 @@
       });
     };
     el.innerHTML = `
-      <div class="stack">
+      <div class="ventes-split">
+      <div class="stack vs-left">
         ${ventesMissingBanner()}
         <div class="card">
           <div class="card-head compact-head">
@@ -3800,7 +3866,28 @@
           <div id="v-sum" class="sum-bar"></div>
           <div id="v-table"></div>
         </div>
+      </div>
+      <aside class="vs-right" id="scan-dock" aria-label="Scanner"></aside>
       </div>`;
+    /* Scanner intégré à droite : chaque article scanné apparaît aussitôt dans le tableau de gauche */
+    const dock = $("#scan-dock");
+    const DOCK_KEY = "itsoft-ventes-scan";
+    const dockIdle = () => {
+      dock.innerHTML = `<div class="scan-panel sp-idle"><div class="sp-head"><h2>${ICON.scan} Scanner</h2></div>
+        <button type="button" class="scan-hero sp-start" id="sp-start"><span class="scan-hero-ico">${ICON.scan}</span>
+          <span class="scan-hero-txt"><strong>Démarrer le scan</strong><small>Les articles scannés s'ajoutent en direct au tableau des ventes</small></span></button>
+        <p class="muted" style="font-size:13px;margin:10px 2px 0">La caméra choisie dans Paramètres est utilisée. Un lecteur code-barres USB fonctionne aussi.</p></div>`;
+    };
+    const dockStart = () => {
+      try { localStorage.setItem(DOCK_KEY, "1"); } catch (_) {}
+      scanDialog({
+        container: dock,
+        onChange: num => { state.hiSale = num; draw(); },
+        onStop: () => { try { localStorage.setItem(DOCK_KEY, "0"); } catch (_) {} state.hiSale = null; draw(); dockIdle(); }
+      });
+    };
+    state.ventesScanStart = () => { if (state.scanPanelHandle && document.body.contains(state.scanPanelHandle.m)) state.scanPanelHandle.focus(); else dockStart(); };
+    dock.addEventListener("click", e => { if (e.target.closest("#sp-start")) dockStart(); });
     const draw = () => {
       const list = apply();
       const sales = list.filter(s => !s.repair), reps = list.filter(s => s.repair);
@@ -3814,7 +3901,7 @@
         <span><span class="muted">Bénéfice :</span> <strong style="color:var(--success)">${money(profit)}</strong>${unknown ? ` <span class="muted" title="Ventes d'articles dont le prix d'achat est inconnu">(${int(unknown)} sans prix d'achat)</span>` : ""}</span>`;
       $("#v-table").innerHTML = list.length ? `<div class="table-wrap"><table class="table responsive compact">
         <thead><tr><th>Date</th><th>Type</th><th>Détail</th><th>Client</th><th class="num">Total</th><th class="num">Bénéfice</th><th></th></tr></thead>
-        <tbody>${list.slice(0, 500).map(s => `<tr class="clickable" data-sale="${esc(s.num)}">
+        <tbody>${list.slice(0, 500).map(s => `<tr class="clickable ${s.num === state.hiSale ? "row-new" : ""}" data-sale="${esc(s.num)}">
           <td data-label="Date">${fmtDateTime(s.date)}</td>
           <td data-label="Type">${s.repair ? '<span class="badge info">Réparation</span>' : '<span class="badge">Vente</span>'}</td>
           <td class="primary-cell" data-label="Détail"><span class="ellipsis" style="display:block;max-width:320px">${esc(s.lines.map(l => (l.Quantite > 1 ? l.Quantite + " × " : "") + (l.Article || "")).join(", "))}</span></td>
@@ -3826,6 +3913,8 @@
         : `<div class="empty">Aucune vente pour ces critères.</div>`;
     };
     draw();
+    let autoStart = "1"; try { autoStart = localStorage.getItem(DOCK_KEY) || "0"; } catch (_) {}
+    if (autoStart === "1" && state.ventesReady) dockStart(); else dockIdle();
     $("#v-q").addEventListener("input", e => { f.q = e.target.value; draw(); });
     el.onchange = e => {
       if (e.target.id === "v-type") { f.type = e.target.value; draw(); }
@@ -4214,7 +4303,7 @@
     } else {
       try { await loadData(); render(); } catch (e) { return showFatal(e); }
     }
-    $("#btn-scan-top").addEventListener("click", () => { if (state.loaded) scanDialog(); });
+    $("#btn-scan-top").addEventListener("click", () => { if (state.loaded) openScanner(); });
     $("#btn-refresh").addEventListener("click", async e => {
       const b = e.currentTarget; if (b.classList.contains("spinning")) return;
       setSyncing(true);
