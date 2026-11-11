@@ -457,7 +457,10 @@
     state.cart = state.cart.filter(l => l.svc || state.articles.some(a => a.id === l.id));
     state.loaded = true;
     // préchargement de la lecture des codes : la fenêtre « Scanner » s'ouvre ensuite sans attente
-    setTimeout(() => { loadScript(LIB_SCAN).catch(() => {}); }, 1500);
+    setTimeout(() => {
+      loadScript(LIB_SCAN).catch(() => {});
+      if (scanModeGet() === "price") ocrWorker().catch(() => {}); // moteur de lecture des prix prêt d'avance
+    }, 1500);
   }
 
   /* ============ Routage ============ */
@@ -1467,7 +1470,7 @@
       const v = $("#scan-cam video", m);
       if (!v || !v.videoWidth) return null;
       const vw = v.videoWidth, vh = v.videoHeight, cw = Math.round(vw * 0.86), ch = Math.round(vh * 0.5); // même zone que le cadre affiché
-      const scale = Math.min(3, 200 / ch);
+      const scale = Math.min(2, 170 / ch); // image d'analyse légère : rapide à traiter
       const c = document.createElement("canvas");
       c.width = Math.round(cw * scale); c.height = Math.round(ch * scale);
       const x = c.getContext("2d", { willReadFrequently: true });
@@ -1487,17 +1490,40 @@
         if (g[yy * W + xx] < mean * 0.82 && g[yy * W + xx] < 200) { on[yy * W + xx] = 1; dark++; }
       }
       if (dark > px * 0.5) { for (let p = 0; p < px; p++) on[p] = on[p] ? 0 : 1; dark = px - dark; } // chiffres clairs sur fond sombre
-      // traits fins (stylo) : on les épaissit d'un pixel pour mieux reconnaître les chiffres
-      if (dark < px * 0.08) {
-        const o = on; on = new Uint8Array(px);
-        for (let yy = 1; yy < H - 1; yy++) for (let xx = 1; xx < W - 1; xx++) {
+      // on ne garde que la zone qui contient l'écriture : image beaucoup plus petite, lecture beaucoup plus rapide
+      const rowMin = Math.max(2, Math.round(W * 0.004)), colMin = 1;
+      let ya = -1, yb = -1;
+      for (let yy = 0; yy < H; yy++) { let n = 0; for (let xx = 0; xx < W; xx++) n += on[yy * W + xx]; if (n >= rowMin) { if (ya < 0) ya = yy; yb = yy; } }
+      if (ya < 0 || yb - ya < 8) return "vide"; // rien d'écrit dans le cadre : pas de lecture
+      let xa = -1, xb = -1;
+      for (let xx = 0; xx < W; xx++) { let n = 0; for (let yy = ya; yy <= yb; yy++) n += on[yy * W + xx]; if (n >= colMin) { if (xa < 0) xa = xx; xb = xx; } }
+      if (xa < 0) return "vide";
+      const pad = 4, bx = Math.max(0, xa - pad), by = Math.max(0, ya - pad), bw = Math.min(W, xb + pad + 1) - bx, bh = Math.min(H, yb + pad + 1) - by;
+      // épaisseur moyenne des traits (longueur des segments noirs horizontaux) : seuls les traits fins
+      // (stylo) sont épaissis — épaissir un chiffre déjà gras referme les boucles (le 5 devient 6)
+      let runs = 0, runPx = 0;
+      for (let yy = by; yy < by + bh; yy++) { let inRun = false; for (let xx = bx; xx < bx + bw; xx++) { const o = on[yy * W + xx]; if (o) { runPx++; if (!inRun) { runs++; inRun = true; } } else inRun = false; } }
+      if (runs && runPx / runs < 2.2) {
+        const o = on; on = o.slice();
+        for (let yy = Math.max(1, by); yy < Math.min(H - 1, by + bh); yy++) for (let xx = Math.max(1, bx); xx < Math.min(W - 1, bx + bw); xx++) {
           const p = yy * W + xx;
           on[p] = o[p] | o[p - 1] | o[p + 1] | o[p - W] | o[p + W];
         }
       }
-      for (let p = 0, i = 0; p < px; p++, i += 4) { const v = on[p] ? 0 : 255; d[i] = d[i + 1] = d[i + 2] = v; d[i + 3] = 255; }
-      x.putImageData(img, 0, 0);
-      return c;
+      const k = Math.min(3, Math.max(0.5, 56 / bh)), border = 14; // hauteur du texte ≈ 56 px, idéale pour la lecture
+      const out = document.createElement("canvas");
+      out.width = Math.round(bw * k) + border * 2; out.height = Math.round(bh * k) + border * 2;
+      const ox = out.getContext("2d");
+      ox.fillStyle = "#fff"; ox.fillRect(0, 0, out.width, out.height);
+      const sm = ox.createImageData(bw, bh), sd = sm.data;
+      for (let yy = 0; yy < bh; yy++) for (let xx = 0; xx < bw; xx++) {
+        const vv = on[(by + yy) * W + bx + xx] ? 0 : 255, i = (yy * bw + xx) * 4;
+        sd[i] = sd[i + 1] = sd[i + 2] = vv; sd[i + 3] = 255;
+      }
+      const tmp = document.createElement("canvas"); tmp.width = bw; tmp.height = bh; tmp.getContext("2d").putImageData(sm, 0, 0);
+      ox.imageSmoothingEnabled = true;
+      ox.drawImage(tmp, 0, 0, bw, bh, border, border, out.width - border * 2, out.height - border * 2);
+      return out;
     };
     async function ocrLoop() {
       if (ocrRunning) return;
@@ -1510,19 +1536,20 @@
           if (!ocrPaused) {
             const c = grab();
             if (!c) guideTxt("En attente de l'image de la caméra…");
+            else if (c === "vide") { guideTxt("Placez le prix dans le cadre"); ocrPrev = null; if (lastPrice.p != null) lastPrice = { p: null, t: 0 }; }
             else {
               guideTxt("Placez le prix dans le cadre");
               const r = await w.recognize(c);
-              const p = parsePrice(r.data.text);
-              // le même prix n'est relu qu'après avoir été retiré du cadre (ou après 15 s)
+              const p = parsePrice(r.data.text);              // le même prix n'est relu qu'après avoir été retiré du cadre (ou après 15 s)
               if (lastPrice.p != null && (p !== lastPrice.p || Date.now() - lastPrice.t > 15000)) lastPrice = { p: null, t: 0 };
-              if (p != null && r.data.confidence >= 40 && p !== lastPrice.p) {
-                if (ocrPrev === p && mode === "price" && !ocrPaused) { ocrPaused = true; showPrice(p); } // même valeur lue deux fois de suite : confirmée
+              if (p != null && r.data.confidence >= 25 && p !== lastPrice.p) {
+                // lecture très nette : acceptée tout de suite ; sinon il faut la même valeur deux fois de suite
+                if ((r.data.confidence >= 85 || ocrPrev === p) && mode === "price" && !ocrPaused) { ocrPaused = true; showPrice(p); }
                 ocrPrev = p;
               } else if (p == null) ocrPrev = null;
             }
           }
-          await new Promise(r => setTimeout(r, 350));
+          await new Promise(r => setTimeout(r, 40));
         }
       } finally { ocrRunning = false; }
     }
@@ -3529,7 +3556,7 @@
     card.addEventListener("click", e => { if (e.target.closest("#beep-test")) { beep(true); setTimeout(() => beep(false), 450); } });
     card.addEventListener("change", e => {
       const sm = e.target.closest('input[name="scanmode"]');
-      if (sm) { scanModeSet(sm.value); toast(sm.value === "price" ? "Scan : lecture du prix écrit." : "Scan : étiquettes QR / codes-barres.", "ok"); return; }
+      if (sm) { scanModeSet(sm.value); if (sm.value === "price") ocrWorker().catch(() => {}); toast(sm.value === "price" ? "Scan : lecture du prix écrit." : "Scan : étiquettes QR / codes-barres.", "ok"); return; }
       const r = e.target.closest('input[name="cam"]'); if (!r) return;
       camSet(r.value);
       const lab = r.closest(".cam-opt").querySelector("strong").textContent;
