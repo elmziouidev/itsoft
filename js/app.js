@@ -459,7 +459,7 @@
     // préchargement de la lecture des codes : la fenêtre « Scanner » s'ouvre ensuite sans attente
     setTimeout(() => {
       loadScript(LIB_SCAN).catch(() => {});
-      if (scanModeGet() === "price") ocrWorker().catch(() => {}); // moteur de lecture des prix prêt d'avance
+      if (scanModeGet() === "price") { ocrWorker().catch(() => {}); ocrDigits().catch(() => {}); } // moteur de lecture des prix prêt d'avance
     }, 1500);
   }
 
@@ -1245,6 +1245,17 @@
     })().catch(e => { ocrWorkerP = null; throw e; });
     return ocrWorkerP;
   }
+  /* Second moteur réservé aux chiffres : relit la zone du prix seule, pour une précision maximale */
+  let ocrDigitsP = null;
+  function ocrDigits() {
+    if (!ocrDigitsP) ocrDigitsP = (async () => {
+      await loadScript(LIB_OCR);
+      const w = await window.Tesseract.createWorker("eng", 1);
+      await w.setParameters({ tessedit_char_whitelist: "0123456789.,DHMAdh ", tessedit_pageseg_mode: "7" });
+      return w;
+    })().catch(e => { ocrDigitsP = null; throw e; });
+    return ocrDigitsP;
+  }
   /* « 1 030 », « 1030 », « 105,00 », « 1.030 » → nombre */
   function parsePrice(text) {
     let s = String(text || "").replace(/[\s ]/g, "");
@@ -1289,6 +1300,13 @@
       if (s > bs) { bs = s; best = a; }
     }
     return bs >= 0.6 ? best : null;
+  }
+  /* Prix = dernier nombre de la ligne lue en chiffres seuls (le prix suit le modèle) ; espaces des milliers recollés */
+  function lastNumber(text) {
+    let t = String(text || "");
+    t = (t.split(/(?:dhs?|mad)/i)[0] || t).replace(/(\d)\s+(\d{3})(?!\d)/g, "$1$2");
+    const g = t.match(/\d[\d.,]*/g);
+    return g ? parsePrice(g[g.length - 1]) : null;
   }
   const CODE_FIELD = "CodeBarre";
   const codeCol = () => findCol(CODE_FIELD);
@@ -1588,13 +1606,13 @@
     });
 
     /* ---- Mode « Prix écrit » : lecture d'un simple nombre par la caméra (OCR) ---- */
-    let mode = "code", ocrPaused = false, ocrPrev = null, ocrRunning = false, lastPrice = { p: null, t: 0 };
+    let mode = "code", ocrPaused = false, ocrPrev = null, ocrRunning = false, lastPrice = { p: null, t: 0 }, lastCodeT = 0;
     const guideTxt = s => { const g = $("#price-guide-txt", m); if (g) g.textContent = s; };
     const setMode = md => {
       mode = md;
       $("#scan-mode-info", m).innerHTML = md === "price"
-        ? `<span class="seg-num">123</span><span>Lecture du <strong>prix écrit</strong> (ex. 150,50 DH)</span><a href="#/parametres" data-close data-goset>Changer dans Paramètres</a>`
-        : `${ICON.scan}<span>Lecture des <strong>étiquettes QR</strong> et codes-barres</span><a href="#/parametres" data-close data-goset>Changer dans Paramètres</a>`;
+        ? `<span class="seg-num">123</span><span>Lecture simultanée : <strong>QR codes</strong>, <strong>codes-barres</strong> et <strong>prix écrits</strong> (ex. HONOR PLAY 10 - Prix : 110)</span><a href="#/parametres" data-close data-goset>Changer dans Paramètres</a>`
+        : `${ICON.scan}<span>Lecture simultanée : <strong>QR codes</strong> et <strong>codes-barres</strong></span><a href="#/parametres" data-close data-goset>Changer dans Paramètres</a>`;
       $("#price-guide", m).hidden = md !== "price";
       $("#scan-input-lab", m).textContent = md === "price" ? "Prix (saisie manuelle, puis Entrée)" : "Code (lecteur code-barres ou saisie)";
       inp.placeholder = md === "price" ? "Ex. 1030" : "Scannez ou tapez le code puis Entrée";
@@ -1724,15 +1742,23 @@
       ocrRunning = true;
       try {
         guideTxt("Chargement de la lecture des chiffres…");
-        let w;
-        try { w = await ocrWorker(); } catch (e) { guideTxt("Lecture des chiffres indisponible : " + e.message); return; }
+        let w, wd;
+        try { [w, wd] = await Promise.all([ocrWorker(), ocrDigits()]); } catch (e) { guideTxt("Lecture des chiffres indisponible : " + e.message); return; }
         while (mode === "price" && document.body.contains(m)) {
+          if (Date.now() - lastCodeT < 2000) { await new Promise(r => setTimeout(r, 150)); continue; } // un QR / code-barres vient d'être lu
           if (!ocrPaused) {
-            const c = grab();            if (!c) guideTxt("En attente de l'image de la caméra…");
+            const c = grab();
+            if (!c) guideTxt("En attente de l'image de la caméra…");
             else if (c === "vide") { guideTxt("Placez le prix dans le cadre"); ocrPrev = null; if (lastPrice.p != null) lastPrice = { p: null, t: 0 }; }
             else {
-              const r = await w.recognize(c);
-              const lab = parseLabel(r.data.text), p = lab.price;
+              // deux lectures en parallèle sur la même image : les lettres (modèle) et les chiffres seuls (prix, précision maximale)
+              const [r, r2] = await Promise.all([w.recognize(c), wd.recognize(c)]);
+              const lab = parseLabel(r.data.text);
+              // étiquette « … - Prix : 110 » : le prix suit le mot « Prix » ; prix seul (« 780 DH ») : lecture des chiffres seuls
+              const hasPrix = /p\s*r\s*[i1l|]\s*x/i.test(r.data.text);
+              const dp = hasPrix ? null : lastNumber(r2.data.text);
+              const p = dp != null ? dp : lab.price;
+              if (dp != null) r.data.confidence = r2.data.confidence;
               // ce que la caméra lit, en direct
               guideTxt(p != null ? `Lu : ${lab.model ? lab.model + " - " : ""}Prix : ${labelPrice(p)} — vérification…` : "Écriture détectée — rapprochez ou redressez l'étiquette");
               // le même prix n'est relu qu'après avoir été retiré du cadre (ou après 15 s)
@@ -1809,7 +1835,22 @@
     if (!document.body.contains(m)) return;
     const F_ = window.Html5QrcodeSupportedFormats;
     // formats utiles seulement : chaque format en plus ralentit l'analyse de chaque image
-    const formats = F_ ? [F_.QR_CODE, F_.EAN_13, F_.EAN_8, F_.UPC_A, F_.CODE_128] : undefined;
+    // QR + tous les codes-barres courants des produits (EAN, UPC, Code 128/39/93, ITF)
+    const formats = F_ ? [F_.QR_CODE, F_.EAN_13, F_.EAN_8, F_.UPC_A, F_.UPC_E, F_.CODE_128, F_.CODE_39, F_.CODE_93, F_.ITF].filter(v => v !== undefined) : undefined;
+    // précision : QR, EAN et UPC ont une clé de contrôle (lecture sûre dès la 1re fois) ;
+    // les autres codes-barres doivent être lus deux fois à l'identique avant d'être acceptés
+    const SAFE = /QR_CODE|EAN_13|EAN_8|UPC_A|UPC_E/;
+    let pend = { txt: "", t: 0 };
+    const onCode = (txt, res) => {
+      const fmt = String(res && res.result && res.result.format && (res.result.format.formatName || res.result.format) || "");
+      if (fmt && !SAFE.test(fmt)) {
+        const now = Date.now();
+        if (pend.txt !== txt || now - pend.t > 1200) { pend = { txt, t: now }; return; }
+        pend = { txt: "", t: 0 };
+      }
+      lastCodeT = Date.now(); // un code vient d'être lu : la lecture des prix écrits se met en retrait
+      handle(txt);
+    };
     const start = async source => {
       await stop();
       if (!document.body.contains(m)) return;
@@ -1818,14 +1859,13 @@
       reader = new window.Html5Qrcode("scan-cam", { formatsToSupport: formats, verbose: false, experimentalFeatures: { useBarCodeDetectorIfSupported: true } });
       // zone de lecture = toute l'image : le code est reconnu où qu'il soit, sans viser
       const box = (w, h) => ({ width: Math.max(50, Math.floor(w * 0.98)), height: Math.max(50, Math.floor(h * 0.98)) });
-      // 25 analyses par seconde, pas de lecture en miroir, image HD pour lire de plus loin
+      // QR et codes-barres lus en permanence, dans tous les modes (moins souvent quand le prix écrit est lu aussi),
+      // pas de lecture en miroir, image HD avec mise au point continue pour les codes-barres fins
       await reader.start(source, {
-        fps: 25, qrbox: box, disableFlip: true, // pas de format imposé : tout le champ de la caméra est utilisé
-        videoConstraints: { ...source, width: { ideal: 1280 }, height: { ideal: 720 } }
-      }, txt => { if (mode === "code") handle(txt); }, () => {});
+        fps: mode === "price" ? 12 : 25, qrbox: box, disableFlip: true,
+        videoConstraints: { ...source, width: { ideal: 1280 }, height: { ideal: 720 }, advanced: [{ focusMode: "continuous" }] }
+      }, onCode, () => {});
       const wt = $("#scan-wait", m); if (wt) wt.hidden = true;
-      // mode « Prix écrit » : l'analyse des QR codes est suspendue, tout le processeur va à la lecture des chiffres
-      if (mode === "price") { try { reader.pause(false); } catch (_) {} }
     };
     try {
       const pref = camGet() || null;
@@ -3675,9 +3715,9 @@
             <h3 class="set-sub">Ce que lit le bouton « Scanner » (F2)</h3>
             <div class="cam-list" id="scan-mode-list">
               <label class="cam-opt"><input type="radio" name="scanmode" value="code" ${scanModeGet() === "code" ? "checked" : ""}>
-                <span><strong>${ICON.scan} Étiquettes QR / codes-barres</strong><span class="muted">Le plus rapide et le plus sûr : l'article est reconnu directement avec son prix</span></span></label>
+                <span><strong>${ICON.scan} QR codes + codes-barres</strong><span class="muted">Le plus rapide et le plus sûr : les deux sont lus en même temps, l'article est reconnu directement avec son prix</span></span></label>
               <label class="cam-opt"><input type="radio" name="scanmode" value="price" ${scanModeGet() === "price" ? "checked" : ""}>
-                <span><strong><span class="seg-num">123</span> Prix écrit</strong><span class="muted">Lecture d'un prix écrit à la main ou imprimé (ex. 150,50 DH), puis choix de l'article</span></span></label>
+                <span><strong><span class="seg-num">123</span> QR codes + codes-barres + prix écrit</strong><span class="muted">Lit aussi les étiquettes écrites « MODELE - Prix : PRIX » (vente directe) ou un prix seul (ex. 150,50 DH, puis choix de l'article)</span></span></label>
             </div>
             <h3 class="set-sub" style="margin-top:20px">Après le scan</h3>
             <div class="cam-list">
@@ -3763,7 +3803,7 @@
       const sm = e.target.closest('input[name="scanmode"]');
       const sa = e.target.closest('input[name="scanauto"]');
       if (sa) { scanAutoSet(sa.value === "1"); toast(sa.value === "1" ? "Scan : vente enregistrée directement dans Ventes." : "Scan : articles ajoutés au panier.", "ok"); return; }
-      if (sm) { scanModeSet(sm.value); if (sm.value === "price") ocrWorker().catch(() => {}); toast(sm.value === "price" ? "Scan : lecture du prix écrit." : "Scan : étiquettes QR / codes-barres.", "ok"); return; }
+      if (sm) { scanModeSet(sm.value); if (sm.value === "price") { ocrWorker().catch(() => {}); ocrDigits().catch(() => {}); } toast(sm.value === "price" ? "Scan : QR, codes-barres et prix écrits." : "Scan : QR codes et codes-barres.", "ok"); return; }
       const r = e.target.closest('input[name="cam"]'); if (!r) return;
       camSet(r.value);
       const lab = r.closest(".cam-opt").querySelector("strong").textContent;
