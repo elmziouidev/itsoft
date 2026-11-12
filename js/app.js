@@ -3731,6 +3731,76 @@ self.onmessage = async e => {
   })();
 
   /* Reconnaissance vocale du navigateur (Chrome, Edge, Safari) : écoute jusqu'à 2,5 s de silence */
+  /* ==== LECTURE DE LA BOÎTE PAR L'IA (Claude, via le relais Azure : relais-ia/) ====
+     Photo de l'emballage → marque, modèle, mémoire, couleur, catégorie. La clé de l'IA reste sur le relais. */
+  const IA = {
+    on: () => !!cfg.iaUrl || DS.mode === "demo",
+    warmAt: 0,
+    // réveil du relais dès l'ouverture de la fiche : la 1re lecture n'attend pas le démarrage du serveur
+    warm() { if (!cfg.iaUrl || Date.now() - this.warmAt < 240000) return; this.warmAt = Date.now(); fetch(cfg.iaUrl, { method: "GET" }).catch(() => {}); },
+    // netteté d'une image (variance du laplacien sur une version réduite) : on garde la photo la moins floue
+    sharp(src, sw, sh) {
+      const w = 240, h = Math.max(1, Math.round(sh * w / sw)), c = document.createElement("canvas"); c.width = w; c.height = h;
+      const x = c.getContext("2d", { willReadFrequently: true }); x.drawImage(src, 0, 0, w, h);
+      const d = x.getImageData(0, 0, w, h).data, g = new Float32Array(w * h);
+      for (let i = 0; i < w * h; i++) g[i] = d[i * 4] * .3 + d[i * 4 + 1] * .59 + d[i * 4 + 2] * .11;
+      let s = 0, s2 = 0, n = 0;
+      for (let y = 1; y < h - 1; y++) for (let k = 1; k < w - 1; k++) { const i = y * w + k, l = 4 * g[i] - g[i - 1] - g[i + 1] - g[i - w] - g[i + w]; s += l; s2 += l * l; n++; }
+      return n ? s2 / n - (s / n) ** 2 : 0;
+    },
+    // image → JPEG réduit à 1280 px (texte de l'emballage lisible, envoi léger, lecture plus rapide)
+    jpeg(src, sw, sh) {
+      const k = Math.min(1, 1280 / Math.max(sw, sh)), c = document.createElement("canvas");
+      c.width = Math.round(sw * k); c.height = Math.round(sh * k);
+      c.getContext("2d").drawImage(src, 0, 0, c.width, c.height);
+      return c.toDataURL("image/jpeg", 0.85);
+    },
+    // 3 images à 150 ms d'intervalle depuis une vidéo : la plus nette est envoyée
+    async bestFrame(v) {
+      let best = null;
+      for (let i = 0; i < 3; i++) {
+        if (i) await new Promise(r => setTimeout(r, 150));
+        const c = document.createElement("canvas"); c.width = v.videoWidth; c.height = v.videoHeight; c.getContext("2d").drawImage(v, 0, 0);
+        const s = this.sharp(c, c.width, c.height);
+        if (!best || s > best.s) best = { s, c };
+      }
+      return this.jpeg(best.c, best.c.width, best.c.height);
+    },
+    async fromFile(file) {
+      const b = await createImageBitmap(file);
+      try { return this.jpeg(b, b.width, b.height); } finally { b.close && b.close(); }
+    },
+    // fiches de démonstration (mode démo, sans relais) : simulent une lecture réussie
+    DEMO: [
+      { designation: "REDMI 14C 8/256GO NOIR", marque: "Xiaomi", modele: "Redmi 14C", memoire: "8/256GO", couleur: "NOIR", categorie: "SMARTPHONE", caracteristiques: "Double SIM, 4G", texte_lisible: true, confiance: 0.94 },
+      { designation: "GALAXY A16 4/128GO BLEU", marque: "Samsung", modele: "Galaxy A16", memoire: "4/128GO", couleur: "BLEU", categorie: "SMARTPHONE", caracteristiques: "5G, double SIM", texte_lisible: true, confiance: 0.9 },
+      { designation: "CHARGEUR RAPIDE 33W USB-C", marque: "Xiaomi", modele: "33W", memoire: "", couleur: "BLANC", categorie: "ACCESSOIRE", caracteristiques: "Câble USB-C inclus", texte_lisible: true, confiance: 0.86 }
+    ],
+    async read(dataUrl, code) {
+      const t0 = performance.now();
+      if (!cfg.iaUrl) { // démo
+        await new Promise(r => setTimeout(r, 1100));
+        const i = [...String(code || "x")].reduce((t, ch) => t + ch.charCodeAt(0), 0) % this.DEMO.length;
+        return { fiche: { ...this.DEMO[i] }, ms: Math.round(performance.now() - t0), demo: true };
+      }
+      const token = await Auth.getToken(undefined, true).catch(() => Auth.getToken());
+      const ac = new AbortController(), to = setTimeout(() => ac.abort(), 35000);
+      try {
+        const ex = state.articles.slice().sort((a, b) => (+b.id || 0) - (+a.id || 0)).map(a => String(artName(a) || "").trim()).filter(Boolean).slice(0, 30);
+        const r = await fetch(cfg.iaUrl, {
+          method: "POST", signal: ac.signal,
+          headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
+          body: JSON.stringify({ image: dataUrl.split(",")[1], mediaType: "image/jpeg", code: code || "", categories: categories(true), exemples: ex })
+        });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok || !j.ok) throw new Error(j.error || `relais IA (${r.status})`);
+        return { fiche: j.fiche, ms: Math.round(performance.now() - t0) };
+      } catch (e) {
+        throw e.name === "AbortError" ? new Error("pas de réponse du relais IA (délai dépassé)") : e;
+      } finally { clearTimeout(to); }
+    }
+  };
+
   const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition || null;
   function listenSpeech({ onInterim, onResult, onError, onEnd, single }) {
     const r = new SpeechRec();
@@ -3837,6 +3907,14 @@ self.onmessage = async e => {
     const codesVal = (article ? codesOf(article).join(" ") : (opts.code || "")).replace(/(\S)$/, "$1 "); // espace final : prêt pour le code suivant
     const body = `<form id="art-form" class="form-grid" novalidate>
       ${opts.code ? `<div class="full alert info af-code">${ICON.scan}<div>Code-barres scanné : <strong>${esc(opts.code)}</strong>. Il sera rattaché à ce nouvel article.</div></div>` : ""}
+      ${IA.on() ? `<div class="full ia-box" id="ia-box">
+        <div class="ia-row">
+          <button type="button" class="ia-go" id="ia-go"><span class="ia-ico">📷</span><span class="ia-lab"><strong>Lire la boîte avec l'IA</strong><small>Marque, modèle, mémoire, couleur et catégorie remplis tout seuls</small></span></button>
+          <label class="btn sm ia-file" title="Choisir ou prendre une photo de la boîte">🖼️<span class="hide-sm"> Photo</span><input type="file" accept="image/*" capture="environment" id="ia-file" hidden></label>
+        </div>
+        <div class="ia-cam" id="ia-cam" hidden><video playsinline muted autoplay></video><div class="ia-cam-acts"><button type="button" class="btn primary" id="ia-shot">📸 Photographier la boîte</button><button type="button" class="btn" id="ia-cam-x">Annuler</button></div></div>
+        <div class="ia-res" id="ia-res" hidden></div>
+      </div>` : ""}
       ${SpeechRec ? `<div class="full dict-box" id="dict-box">
         <button type="button" class="dict-go" id="dict-go"><span class="dict-ico">🎤</span><span class="dict-lab"><strong>Dicter ${isNew ? "l'article" : "les modifications"}</strong><small>Parlez, puis vérifiez avant d'enregistrer</small></span></button>
         <div class="dict-help">Dites par exemple : « <em>Redmi 14C noir 128 Go, catégorie smartphone, prix d'achat 1430, prix de vente 1890, quantité 3, fournisseur Sud Télécom</em> ». Le 🎤 à côté d'un champ dicte ce champ seul.</div>
@@ -3970,6 +4048,94 @@ self.onmessage = async e => {
         undo = null; sum.hidden = true; toast("Dictée annulée : champs remis comme avant.", "ok");
       }
     });
+    /* ---- Lecture de la boîte par l'IA ---- */
+    if (IA.on()) {
+      IA.warm();
+      const box = $("#ia-box", m), res = $("#ia-res", m), cam = $("#ia-cam", m), go = $("#ia-go", m);
+      let camStream = null, iaUndo = null, iaBusy = false;
+      const camStop = () => { if (camStream) { camStream.getTracks().forEach(t => t.stop()); camStream = null; } cam.hidden = true; };
+      new MutationObserver((_, o) => { if (!document.body.contains(m)) { o.disconnect(); camStop(); } }).observe($("#modal-root"), { childList: true });
+      // caméra du scanner déjà allumée (page Ventes) : photo prise sans rien ouvrir
+      const liveVideo = () => { const v = $("#scan-dock .scan-cam > video") || $(".scan-cam > video"); return v && v.videoWidth && v.readyState >= 2 && !v.closest("#modal-root") ? v : null; };
+      const setBusy = (on, thumb) => {
+        iaBusy = on; go.disabled = on; go.classList.toggle("on", on);
+        go.querySelector(".ia-lab strong").textContent = on ? "L'IA lit la boîte…" : "Lire la boîte avec l'IA";
+        go.querySelector(".ia-lab small").textContent = on ? "2 à 4 secondes" : "Marque, modèle, mémoire, couleur et catégorie remplis tout seuls";
+        if (on && thumb) { res.hidden = false; res.innerHTML = `<div class="ia-wait"><img src="${thumb}" alt="Photo envoyée"><span class="spinner"></span><span>Lecture en cours…</span></div>`; }
+      };
+      // fiche reçue → champs ; « auto » : ne remplit que les champs encore vides
+      const apply = (r, auto) => {
+        const f = r.fiche, cx = dctx();
+        if (!f.texte_lisible || !f.designation) {
+          res.hidden = false;
+          res.innerHTML = `<div class="dict-warn">L'IA n'a pas pu lire le nom sur cette photo (floue, trop loin, ou mauvaise face de la boîte). Photographiez la face où le modèle est écrit en grand.</div>
+            <div class="dict-acts"><button type="button" class="btn sm" id="ia-again">📷 Reprendre une photo</button></div>`;
+          beep(false); return;
+        }
+        const want = { designation: f.designation, categorie: f.categorie, marque: f.marque, caract: [f.caracteristiques].filter(Boolean).join(" ") };
+        const done = [], kept = [];
+        iaUndo = [];
+        for (const [k, v] of Object.entries(want)) {
+          const el = elOf(k); if (!el || !v) continue;
+          if (auto && el.value.trim()) { kept.push(k); continue; }
+          const val = k === "categorie" ? Dictee.pick(cx.cats, v).value : v;
+          iaUndo.push([k, el.value]);
+          if (setField(k, val)) done.push([k, val]);
+        }
+        beep(true);
+        const low = f.confiance < 0.6;
+        res.hidden = false;
+        res.innerHTML = `<div class="dict-heard">Lu sur la boîte${r.demo ? " (démonstration)" : ""} en ${(r.ms / 1000).toFixed(1)} s${f.marque ? ` · marque ${esc(f.marque)}` : ""}${f.memoire ? ` · ${esc(f.memoire)}` : ""}${f.couleur ? ` · ${esc(f.couleur)}` : ""}</div>
+          <div class="dict-items">${done.map(([k, v]) => `<span class="dict-item"><b>${DLAB[k]}</b> ${esc(v)}</span>`).join("")}</div>
+          ${kept.length ? `<div class="muted" style="font-size:12.5px">Déjà rempli, non modifié : ${kept.map(k => DLAB[k]).join(", ")}.</div>` : ""}
+          ${low ? `<div class="dict-warn">⚠ Lecture incertaine (${Math.round(f.confiance * 100)} %) : vérifiez le modèle, ou reprenez une photo plus nette.</div>` : ""}
+          <div class="dict-acts">${iaUndo.length ? `<button type="button" class="btn sm" id="ia-undo">↶ Annuler</button>` : ""}<button type="button" class="btn sm" id="ia-again">📷 Reprendre une photo</button><span class="muted">Vérifiez, puis saisissez le prix${SpeechRec ? " (ou dictez-le 🎤)" : ""}.</span></div>`;
+        const pv = M.prix && elOf("prix"); if (pv && !pv.value) setTimeout(() => pv.focus(), 50); // le prix est la suite logique
+      };
+      const run = async (dataUrl, auto) => {
+        if (iaBusy) return;
+        setBusy(true, dataUrl);
+        try { apply(await IA.read(dataUrl, opts.code || ""), auto); }
+        catch (e) {
+          beep(false);
+          res.hidden = false;
+          res.innerHTML = `<div class="dict-warn">Lecture impossible : ${esc(e.message)}</div><div class="dict-acts"><button type="button" class="btn sm" id="ia-again">📷 Réessayer</button></div>`;
+        } finally { setBusy(false); }
+      };
+      // pas de caméra du scanner : petite caméra dans la fiche (caméra choisie dans Paramètres)
+      const openCam = async () => {
+        try {
+          const pref = camGet();
+          camStream = await navigator.mediaDevices.getUserMedia({ audio: false, video: { ...(pref ? { deviceId: { ideal: pref } } : { facingMode: "environment" }), width: { ideal: 1920 }, height: { ideal: 1080 } } });
+          const v = $("video", cam); v.srcObject = camStream; await v.play().catch(() => {});
+          cam.hidden = false;
+        } catch (e) { toast("Caméra indisponible : choisissez une photo de la boîte (🖼️).", "bad"); $("#ia-file", m).click(); }
+      };
+      const start = async auto => {
+        const v = liveVideo();
+        if (v) return run(await IA.bestFrame(v), auto);
+        if (auto) return; // lecture automatique seulement avec la caméra du scanner
+        if (window.isSecureContext && navigator.mediaDevices && navigator.mediaDevices.getUserMedia) return openCam();
+        $("#ia-file", m).click();
+      };
+      box.addEventListener("click", async e => {
+        if (e.target.closest("#ia-go") || e.target.closest("#ia-again")) { e.preventDefault(); return start(false); }
+        if (e.target.closest("#ia-shot")) { const v = $("video", cam); const d = await IA.bestFrame(v); camStop(); return run(d, false); }
+        if (e.target.closest("#ia-cam-x")) return camStop();
+        if (e.target.closest("#ia-undo") && iaUndo) {
+          iaUndo.forEach(([k, v]) => { const el = elOf(k); if (el) { el.value = v; el.dispatchEvent(new Event("input", { bubbles: true })); const f = el.closest(".field"); if (f) f.classList.remove("dict-filled"); } });
+          iaUndo = null; res.hidden = true; toast("Lecture IA annulée : champs remis comme avant.", "ok");
+        }
+      });
+      $("#ia-file", m).addEventListener("change", async e => {
+        const file = e.target.files && e.target.files[0]; e.target.value = "";
+        if (!file) return;
+        try { run(await IA.fromFile(file), false); } catch (err) { toast("Photo illisible : " + err.message, "bad"); }
+      });
+      // nouvel article scanné avec la caméra du scanner : la boîte est encore devant → lecture immédiate, sans clic
+      if (isNew && opts.code && cfg.iaAuto !== false && liveVideo()) setTimeout(() => start(true), 250);
+    }
+
     // lecteur code-barres dans le champ des codes : Entrée ajoute un espace au lieu d'enregistrer la fiche
     const codesInp = $("#f__codes", m);
     // curseur placé après un espace : le code scanné suivant ne se colle pas au précédent

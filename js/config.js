@@ -87,6 +87,11 @@ window.APP_CONFIG = {
     Nom_article: { liste: "Tbl_categorie", cle: "ID", libelle: "" }
   },
 
+  // Lecture de la boîte par l'IA (photo → marque, modèle, mémoire, couleur, catégorie).
+  // Adresse du relais Azure installé avec le guide relais-ia/LISEZMOI.md ; "" = fonction désactivée.
+  iaUrl: "",
+  iaAuto: true,   // lecture automatique dès l'ouverture de la fiche quand la caméra du scanner est allumée
+
   // Paramètres commerciaux
   nomEntreprise: "ITSoft",
   devise: "MAD",

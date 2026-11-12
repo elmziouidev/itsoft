@@ -1075,6 +1075,25 @@ body.has-dock .view { padding-bottom: calc(var(--dock-h, 0px) + 40px); }
 .cd-add .input { flex: 1; min-width: 0; font-family: ui-monospace, Consolas, monospace; }
 @media (max-width: 480px) { .cd-add { flex-wrap: wrap; } .cd-add .input { flex-basis: 100%; } .cd-add .btn { flex: 1; } }
 
+/* Lecture de la boîte par l'IA (fiche article) */
+.ia-box { border: 1px solid color-mix(in srgb, #0891b2 32%, var(--border)); background: color-mix(in srgb, #0891b2 6%, var(--surface)); border-radius: 12px; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
+.ia-row { display: flex; gap: 8px; align-items: stretch; }
+.ia-go { flex: 1; display: flex; align-items: center; gap: 12px; padding: 10px 14px; border: 0; border-radius: 12px; cursor: pointer; text-align: left; font: inherit; color: #fff; background: linear-gradient(135deg, #0891b2, #0e7490); box-shadow: 0 6px 16px rgba(8, 145, 178, .3); min-width: 0; }
+.ia-go:hover { filter: brightness(1.06); }
+.ia-go[disabled] { cursor: progress; filter: saturate(.8); }
+.ia-go .ia-ico { display: grid; place-items: center; width: 40px; height: 40px; border-radius: 50%; background: rgba(255,255,255,.2); font-size: 20px; flex-shrink: 0; }
+.ia-go.on .ia-ico { animation: dictPulse 1.2s ease-in-out infinite; }
+.ia-go .ia-lab { display: flex; flex-direction: column; line-height: 1.2; min-width: 0; }
+.ia-go .ia-lab strong { font-size: 16px; font-weight: 800; }
+.ia-go .ia-lab small { font-size: 12px; opacity: .9; }
+.ia-file { align-self: stretch; display: inline-flex; align-items: center; justify-content: center; white-space: nowrap; }
+.ia-cam { position: relative; border-radius: 10px; overflow: hidden; background: #111; }
+.ia-cam video { width: 100%; max-height: 38vh; object-fit: contain; display: block; }
+.ia-cam-acts { position: absolute; left: 0; right: 0; bottom: 8px; display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; padding: 0 8px; }
+.ia-res { display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
+.ia-wait { display: flex; align-items: center; gap: 10px; color: var(--muted); }
+.ia-wait img { width: 64px; height: 48px; object-fit: cover; border-radius: 6px; border: 1px solid var(--border); }
+
 /* Dictée vocale (fiche article) */
 .dict-box { border: 1px solid color-mix(in srgb, #7c3aed 30%, var(--border)); background: color-mix(in srgb, #7c3aed 6%, var(--surface)); border-radius: 12px; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
 .dict-go { display: flex; align-items: center; gap: 12px; width: 100%; padding: 10px 14px; border: 0; border-radius: 12px; cursor: pointer; text-align: left; font: inherit; color: #fff; background: linear-gradient(135deg, #7c3aed, #4f46e5); box-shadow: 0 6px 16px rgba(79, 70, 229, .3); }
