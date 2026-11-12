@@ -1285,24 +1285,34 @@
   //  - centre lissé (1 image sur 4, ~17 ms) : petits codes-barres (tube, chargeur, câble) tenus au centre ; le grain
   //    de la caméra est moyenné le long des barres. Mesuré sur des barres fines de 2 px : 18 lectures sur 20,
   //    contre 15 sur 20 pour la lecture approfondie (un agrandissement ×2, lui, n'apportait rien).
-  const ZX_CENTER = { formats: ZX_FORMATS, tryHarder: true, tryRotate: false, tryInvert: false, tryDownscale: false, maxNumberOfSymbols: 2, returnErrors: true, center: 3 };
+  //    + cumul des images successives (avg), recalées malgré le tremblement de la main
+  const ZX_CENTER = { formats: ZX_FORMATS, tryHarder: true, tryRotate: false, tryInvert: false, tryDownscale: false, maxNumberOfSymbols: 2, returnErrors: true, center: 3, avg: true };
   const ZX_CYCLE = [ZX_FAST, ZX_FLASH, ZX_DEEP, ZX_CENTER];
+  // mode « Petit code » : lecture concentrée sur le centre (cadre affiché), le reste de l'image de temps en temps
+  const ZX_CYCLE_SMALL = [ZX_CENTER, ZX_CENTER, ZX_CENTER, ZX_FAST, ZX_CENTER, ZX_CENTER];
   const ZX_WORKER_SRC = `
-let Z = null, cv = null, cx = null, buf = null, gray = null;
+let Z = null, cv = null, cx = null, buf = null;
+const grays = {}; // images en niveaux de gris réutilisées, par taille (image entière / centre seul)
 const viaCanvas = (src, w, h) => {
   if (!cv || cv.width !== w || cv.height !== h) { cv = new OffscreenCanvas(w, h); cx = cv.getContext("2d", { willReadFrequently: true }); }
   cx.drawImage(src, 0, 0); return cx.getImageData(0, 0, w, h);
 };
 /* image de la caméra (VideoFrame) → ImageData : copie directe des pixels, sans passer par le processeur graphique.
    Caméras YUV (le cas courant) : le 1er plan est déjà l'image en niveaux de gris, exactement ce que lit ZXing. */
-async function fromVideoFrame(f) {
-  const r = f.visibleRect, W = r.width, H = r.height, fmt = f.format || "";
+async function fromVideoFrame(f, crop) {
+  const v = f.visibleRect, fmt = f.format || "";
   const yuv = /^(I420A?|I422|I444|NV12)$/.test(fmt), rgb = /^(RGB[AX]|BGR[AX])$/.test(fmt);
   if (!yuv && !rgb) return viaCanvas(f, f.displayWidth, f.displayHeight);
+  // centre seul (moitié de la largeur et de la hauteur) : 4 fois moins de pixels à copier ; coordonnées paires (YUV)
+  const ev = n => n & ~1;
+  const r = crop ? { x: v.x + ev(v.width / 4), y: v.y + ev(v.height / 4), width: ev(v.width / 2), height: ev(v.height / 2) } : { x: v.x, y: v.y, width: v.width, height: v.height };
+  const W = r.width, H = r.height;
   const size = f.allocationSize({ rect: r });
   if (!buf || buf.length < size) buf = new Uint8Array(size);
   const lay = await f.copyTo(buf, { rect: r });
-  if (!gray || gray.width !== W || gray.height !== H) gray = new ImageData(W, H);
+  const gk = W + "x" + H;
+  const gray = grays[gk] || (grays[gk] = new ImageData(W, H));
+  gray.cropped = !!crop;
   const o = lay[0].offset, s = lay[0].stride;
   if (yuv) {
     const u32 = new Uint32Array(gray.data.buffer);
@@ -1312,22 +1322,85 @@ async function fromVideoFrame(f) {
 }
 /* centre de l'image (moitié de la largeur et de la hauteur), en niveaux de gris, lissé verticalement sur 2r+1 lignes :
    le grain de la caméra disparaît, les barres (verticales) restent nettes → petits codes-barres mieux lus */
-let cL = null, cOut = null;
-function centerSmooth(img, r) {
-  const W = img.width, H = img.height, s = img.data;
-  const cw = W >> 1, ch = H >> 1, x0 = (W - cw) >> 1, y0 = (H - ch) >> 1;
-  if (!cL || cL.length !== cw * ch) cL = new Uint8Array(cw * ch);
+let cL = null, cOut = null, aF = null, aT = null, aN = 0, pNew = null, pAcc = null, aGen = -1;
+/* « ressemble à un code-barres » : rayures verticales fines au centre (beaucoup d'alternances clair/foncé
+   sur une courte largeur, sur plusieurs lignes consécutives). Sert à proposer le mode petit code quand
+   ZXing ne voit rien (code trop petit pour être même repéré). */
+function hasStripes(im) {
+  const w = im.width, h = im.height, u = new Uint32Array(im.data.buffer), P = 12, WIN = Math.max(120, w >> 2), STEP = 6;
+  // ligne y : zone la plus dense en alternances clair/foncé → { x0, n } (début de la zone, nombre d'alternances)
+  const dense = y => {
+    const row = y * w, ext = [];
+    let dir = 0, ref = u[row] & 255;
+    for (let x = 1; x < w; x++) {
+      const g = u[row + x] & 255;
+      if (dir >= 0 && g < ref - P) { if (dir > 0) ext.push(x); dir = -1; ref = g; }
+      else if (dir <= 0 && g > ref + P) { if (dir < 0) ext.push(x); dir = 1; ref = g; }
+      else if ((dir > 0 && g > ref) || (dir < 0 && g < ref)) ref = g;
+    }
+    let mx = 0, x0 = 0;
+    for (let i = 0, j = 0; i < ext.length; i++) { while (ext[i] - ext[j] > WIN) j++; if (i - j + 1 > mx) { mx = i - j + 1; x0 = ext[j]; } }
+    return { n: mx, x0 };
+  };
+  // ressemblance de deux lignes sur la zone (corrélation) : forte pour des barres verticales,
+  // faible pour du texte ou une texture (le motif change d'une ligne à l'autre)
+  const ncc = (y1, y2, x0, s = 0) => { // s : décalage horizontal toléré (code légèrement incliné)
+    const a = y1 * w, b = y2 * w + s; x0 = Math.max(x0, -s, 0); const x1 = Math.min(w, x0 + WIN, w - s);
+    let sa = 0, sb = 0, n = 0;
+    for (let x = x0; x < x1; x++) { sa += u[a + x] & 255; sb += u[b + x] & 255; n++; }
+    const ma = sa / n, mb = sb / n; let cab = 0, caa = 0, cbb = 0;
+    for (let x = x0; x < x1; x++) { const da = (u[a + x] & 255) - ma, db = (u[b + x] & 255) - mb; cab += da * db; caa += da * da; cbb += db * db; }
+    return caa && cbb ? cab / Math.sqrt(caa * cbb) : 0;
+  };
+  let run = 0, best = 0, prev = null;
+  for (let y = 0; y < h; y += STEP) {
+    const d = dense(y);
+    const ok = d.n >= 22 && prev && prev.n >= 22 && Math.max(ncc(y - STEP, y, prev.x0, -2), ncc(y - STEP, y, prev.x0, -1), ncc(y - STEP, y, prev.x0), ncc(y - STEP, y, prev.x0, 1), ncc(y - STEP, y, prev.x0, 2)) > 0.8;
+    run = ok ? run + 1 : 0;
+    if (run > best) best = run;
+    prev = d;
+  }
+  return best >= 3; // même motif sur ≥ 24 px de haut : des barres, pas du texte ni une texture
+}
+/* profil horizontal (moyenne de chaque colonne) : sert à recaler deux images malgré le tremblement de la main */
+function colProfile(src, w, h, out) { out.fill(0); for (let y = 0; y < h; y += 2) { const r = y * w; for (let x = 0; x < w; x++) out[x] += src[r + x]; } const k = 1 / Math.ceil(h / 2); for (let x = 0; x < w; x++) out[x] *= k; return out; }
+function centerSmooth(img, r, avg, gen) {
+  if (gen !== undefined && gen !== aGen) { aN = 0; aGen = gen; } // zoom ou caméra changés : on oublie les anciennes images
+  const W = img.width, H = img.height, s = img.data, pre = img.cropped === true; // pre : image déjà réduite au centre
+  const cw = pre ? W : W >> 1, ch = pre ? H : H >> 1, x0 = pre ? 0 : (W - cw) >> 1, y0 = pre ? 0 : (H - ch) >> 1, n = cw * ch;
+  if (!cL || cL.length !== n) cL = new Uint8Array(n);
   for (let y = 0; y < ch; y++) { let p = ((y0 + y) * W + x0) * 4, q = y * cw; for (let x = 0; x < cw; x++, p += 4) cL[q++] = (s[p] * 77 + s[p + 1] * 150 + s[p + 2] * 29) >> 8; }
+  let src = cL;
+  /* cumul de plusieurs images successives (code tenu immobile ou presque) : le grain de la caméra s'efface.
+     Mesuré sur un petit code granuleux (barres de 2 px) : 2 lectures sur 15 avec une image, 14 sur 15 avec 3. */
+  if (avg) {
+    if (!aF || aF.length !== n) { aF = new Float32Array(n); aT = new Float32Array(n); pNew = new Float32Array(cw); pAcc = new Float32Array(cw); aN = 0; }
+    if (!aN) { for (let i = 0; i < n; i++) aF[i] = cL[i]; aN = 1; }
+    else {
+      // décalage horizontal entre l'image cumulée et la nouvelle (−12 à +12 px)
+      colProfile(cL, cw, ch, pNew); colProfile(aF, cw, ch, pAcc);
+      let best = 0, bs = Infinity; const M = 12;
+      for (let d = -M; d <= M; d++) { let sad = 0; for (let x = M; x < cw - M; x += 2) sad += Math.abs(pNew[x] - pAcc[x - d]); if (sad < bs) { bs = sad; best = d; } }
+      const meanDiff = bs / ((cw - 2 * M) / 2);
+      if (meanDiff > 6) { for (let i = 0; i < n; i++) aF[i] = cL[i]; aN = 1; } // autre scène ou grand mouvement : on repart de zéro
+      else {
+        const a = 1 / Math.min(aN + 1, 3); // moyenne des ~3 dernières images
+        for (let y = 0; y < ch; y++) { const rr = y * cw; for (let x = 0; x < cw; x++) { const xs = Math.min(cw - 1, Math.max(0, x - best)); aT[rr + x] = aF[rr + xs] * (1 - a) + cL[rr + x] * a; } }
+        const t = aF; aF = aT; aT = t; aN++;
+      }
+    }
+    src = aF;
+  }
   if (!cOut || cOut.width !== cw || cOut.height !== ch) cOut = new ImageData(cw, ch);
   const u = new Uint32Array(cOut.data.buffer);
   for (let x = 0; x < cw; x++) { // moyenne glissante verticale, colonne par colonne
-    let acc = 0, n = 0;
-    for (let y = 0; y < Math.min(r, ch); y++) { acc += cL[y * cw + x]; n++; }
+    let acc = 0, k = 0;
+    for (let y = 0; y < Math.min(r, ch); y++) { acc += src[y * cw + x]; k++; }
     for (let y = 0; y < ch; y++) {
       const ya = y + r, yr = y - r - 1;
-      if (ya < ch) { acc += cL[ya * cw + x]; n++; }
-      if (yr >= 0) { acc -= cL[yr * cw + x]; n--; }
-      const g = (acc / n) | 0;
+      if (ya < ch) { acc += src[ya * cw + x]; k++; }
+      if (yr >= 0) { acc -= src[yr * cw + x]; k--; }
+      const g = (acc / k) | 0;
       u[y * cw + x] = 0xFF000000 | (g << 16) | (g << 8) | g;
     }
   }
@@ -1344,15 +1417,16 @@ self.onmessage = async e => {
   try {
     let img = d.img;
     if (d.vf) {
-      try { img = await fromVideoFrame(d.vf); }
+      try { img = await fromVideoFrame(d.vf, !!(d.opts && d.opts.center)); }
       catch (_) { img = viaCanvas(d.vf, d.vf.displayWidth, d.vf.displayHeight); } // format inattendu : par le dessin
       finally { d.vf.close(); }
     }
     else if (d.bitmap) { const b = d.bitmap; try { img = viaCanvas(b, b.width, b.height); } finally { b.close(); } }
-    const { center, ...opts } = d.opts;
-    if (center) img = centerSmooth(img, center);
+    const { center, avg, gen, ...opts } = d.opts;
+    if (center) img = centerSmooth(img, center, avg, gen);
     const res = await Z.readBarcodes(img, opts);
-    self.postMessage({ type: "result", ms: performance.now() - t0, res: res.map(r => ({ text: r.text, format: r.format, valid: r.isValid })) });
+    const stripes = center && !res.some(r => r.isValid) ? hasStripes(img) : false;
+    self.postMessage({ type: "result", ms: performance.now() - t0, stripes, res: res.map(r => ({ text: r.text, format: r.format, valid: r.isValid })) });
   } catch (err) { self.postMessage({ type: "result", ms: performance.now() - t0, res: [], error: String((err && err.message) || err) }); }
 };`;
   /* un décodeur = { busy, decode(frame, opts) → Promise<{res, ms}> } ; frame = { bitmap } ou { img } */
@@ -1403,7 +1477,7 @@ self.onmessage = async e => {
         const dec = { busy: false, worker: false, canBitmap: false };
         dec.decode = async (frame, opts) => {
           dec.busy = true; const t0 = performance.now();
-          try { const { center, ...o } = opts; const res = await Z.readBarcodes(frame.img, center ? ZX_DEEP : o); return { res: res.map(r => ({ text: r.text, format: r.format, valid: r.isValid })), ms: performance.now() - t0 }; }
+          try { const { center, avg, gen, ...o } = opts; const res = await Z.readBarcodes(frame.img, center ? ZX_DEEP : o); return { res: res.map(r => ({ text: r.text, format: r.format, valid: r.isValid })), ms: performance.now() - t0 }; }
           catch (_) { return { res: [], ms: performance.now() - t0 }; } finally { dec.busy = false; }
         };
         return [dec];
@@ -2052,7 +2126,7 @@ self.onmessage = async e => {
     const panel = opts.container || null; // scanner intégré dans une page (Ventes) au lieu d'une fenêtre
     const camId = "scan-cam-" + (++scanSeq);
     const scanBody = `<div class="scan-mode-info" id="scan-mode-info"></div>
-        <div class="scan-wrap"><div id="${camId}" class="scan-cam"></div><div class="price-guide" id="price-guide" hidden><span id="price-guide-txt">Placez le prix dans le cadre</span></div><div class="scan-wait" id="scan-wait">Démarrage de la caméra…<br><span>Si le navigateur affiche « Utiliser les caméras », cliquez sur <strong>Autoriser</strong>.</span></div><div class="scan-flash" id="scan-flash" hidden></div><div class="cam-ctrl" id="cam-ctrl" hidden></div><div class="scan-speed" id="scan-speed" hidden></div></div>
+        <div class="scan-wrap"><div id="${camId}" class="scan-cam"></div><div class="price-guide" id="price-guide" hidden><span id="price-guide-txt">Placez le prix dans le cadre</span></div><div class="scan-wait" id="scan-wait">Démarrage de la caméra…<br><span>Si le navigateur affiche « Utiliser les caméras », cliquez sur <strong>Autoriser</strong>.</span></div><div class="scan-flash" id="scan-flash" hidden></div><div class="cam-ctrl" id="cam-ctrl" hidden></div><div class="scan-speed" id="scan-speed" hidden></div><div class="small-guide" id="small-guide" hidden><span>Petit code : dans le cadre, à 10–15 cm</span></div><button type="button" class="small-hint" id="small-hint" hidden>🔍 Code trop petit ? <strong>Mode petit code</strong></button></div>
         <div class="scan-total" id="scan-total"></div>
         <div id="last-sale"></div>
         <div class="form-grid" style="margin-top:10px">
@@ -2739,12 +2813,15 @@ self.onmessage = async e => {
     const start = async source => {
       await stop();
       if (!document.body.contains(m)) return;
+      curSource = source; camGen++;
       camBox.innerHTML = "";
       const engP = Promise.all([zxPool().catch(() => null), nativeDetector()]);
+      // mode petit code sur une caméra sans zoom : définition maximale (4K si possible)
+      const hi = small && small4k;
       const streamP = navigator.mediaDevices.getUserMedia({
         audio: false,
         // image Full HD si la caméra le permet (plus de pixels par barre : petits codes-barres), 30 images/s, mise au point continue
-        video: { ...source, width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30 }, advanced: [{ focusMode: "continuous" }] }
+        video: { ...source, width: { ideal: hi ? 3840 : 1920 }, height: { ideal: hi ? 2160 : 1080 }, frameRate: { ideal: 30 }, advanced: [{ focusMode: "continuous" }] }
       });
       const [[pool, nat], s] = await Promise.all([engP, streamP]);
       if (!document.body.contains(m) || !camWanted) { s.getTracks().forEach(t => t.stop()); return; }
@@ -2756,7 +2833,9 @@ self.onmessage = async e => {
       await v.play().catch(() => {});
       const wt = $("#scan-wait", m); if (wt) wt.hidden = true;
       setTimeout(camControls, 300);
+      v.addEventListener("loadedmetadata", placeGuide); v.addEventListener("resize", placeGuide);
       fastLoop(v, pool, nat);
+      smallUI();
     };
     /* Ancien lecteur (html5-qrcode), seulement si les décodeurs rapides n'ont pas pu être chargés */
     const startLegacy = async source => {
@@ -2778,22 +2857,62 @@ self.onmessage = async e => {
       setTimeout(camControls, 400);
     };
     let fastId = 0;
-    /* Lampe et zoom (téléphones surtout) : affichés seulement si la caméra les propose */
-    function camControls() {
-      const box = $("#cam-ctrl", m); if (!box) return;
-      const v = $(".scan-cam video", m);
-      const tr = v && v.srcObject && v.srcObject.getVideoTracks ? v.srcObject.getVideoTracks()[0] : null;
+    /* ---- Mode « Petit code » : zoom de la caméra (téléphone) ou définition maximale, lecture concentrée
+       sur le centre avec cumul des images, cadre de placement ---- */
+    let small = false, small4k = false, smallPrevZoom = null, curSource = null, hintAt = 0, camGen = 0; // camGen : change à chaque zoom / caméra
+    const camTrack = () => { const v = $(".scan-cam video", m); return v && v.srcObject && v.srcObject.getVideoTracks ? v.srcObject.getVideoTracks()[0] : null; };
+    // cadre = centre de l'image (moitié de la largeur et de la hauteur), c'est la zone lue en priorité
+    function placeGuide() {
+      const g = $("#small-guide", m), v = $(".scan-cam video", m); if (!g || !v || !v.videoWidth) return;
+      const vr = v.getBoundingClientRect(), wr = camWrap.getBoundingClientRect(), ar = v.videoWidth / v.videoHeight, fit = getComputedStyle(v).objectFit;
+      let iw = vr.width, ih = vr.height, ix = vr.left, iy = vr.top;
+      if (fit === "contain") { if (vr.width / vr.height > ar) { iw = vr.height * ar; ix += (vr.width - iw) / 2; } else { ih = vr.width / ar; iy += (vr.height - ih) / 2; } }
+      else if (fit === "cover") { if (vr.width / vr.height > ar) { ih = vr.width / ar; iy -= (ih - vr.height) / 2; } else { iw = vr.height * ar; ix -= (iw - vr.width) / 2; } }
+      Object.assign(g.style, { left: (ix - wr.left + iw / 4) + "px", top: (iy - wr.top + ih / 4) + "px", width: iw / 2 + "px", height: ih / 2 + "px" });
+    }
+    function smallUI() {
+      const g = $("#small-guide", m); if (g) { g.hidden = !small; if (small) placeGuide(); }
+      const b = $("[data-small]", m); if (b) { b.classList.toggle("on", small); b.setAttribute("aria-pressed", String(small)); }
+      const h = $("#small-hint", m); if (h && small) h.hidden = true;
+    }
+    async function toggleSmall(on) {
+      small = on;
+      const tr = camTrack();
       let caps = {}, set = {};
       try { caps = (tr && tr.getCapabilities && tr.getCapabilities()) || {}; set = (tr && tr.getSettings && tr.getSettings()) || {}; } catch (_) {}
-      let html = "";
+      if (caps.zoom && caps.zoom.max > caps.zoom.min) {
+        // téléphone : zoom ×2,5 de la caméra (recadrage du capteur en pleine définition : vraies barres en plus)
+        small4k = false;
+        if (on) { smallPrevZoom = set.zoom || caps.zoom.min; await tr.applyConstraints({ advanced: [{ zoom: Math.min(caps.zoom.max, Math.max(caps.zoom.min, 2.5)) }] }).catch(() => {}); }
+        else await tr.applyConstraints({ advanced: [{ zoom: smallPrevZoom || caps.zoom.min }] }).catch(() => {});
+        camGen++;
+        setTimeout(camControls, 150); // curseur du zoom à jour
+      } else if (curSource && camStream) {
+        // caméra sans zoom (webcam, DroidCam…) : redémarrage en définition maximale
+        small4k = on;
+        camQ = camQ.then(() => start(curSource)).catch(() => {});
+        await camQ;
+      }
+      smallUI();
+      toast(on ? "Mode petit code : placez le code dans le cadre, à 10–15 cm, et tenez-le immobile une seconde." : "Mode petit code désactivé.", "ok");
+    }
+    window.addEventListener("resize", () => { if (small && document.body.contains(m)) placeGuide(); });
+    m.addEventListener("click", e => { if (e.target.closest("#small-hint")) { e.preventDefault(); toggleSmall(true); } });
+    /* Petit code, lampe et zoom (lampe et zoom : affichés seulement si la caméra les propose) */
+    function camControls() {
+      const box = $("#cam-ctrl", m); if (!box) return;
+      const tr = camTrack();
+      let caps = {}, set = {};
+      try { caps = (tr && tr.getCapabilities && tr.getCapabilities()) || {}; set = (tr && tr.getSettings && tr.getSettings()) || {}; } catch (_) {}
+      let html = `<button type="button" class="cam-btn small-btn ${small ? "on" : ""}" data-small aria-pressed="${small}" title="Petits codes-barres : zoom ou définition maximale, lecture concentrée au centre">🔍 Petit code</button>`;
       if (caps.torch) html += `<button type="button" class="cam-btn" data-torch aria-pressed="false" title="Allumer / éteindre la lampe">💡 Lampe</button>`;
       if (caps.zoom && caps.zoom.max > caps.zoom.min) {
         const st = caps.zoom.step || 0.1, cur = set.zoom || caps.zoom.min;
         html += `<label class="cam-zoom" title="Zoom">🔍<input type="range" min="${caps.zoom.min}" max="${caps.zoom.max}" step="${st}" value="${cur}" data-zoom aria-label="Zoom"><span data-zv>×${(+cur).toFixed(1)}</span></label>`;
       }
-      box.innerHTML = html; box.hidden = !html;
-      if (!html) return;
+      box.innerHTML = html; box.hidden = false;
       box.onclick = async e => {
+        if (e.target.closest("[data-small]")) return toggleSmall(!small);
         const b = e.target.closest("[data-torch]"); if (!b) return;
         const on = b.getAttribute("aria-pressed") !== "true";
         try { await tr.applyConstraints({ advanced: [{ torch: on }] }); b.setAttribute("aria-pressed", String(on)); b.classList.toggle("on", on); }
@@ -2803,6 +2922,7 @@ self.onmessage = async e => {
         const z = e.target.closest("[data-zoom]"); if (!z) return;
         const lab = $("[data-zv]", box); if (lab) lab.textContent = "×" + (+z.value).toFixed(1);
         tr.applyConstraints({ advanced: [{ zoom: +z.value }] }).catch(() => {});
+        camGen++;
       };
     }
     /* Boucle de lecture : chaque NOUVELLE image de la caméra est confiée à un décodeur libre
@@ -2820,8 +2940,9 @@ self.onmessage = async e => {
         if (sp) {
           sp.hidden = false;
           sp.textContent = `⚡ ${Math.max(fps, nfps)} img/s · QR + codes-barres`;
-          sp.title = `Caméra ${v.videoWidth}×${v.videoHeight} · décodeurs ZXing : ${pool ? pool.length : 0}${pool && pool[0].worker ? " (en parallèle)" : ""} · ${fps} img/s${stN ? ` · ${Math.round(stMs / stN)} ms par image` : ""}${nat ? ` · détecteur intégré : ${nfps} img/s` : ""} · analyse renforcée du centre (petits codes)`;
+          sp.title = `Caméra ${v.videoWidth}×${v.videoHeight} · décodeurs ZXing : ${pool ? pool.length : 0}${pool && pool[0].worker ? " (en parallèle)" : ""} · ${fps} img/s${stN ? ` · ${Math.round(stMs / stN)} ms par image` : ""}${nat ? ` · détecteur intégré : ${nfps} img/s` : ""} · centre renforcé (cumul des images)${small ? " · MODE PETIT CODE" : ""}`;
         }
+        if (small) placeGuide();
         stT = now; stN = 0; stMs = 0; stNat = 0;
       };
       // copie directe (VideoFrame) : en cas d'échec passager, autre méthode pendant 3 s puis nouvel essai
@@ -2836,12 +2957,23 @@ self.onmessage = async e => {
         cx.drawImage(v, 0, 0);
         return { img: cx.getImageData(0, 0, cvs.width, cvs.height) };
       };
+      const unreadTs = []; // images récentes où un code est visible mais illisible
       const onResult = out => {
         if (!alive()) return;
         zxActive = true; frameNo++; stN++; stMs += out.ms || 0;
+        let unread = !!out.stripes, read = false; // rayures de code-barres vues au centre, sans lecture
         for (const r of out.res || []) {
-          if (r.valid && r.text) detect(r.text, r.format);
-          else { lastUnread = Date.now(); lastUnreadFrame = frameNo; } // code visible mais illisible : toujours « présent »
+          if (r.valid && r.text) { detect(r.text, r.format); read = true; }
+          else { lastUnread = Date.now(); lastUnreadFrame = frameNo; unread = true; } // code visible mais illisible : toujours « présent »
+        }
+        // suggestion automatique : un code est vu sans pouvoir être lu depuis ~2 s → proposer le mode petit code
+        const now = Date.now(), h = $("#small-hint", m);
+        if (unread) unreadTs.push(now);
+        while (unreadTs.length && now - unreadTs[0] > 2500) unreadTs.shift();
+        if (h) {
+          if (read || small) h.hidden = true;
+          else if (unreadTs.length >= 4 && now - lastCodeT > 2500 && now - hintAt > 15000) { h.hidden = false; hintAt = now; }
+          else if (!h.hidden && now - hintAt > 8000) h.hidden = true;
         }
         stat();
       };
@@ -2867,12 +2999,15 @@ self.onmessage = async e => {
         if (!pool) return;
         // détecteur intégré présent : ZXing en renfort (codes abîmés), à cadence réduite pour économiser la batterie ;
         // mode « prix écrit » : processeur laissé à la lecture des chiffres
-        const gap = mode === "price" ? 120 : nat ? 150 : 0;
+        // (mode petit code : ZXing à pleine cadence, c'est lui qui lit les petits codes que le détecteur rate)
+        const gap = mode === "price" ? 120 : nat && !small ? 150 : 0;
         if (gap && now - lastSend < gap) return;
         const dec = pool.find(d => !d.busy); if (!dec) return; // tous occupés : cette image est sautée
         dec.busy = true; lastSend = now;
         // avec le détecteur intégré : ZXing alterne lecture approfondie et centre lissé (ce que le détecteur rate)
-        const opts = nat ? (k++ % 2 ? ZX_CENTER : ZX_DEEP) : ZX_CYCLE[k++ % ZX_CYCLE.length];
+        let opts = small ? ZX_CYCLE_SMALL[k++ % ZX_CYCLE_SMALL.length]
+          : nat ? (k++ % 2 ? ZX_CENTER : ZX_DEEP) : ZX_CYCLE[k++ % ZX_CYCLE.length];
+        if (opts.avg) opts = { ...opts, gen: camGen }; // cumul des images remis à zéro après un zoom
         grabFrame(dec)
           .then(f => dec.decode(f, opts).then(out => { if (out.error && f.vf) vfFail(); return out; })) // échec : autre méthode de copie
           .then(onResult).catch(() => { dec.busy = false; });
