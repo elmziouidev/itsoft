@@ -165,6 +165,13 @@
   /* ---------------------------------------------------------------- */
   /*  Microsoft Graph / SharePoint                                     */
   /* ---------------------------------------------------------------- */
+  /* erreur d'une opération d'une requête groupée */
+  function batchErr(r) {
+    const st = r ? r.status : 0;
+    const msg = r && r.body && r.body.error && r.body.error.message || (st ? "erreur " + st : "pas de réponse");
+    const e = new Error(`SharePoint (${st}) : ${msg}`); e.status = st; return e;
+  }
+
   const GraphService = {
     mode: "sharepoint",
     siteId: null,
@@ -191,6 +198,60 @@
         throw err;
       }
       return res.status === 204 ? null : res.json();
+    },
+
+    /* Requêtes groupées Microsoft Graph ($batch : jusqu'à 20 opérations par envoi, un seul aller-retour) */
+    async batch(reqs) {
+      const out = new Array(reqs.length);
+      for (let i = 0; i < reqs.length; i += 20) {
+        const chunk = reqs.slice(i, i + 20).map((r, k) => {
+          const q = { id: String(i + k), method: r.method, url: r.url };
+          if (r.body !== undefined) { q.body = r.body; q.headers = { "Content-Type": "application/json" }; }
+          return q;
+        });
+        const res = await this.call("/$batch", { method: "POST", body: JSON.stringify({ requests: chunk }) });
+        for (const x of (res && res.responses) || []) out[+x.id] = x;
+      }
+      return out;
+    },
+    /* plusieurs articles relus sur SharePoint en une seule requête */
+    async getArticles(ids) {
+      const rs = await this.batch(ids.map(id => ({ method: "GET", url: `/sites/${this.siteId}/lists/${this.articlesListId}/items/${id}?$expand=fields` })));
+      return rs.map(r => { if (!r || r.status >= 300) throw batchErr(r); return resolveLookups({ ...r.body.fields, id: String(r.body.id) }, this.columns); });
+    },
+    /* Enregistre une vente complète en une seule requête : toutes les lignes + retrait du stock.
+       done = opérations déjà réussies (lignes par indice, stock par article) : un renvoi ne crée jamais de doublon. */
+    async commitSale(lines, stock, done) {
+      done = done || { l: [], s: [] };
+      const todo = [];
+      lines.forEach((f, i) => { if (!done.l.includes(i)) todo.push({ k: "l", i, req: { method: "POST", url: `/sites/${this.siteId}/lists/${this.ventesListId}/items`, body: { fields: this.toVente(f) } } }); });
+      stock.forEach(s => { if (!done.s.includes(String(s.id))) todo.push({ k: "s", id: String(s.id), req: { method: "PATCH", url: `/sites/${this.siteId}/lists/${this.articlesListId}/items/${s.id}/fields`, body: s.fields } }); });
+      const ventes = [], arts = [];
+      let rs = [];
+      try { rs = await this.batch(todo.map(t => t.req)); }
+      catch (e) { e.done = done; throw e; }
+      let firstErr = null;
+      for (let j = 0; j < todo.length; j++) {
+        const t = todo[j], r = rs[j];
+        if (r && r.status < 300) {
+          if (t.k === "l") { ventes.push(this.fromVente(r.body)); done.l.push(t.i); }
+          else { arts.push(resolveLookups({ ...r.body, id: t.id }, this.columns)); done.s.push(t.id); }
+        } else if (t.k === "l" && r && r.status === 400) {
+          // champ refusé par une colonne : repli ligne seule, champ par champ
+          try { ventes.push(await this.createVenteLine(lines[t.i])); done.l.push(t.i); } catch (e) { firstErr = firstErr || e; }
+        } else firstErr = firstErr || batchErr(r);
+      }
+      if (firstErr) { firstErr.done = done; firstErr.partial = { ventes, arts }; throw firstErr; }
+      return { ventes, arts, done };
+    },
+    /* Annule une vente : suppression des lignes + remise en stock, en une seule requête */
+    async cancelSaleBatch(lineIds, stock) {
+      const reqs = lineIds.map(id => ({ method: "DELETE", url: `/sites/${this.siteId}/lists/${this.ventesListId}/items/${id}` }))
+        .concat(stock.map(s => ({ method: "PATCH", url: `/sites/${this.siteId}/lists/${this.articlesListId}/items/${s.id}/fields`, body: s.fields })));
+      const rs = await this.batch(reqs);
+      const bad = rs.find(r => !r || r.status >= 300);
+      if (bad) throw batchErr(bad);
+      return rs.slice(lineIds.length).map((r, i) => resolveLookups({ ...r.body, id: String(stock[i].id) }, this.columns));
     },
 
     async getAll(path) {
@@ -734,6 +795,19 @@
     async updateCategorie(id, name) { const c = this.db.categories.find(x => x.id === String(id)); if (c) c.name = name; this.persist(); },
     async deleteCategorie(id) { this.db.categories = this.db.categories.filter(x => x.id !== String(id)); this.persist(); },
     async getArticle(id) { return this.resolve(this.db.articles.find(a => a.id === String(id))); },
+    async getArticles(ids) { return Promise.all(ids.map(id => this.getArticle(id))); },
+    async commitSale(lines, stock, done) {
+      done = done || { l: [], s: [] };
+      const ventes = [], arts = [];
+      for (let i = 0; i < lines.length; i++) if (!done.l.includes(i)) { ventes.push(await this.createVenteLine(lines[i])); done.l.push(i); }
+      for (const s of stock) if (!done.s.includes(String(s.id))) { arts.push(await this.updateArticle(s.id, s.fields)); done.s.push(String(s.id)); }
+      return { ventes, arts, done };
+    },
+    async cancelSaleBatch(lineIds, stock) {
+      for (const id of lineIds) await this.deleteVenteLine(id);
+      const arts = []; for (const s of stock) arts.push(await this.updateArticle(s.id, s.fields));
+      return arts;
+    },
     async createArticle(fields) {
       const a = { ...fields, id: String(this.db.nextId++) };
       this.db.articles.push(a); this.persist(); return this.resolve(a);

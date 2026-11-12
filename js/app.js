@@ -1551,6 +1551,91 @@
   }
 
   /* Fenêtre de scan : caméra (téléphone, webcam, caméra USB) ou lecteur code-barres / saisie */
+  /* ============ Ventes gardées en cas de coupure (Internet / SharePoint) et renvoi automatique ============ */
+  const PENDING_KEY = "itsoft-ventes-attente";
+  const pendGet = () => { try { return JSON.parse(localStorage.getItem(PENDING_KEY)) || []; } catch (_) { return []; } };
+  const pendSet = list => { try { localStorage.setItem(PENDING_KEY, JSON.stringify(list)); } catch (_) {} pendBadge(); window.dispatchEvent(new Event("itsoft-pending")); };
+  /* erreur due à la connexion (et non à une donnée refusée) */
+  const isNetErr = e => !navigator.onLine || (!!e && ((e.status === 0) || [408, 429, 500, 502, 503, 504].includes(e.status)
+    || (!e.status && /fetch|network|réseau|timeout|connect|no_network|endpoints_resolution|load failed/i.test(String(e.message || e)))));
+  function pendBadge() {
+    const b = $("#pending-badge"); if (!b) return;
+    const n = pendGet().length;
+    b.hidden = !n;
+    b.textContent = n ? `⏳ ${n} vente${n > 1 ? "s" : ""} en attente d'envoi` : "";
+  }
+  /* vente gardée sur l'appareil : le stock affiché est déjà diminué, l'envoi se fera au retour de la connexion */
+  function savePending(entry) {
+    for (const [id, q] of entry.need) if (!entry.done.s.includes(String(id))) { const a = artById(id); if (a && hasStock()) a[state.map.stock] = Math.max(0, artStock(a) - q); }
+    pendSet(pendGet().concat([entry]));
+    toast(`Connexion perdue : la vente ${entry.num} (${money(entry.tot)}) est gardée sur cet appareil et sera envoyée automatiquement dès le retour de la connexion.`, "bad");
+    return true;
+  }
+  function applySaleResult(r) {
+    (r.ventes || []).forEach(v => state.ventes.push(v));
+    (r.arts || []).forEach(x => { const a = artById(x.id); if (a) Object.assign(a, x); });
+  }
+  let syncing = false;
+  async function syncPending(manual) {
+    if (syncing || !state.loaded) return;
+    let list = pendGet(); if (!list.length) return;
+    if (!navigator.onLine) { if (manual) toast("Toujours pas de connexion : les ventes seront renvoyées automatiquement.", "bad"); return; }
+    syncing = true;
+    const sent = [];
+    try {
+      for (const p of list) {
+        try {
+          const ids = p.need.map(x => String(x[0])).filter(id => !p.done.s.includes(id));
+          const fresh = ids.length && hasStock() ? await DS.getArticles(ids) : [];
+          const stock = hasStock() ? ids.map((id, i) => {
+            const q = p.need.find(x => String(x[0]) === id)[1], s = +fresh[i][state.map.stock] || 0;
+            if (s < q) p.warn = true;
+            return { id, fields: { [state.map.stock]: Math.max(0, s - q) } };
+          }) : [];
+          const r = await DS.commitSale(p.lines, stock, p.done);
+          applySaleResult(r);
+          sent.push(p.num);
+          toast(`Vente ${p.num} envoyée à SharePoint (gardée pendant la coupure).${p.warn ? " Attention : stock devenu insuffisant entre-temps, vérifiez le stock." : ""}`, p.warn ? "bad" : "ok");
+          state.hiSale = { num: p.num, until: Date.now() + 5000 };
+        } catch (e) {
+          if (e.done) p.done = e.done;
+          if (e.partial) applySaleResult(e.partial);
+          if (!isNetErr(e)) { p.err = e.message; toast(`Vente ${p.num} non envoyée : ${e.message}`, "bad"); }
+          else if (manual) toast("SharePoint ne répond pas encore : nouvel essai automatique dans un moment.", "bad");
+          break; // connexion encore instable : on réessaiera plus tard, dans l'ordre
+        }
+      }
+    } finally {
+      syncing = false;
+      // ventes envoyées retirées de la file ; les autres gardent leur état d'avancement (aucun doublon au renvoi)
+      const kept = pendGet().filter(x => !sent.includes(x.num)).map(x => list.find(p => p.num === x.num) || x);
+      pendSet(kept);
+      if (sent.length && currentView() === "ventes" && state.ventesRedraw) state.ventesRedraw();
+    }
+  }
+  window.addEventListener("online", () => syncPending());
+  setInterval(() => { if (pendGet().length) syncPending(); }, 20000);
+  /* Annule une vente validée : lignes supprimées et articles remis en stock (requête groupée) */
+  async function undoValidatedSale(num) {
+    const q = pendGet(), p = q.find(x => x.num === num);
+    if (p && !p.done.l.length && !p.done.s.length) { // jamais envoyée : simple retrait de la file d'attente
+      pendSet(q.filter(x => x !== p));
+      for (const [id, n] of p.need) { const a = artById(id); if (a && hasStock()) a[state.map.stock] = artStock(a) + n; }
+      return;
+    }
+    if (p) throw new Error("envoi vers SharePoint en cours, réessayez dans un instant");
+    const lines = state.ventes.filter(v => v.Title === num);
+    if (!lines.length) throw new Error("vente introuvable");
+    const need = new Map();
+    lines.forEach(v => { const id = String(v.ArticleId || ""); if (id && id !== "0" && artById(id)) need.set(id, (need.get(id) || 0) + (+v.Quantite || 0)); });
+    const ids = [...need.keys()];
+    const fresh = ids.length && hasStock() ? await DS.getArticles(ids) : [];
+    const stock = hasStock() ? ids.map((id, i) => ({ id, fields: { [state.map.stock]: (+fresh[i][state.map.stock] || 0) + need.get(id) } })) : [];
+    const arts = await DS.cancelSaleBatch(lines.map(v => v.id), stock);
+    (arts || []).forEach(x => { const a = artById(x.id); if (a) Object.assign(a, x); });
+    state.ventes = state.ventes.filter(v => v.Title !== num);
+  }
+
   let scanSeq = 0;
   /* Bouton « Scanner » / F2 : sur la page Ventes, le scanner intégré à droite ; ailleurs, la fenêtre de scan */
   function openScanner() {
@@ -1562,8 +1647,9 @@
     const panel = opts.container || null; // scanner intégré dans une page (Ventes) au lieu d'une fenêtre
     const camId = "scan-cam-" + (++scanSeq);
     const scanBody = `<div class="scan-mode-info" id="scan-mode-info"></div>
-        <div class="scan-wrap"><div id="${camId}" class="scan-cam"></div><div class="price-guide" id="price-guide" hidden><span id="price-guide-txt">Placez le prix dans le cadre</span></div><div class="scan-wait" id="scan-wait">Démarrage de la caméra…<br><span>Si le navigateur affiche « Utiliser les caméras », cliquez sur <strong>Autoriser</strong>.</span></div><div class="scan-flash" id="scan-flash" hidden></div></div>
+        <div class="scan-wrap"><div id="${camId}" class="scan-cam"></div><div class="price-guide" id="price-guide" hidden><span id="price-guide-txt">Placez le prix dans le cadre</span></div><div class="scan-wait" id="scan-wait">Démarrage de la caméra…<br><span>Si le navigateur affiche « Utiliser les caméras », cliquez sur <strong>Autoriser</strong>.</span></div><div class="scan-flash" id="scan-flash" hidden></div><div class="cam-ctrl" id="cam-ctrl" hidden></div></div>
         <div class="scan-total" id="scan-total"></div>
+        <div id="last-sale"></div>
         <div class="form-grid" style="margin-top:10px">
           <label class="field" id="scan-cam-field" hidden>Caméra<select class="input" id="scan-cam-sel"></select></label>
           <label class="field"><span id="scan-input-lab">Code (lecteur code-barres ou saisie)</span><input class="input" id="scan-input" placeholder="Scannez ou tapez le code puis Entrée" autocomplete="off" enterkeyhint="done"></label>
@@ -1620,57 +1706,101 @@
     }
 
     const r2 = n => Math.round(n * 100) / 100;
-    /* « Valider la vente » : stock et prix relus sur SharePoint, puis toutes les lignes enregistrées en une fois */
-    let validating = false;
+    /* « Valider la vente » : contrôle (stock + prix) puis enregistrement, chacun en UNE requête groupée.
+       En cas de coupure, la vente est gardée sur l'appareil et renvoyée automatiquement. */
+    let validating = false, lastSale = null;
     async function validateSale() {
       if (validating) return;
       if (!sess.lines.length) return toast("Aucun article scanné pour l'instant.", "bad");
       validating = true;
       const btn = $("#scan-cart", m); busy(btn, true, "Enregistrement…");
       try {
-        // 1. contrôle : stock et prix réels de chaque article (lus en parallèle)
         const withArt = sess.lines.filter(L => L.a);
         const ids = [...new Set(withArt.map(L => String(L.a.id)))];
-        const fresh = await Promise.all(ids.map(id => DS.getArticle(id)));
-        ids.forEach((id, i) => { const a = artById(id); if (a) Object.assign(a, fresh[i]); });
         const need = new Map();
         withArt.forEach(L => need.set(String(L.a.id), (need.get(String(L.a.id)) || 0) + L.qty));
-        if (hasStock()) {
-          const short = [...need].filter(([id, q]) => q > artStock(artById(id))).map(([id, q]) => `${artName(artById(id))} : ${int(artStock(artById(id)))} en stock pour ${int(q)} scanné(s)`);
-          if (short.length) { beep(false); toast("Stock insuffisant, vente non enregistrée — " + short.join(" ; ") + ". Corrigez les quantités.", "bad"); showTotal(); return; }
+        // 1. contrôle : stock et prix réels de tous les articles, en une seule requête
+        let fresh = null;
+        try { fresh = ids.length ? await DS.getArticles(ids) : []; }
+        catch (e) { if (!isNetErr(e)) throw e; fresh = null; } // pas de connexion : vente gardée (étape 3)
+        if (fresh) {
+          ids.forEach((id, i) => { const a = artById(id); if (a) Object.assign(a, fresh[i]); });
+          if (hasStock()) {
+            const short = [...need].filter(([id, q]) => q > artStock(artById(id))).map(([id, q]) => `${artName(artById(id))} : ${int(artStock(artById(id)))} en stock pour ${int(q)} demandé(s)`);
+            if (short.length) { beep(false); toast("Stock insuffisant, vente non enregistrée — " + short.join(" ; ") + ". Corrigez les quantités.", "bad"); showTotal(); return; }
+          }
+          for (const L of withArt) { // prix modifié ailleurs entre-temps : prix exact du serveur
+            const sp = artPrice(L.a);
+            if (L.autoPrice && sp > 0 && Math.abs(sp - L.price) > 0.005) { toast(`Prix de « ${artName(L.a)} » mis à jour : ${money(sp)} (au lieu de ${money(L.price)}).`, "ok"); L.price = sp; }
+          }
         }
-        for (const L of withArt) { // prix modifié ailleurs entre-temps : prix exact du serveur
-          const sp = artPrice(L.a);
-          if (L.autoPrice && sp > 0 && Math.abs(sp - L.price) > 0.005) { toast(`Prix de « ${artName(L.a)} » mis à jour : ${money(sp)} (au lieu de ${money(L.price)}).`, "ok"); L.price = sp; }
-        }
-        // 2. enregistrement : lignes de vente et retrait du stock, tout en parallèle
+        // 2. la vente complète : toutes les lignes + retrait du stock
         const d = new Date(), num = saleNumber(d);
         const pay = (cfg.modesPaiement || ["Espèces"])[0], client = cfg.clientParDefaut || "Client comptoir";
-        const lineJobs = sess.lines.map(L => {
+        const lines = sess.lines.map(L => {
           const lp = L.a && lastPurchase(L.a), unit = L.a && lp ? (+lp.PrixAchat || 0) : null, ref = L.a ? F(L.a, "reference") : null;
-          return DS.createVenteLine({
+          return {
             Title: num, ArticleId: L.a ? parseInt(L.a.id, 10) : 0, Article: L.a ? String(artName(L.a)) : FREE.divers.label,
             Reference: L.a ? (ref == null ? "" : String(ref)) : FREE.divers.label,
             Quantite: L.qty, PrixUnitaire: L.price, Montant: r2(L.qty * L.price), Client: client, ModePaiement: pay,
             Vendeur: Auth.userName(), DateVente: d.toISOString(), TypeOperation: "Vente", Cout: unit != null ? r2(unit * L.qty) : null
-          });
+          };
         });
-        const stockJobs = hasStock() ? [...need].map(([id, q]) => { const a = artById(id); return DS.updateArticle(id, { [state.map.stock]: artStock(a) - q }).then(r => Object.assign(a, r)); }) : [];
-        const lines = await Promise.all(lineJobs);
-        await Promise.all(stockJobs);
-        lines.forEach(v => state.ventes.push(v));
         const nb = sess.lines.reduce((t, L) => t + L.qty, 0), tot = sess.lines.reduce((t, L) => t + L.qty * L.price, 0);
-        beep(true);
-        toast(`Vente ${num} enregistrée : ${int(nb)} article(s), ${money(tot)}.`, "ok");
-        if (currentView() === "articles" && state.refreshArticle) withArt.forEach(L => state.refreshArticle(L.a, true));
-        resetSession();
-        if (opts.onChange) opts.onChange(num); // la vente apparaît maintenant dans le tableau (en vert 5 s)
-        if (!panel) { m.dataset.validated = "1"; m.dataset.toCart = "1"; closeModal(); if (currentView() !== "articles") render(); }
-        // pas de fenêtre du ticket : la vente apparaît en vert dans le tableau (ticket imprimable depuis sa ligne)
+        const entry = { num, date: d.toISOString(), lines, need: [...need], done: { l: [], s: [] }, nb, tot };
+        if (!fresh) return saleDone(entry, savePending(entry));
+        // 3. enregistrement en une seule requête groupée
+        const stock = hasStock() ? [...need].map(([id, q]) => ({ id, fields: { [state.map.stock]: artStock(artById(id)) - q } })) : [];
+        try {
+          const r = await DS.commitSale(lines, stock, entry.done);
+          applySaleResult(r);
+          saleDone(entry, false);
+        } catch (e) {
+          if (e.partial) applySaleResult(e.partial);
+          if (e.done) entry.done = e.done;
+          if (!isNetErr(e)) throw e;
+          saleDone(entry, savePending(entry)); // coupure pendant l'envoi : le reste sera renvoyé, sans doublon
+        }
       } catch (e) {
         toast("Vente non enregistrée : " + e.message, "bad");
       } finally { validating = false; if (document.body.contains(btn)) busy(btn, false); }
     }
+    /* fin de la validation : liste vidée, « Dernière vente » affichée (annulable), tableau mis à jour */
+    function saleDone(entry, pending) {
+      beep(true);
+      if (!pending) toast(`Vente ${entry.num} enregistrée : ${int(entry.nb)} article(s), ${money(entry.tot)}.`, "ok");
+      if (currentView() === "articles" && state.refreshArticle) sess.lines.forEach(L => { if (L.a) state.refreshArticle(L.a, true); });
+      lastSale = { num: entry.num, nb: entry.nb, tot: entry.tot, pending: !!pending };
+      resetSession(); renderLastSale();
+      if (opts.onChange) opts.onChange(pending ? null : entry.num); // la vente apparaît dans le tableau (en vert 5 s)
+      if (!panel) { m.dataset.validated = "1"; m.dataset.toCart = "1"; if (currentView() !== "articles" && currentView() !== "ventes") render(); }
+    }
+    /* « Dernière vente » : rappel sous la liste avec annulation en 2 clics (erreur juste après la validation) */
+    function renderLastSale() {
+      const box = $("#last-sale", m); if (!box) return;
+      if (!lastSale) { box.innerHTML = ""; return; }
+      const still = lastSale.pending && pendGet().some(p => p.num === lastSale.num);
+      box.innerHTML = `<div class="last-sale"><span>✔ Dernière vente <strong>${esc(lastSale.num)}</strong> · ${int(lastSale.nb)} article(s) · <strong>${money(lastSale.tot)}</strong>${still ? ` <span class="sc-pending">en attente d'envoi</span>` : ""}</span>
+        <button type="button" class="btn sm ghost danger" data-undo-sale>Annuler cette vente</button></div>`;
+    }
+    // « en attente d'envoi » retiré dès que la vente gardée est partie vers SharePoint
+    const onPend = () => { if (!document.body.contains(m)) return window.removeEventListener("itsoft-pending", onPend); renderLastSale(); };
+    window.addEventListener("itsoft-pending", onPend);
+    $("#last-sale", m).addEventListener("click", async e => {
+      const b = e.target.closest("[data-undo-sale]"); if (!b || !lastSale) return;
+      if (!b.dataset.armed) { // 1er clic : demande de confirmation sur le bouton même
+        b.dataset.armed = "1"; b.textContent = "Confirmer l'annulation ?"; b.classList.add("armed");
+        setTimeout(() => { if (document.body.contains(b)) { delete b.dataset.armed; b.textContent = "Annuler cette vente"; b.classList.remove("armed"); } }, 4000);
+        return;
+      }
+      busy(b, true, "Annulation…");
+      try {
+        await undoValidatedSale(lastSale.num);
+        toast(`Vente ${lastSale.num} annulée : articles remis en stock.`, "ok"); beep(true);
+        lastSale = null; renderLastSale(); showTotal();
+        if (opts.onChange) opts.onChange(null);
+      } catch (err) { busy(b, false); toast("Annulation impossible : " + err.message, "bad"); }
+    });
     /* Quantité saisie pour une ligne (vente en cours, non enregistrée) : contrôle du stock connu */
     async function setQty(L, q) {
       q = Math.max(0, Math.floor(+q || 0));
@@ -1763,10 +1893,16 @@
       if (auto) {
         // « Vente en cours » : une ligne par article scanné, quantité modifiable, ✕ pour annuler l'article
         const nb = sess.lines.reduce((t, L) => t + L.qty, 0), tot = sess.lines.reduce((t, L) => t + L.qty * L.price, 0);
+        // stock en magasin et stock restant après cette vente : on sait jusqu'où monter la quantité
+        const restHTML = L => {
+          if (!L.a || !hasStock()) return "";
+          const s = artStock(L.a), rest = s - sess.lines.filter(x => x.a === L.a).reduce((t, x) => t + x.qty, 0);
+          return `<span class="sc-stock ${rest <= 0 ? "zero" : rest <= 2 ? "low" : ""}" title="Stock en magasin : ${int(s)}">stock ${int(s)} · reste ${int(Math.max(0, rest))}</span>`;
+        };
         el.className = "scan-total as-sale";
         el.innerHTML = nb ? `<div class="sc-head"><strong>Vente en cours</strong><span class="sc-pending">non enregistrée · à valider</span></div>
           <div class="sc-rows">${sess.lines.map((L, i) => `<div class="sc-row" data-li="${i}">
-            <span class="sc-name" title="${esc(L.a ? artName(L.a) : FREE.divers.label)}">${esc(L.a ? artName(L.a) : FREE.divers.label)}</span>
+            <span class="sc-info"><span class="sc-name" title="${esc(L.a ? artName(L.a) : FREE.divers.label)}">${esc(L.a ? artName(L.a) : FREE.divers.label)}</span>${restHTML(L)}</span>
             <span class="sc-pu num">${money(L.price)}</span>
             <span class="qty sc-qty"><button type="button" data-sq="-1" aria-label="Diminuer">−</button><input type="number" min="1" step="1" value="${L.qty}" data-sqi inputmode="numeric" aria-label="Quantité"><button type="button" data-sq="1" aria-label="Augmenter">+</button></span>
             <strong class="sc-sub num">${money(L.qty * L.price)}</strong>
@@ -2110,12 +2246,40 @@
         videoConstraints: { ...source, width: { ideal: 1280 }, height: { ideal: 720 }, advanced: [{ focusMode: "continuous" }] }
       }, (txt, res) => detect(txt, String(res && res.result && res.result.format && (res.result.format.formatName || res.result.format) || "")), () => {});
       const wt = $("#scan-wait", m); if (wt) wt.hidden = true;
+      setTimeout(camControls, 400);
       // décodeur rapide ZXing (WebAssembly) : il lit lui-même l'image de la caméra ; l'ancien décodeur est mis en pause
       fastLoop();
     };
     /* Lecture rapide : chaque image entière de la caméra est analysée (QR + codes-barres) en ~35 ms */
     let fastId = 0;
     const FAST_FORMATS = ["QRCode", "EAN-13", "EAN-8", "UPC-A", "UPC-E", "Code128", "Code39", "Code93", "ITF"];
+    /* Lampe et zoom (téléphones surtout) : affichés seulement si la caméra les propose */
+    function camControls() {
+      const box = $("#cam-ctrl", m); if (!box) return;
+      const v = $(".scan-cam video", m);
+      const tr = v && v.srcObject && v.srcObject.getVideoTracks ? v.srcObject.getVideoTracks()[0] : null;
+      let caps = {}, set = {};
+      try { caps = (tr && tr.getCapabilities && tr.getCapabilities()) || {}; set = (tr && tr.getSettings && tr.getSettings()) || {}; } catch (_) {}
+      let html = "";
+      if (caps.torch) html += `<button type="button" class="cam-btn" data-torch aria-pressed="false" title="Allumer / éteindre la lampe">💡 Lampe</button>`;
+      if (caps.zoom && caps.zoom.max > caps.zoom.min) {
+        const st = caps.zoom.step || 0.1, cur = set.zoom || caps.zoom.min;
+        html += `<label class="cam-zoom" title="Zoom">🔍<input type="range" min="${caps.zoom.min}" max="${caps.zoom.max}" step="${st}" value="${cur}" data-zoom aria-label="Zoom"><span data-zv>×${(+cur).toFixed(1)}</span></label>`;
+      }
+      box.innerHTML = html; box.hidden = !html;
+      if (!html) return;
+      box.onclick = async e => {
+        const b = e.target.closest("[data-torch]"); if (!b) return;
+        const on = b.getAttribute("aria-pressed") !== "true";
+        try { await tr.applyConstraints({ advanced: [{ torch: on }] }); b.setAttribute("aria-pressed", String(on)); b.classList.toggle("on", on); }
+        catch (err) { toast("Lampe indisponible : " + err.message, "bad"); }
+      };
+      box.oninput = e => {
+        const z = e.target.closest("[data-zoom]"); if (!z) return;
+        const lab = $("[data-zv]", box); if (lab) lab.textContent = "×" + (+z.value).toFixed(1);
+        tr.applyConstraints({ advanced: [{ zoom: +z.value }] }).catch(() => {});
+      };
+    }
     async function fastLoop() {
       const id = ++fastId;
       let Z; try { Z = await zxingReader(); } catch (_) { return; } // indisponible : le décodeur classique continue
@@ -3946,6 +4110,7 @@
       if (hiCheckRef) hiCheckRef();
     };
     draw();
+    state.ventesRedraw = draw;
     // retour à la mise en forme normale du tableau après les 5 secondes
     const hiCheck = () => {
       clearTimeout(state.hiT);
@@ -4345,6 +4510,8 @@
     } else {
       try { await loadData(); render(); } catch (e) { return showFatal(e); }
     }
+    const pb = $("#pending-badge"); if (pb) pb.addEventListener("click", () => syncPending(true));
+    pendBadge(); setTimeout(() => syncPending(), 3000); // ventes gardées lors d'une coupure précédente
     $("#btn-refresh").addEventListener("click", async e => {
       const b = e.currentTarget; if (b.classList.contains("spinning")) return;
       setSyncing(true);
