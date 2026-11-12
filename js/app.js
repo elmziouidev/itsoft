@@ -3308,6 +3308,230 @@ self.onmessage = async e => {
     };
   }
 
+  /* ==== DICTÉE VOCALE : analyse de la phrase dite (fonctions pures, testables) ==== */
+  const Dictee = (() => {
+    // minuscules sans accents, même longueur que le texte d'origine (les positions restent alignées)
+    const low = s => [...String(s || "").toLowerCase()].map(ch => ch === "’" || ch === "`" || ch === "´" ? "'" : ch.normalize("NFD")[0] || ch).join("");
+    const lev = (a, b) => {
+      if (a === b) return 0; if (!a.length) return b.length; if (!b.length) return a.length;
+      let p = Array.from({ length: b.length + 1 }, (_, j) => j);
+      for (let i = 1; i <= a.length; i++) {
+        const c = [i];
+        for (let j = 1; j <= b.length; j++) c[j] = Math.min(p[j] + 1, c[j - 1] + 1, p[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+        p = c;
+      }
+      return p[b.length];
+    };
+    const NUMW = { zero: 0, un: 1, une: 1, deux: 2, trois: 3, quatre: 4, cinq: 5, six: 6, sept: 7, huit: 8, neuf: 9, dix: 10, onze: 11, douze: 12, treize: 13, quatorze: 14, quinze: 15, seize: 16, vingt: 20, vingts: 20, trente: 30, quarante: 40, cinquante: 50, soixante: 60, septante: 70, huitante: 80, octante: 80, nonante: 90 };
+    /* lit un nombre (chiffres et/ou lettres) à partir de tk[i0] → { value, end } ou null */
+    function readNum(tk, i0) {
+      let total = 0, cur = 0, any = false, last = "", i = i0;
+      for (; i < tk.length; i++) {
+        const w = tk[i];
+        if (/^\d+(?:\.\d+)?$/.test(w)) {
+          if (!any) { cur = +w; any = true; last = "d"; continue; }
+          if (last === "mille" || last === "cent") { cur += +w; last = "d"; continue; }
+          break;
+        }
+        if (w === "et" && any && last === "w" && NUMW[tk[i + 1]] !== undefined) continue; // « soixante et onze »
+        if (w === "cent" || w === "cents") { if (last === "d" && cur >= 100) break; cur = (cur || 1) * 100; any = true; last = "cent"; continue; }
+        if (w === "mille") { total += (cur || 1) * 1000; cur = 0; any = true; last = "mille"; continue; }
+        if (w === "million" || w === "millions") { total += (cur || 1) * 1e6; cur = 0; any = true; last = "mille"; continue; }
+        const v = NUMW[w];
+        if (v === undefined || last === "d") break;
+        if (v === 20 && cur % 100 === 4) cur += 76; // quatre-vingt(s) = 80
+        else cur += v;
+        any = true; last = "w";
+      }
+      return any ? { value: total + cur, end: i } : null;
+    }
+    const prep = s => low(s).replace(/[  ]/g, " ").replace(/-/g, " ")
+      .replace(/(\d)[ .](?=\d{3}(?!\d))/g, "$1").replace(/(\d)[ .](?=\d{3}(?!\d))/g, "$1") // « 1 890 », « 1.890 »
+      .replace(/(\d+)\s*virgule\s*(\d+)/g, "$1.$2").replace(/(\d),(\d)/g, "$1.$2");
+    /* premier nombre dit dans le texte : « 1890 », « 1 890 dh », « mille huit cent quatre-vingt-dix », « 1890 virgule 50 » */
+    function number(s) {
+      const tk = prep(s).split(/[^a-z0-9.]+/).filter(Boolean);
+      for (let i = 0; i < tk.length; i++) { const r = readNum(tk, i); if (r) return r.value; }
+      return null;
+    }
+    // marques et gammes courantes (+ mots des articles existants) : corrige les noms mal transcrits
+    const BRANDS = "SAMSUNG GALAXY XIAOMI REDMI POCO NOTE HUAWEI NOVA HONOR OPPO RENO REALME NARZO VIVO TECNO SPARK CAMON POVA INFINIX HOT SMART ZERO ITEL NOKIA APPLE IPHONE IPAD AIRPODS MOTOROLA MOTO ZTE BLADE ALCATEL LENOVO TABLETTE TAB PRO MAX PLUS ULTRA LITE MINI CHARGEUR CABLE ECOUTEURS ECOUTEUR KIT COQUE ETUI VERRE TREMPE POWERBANK BATTERIE MONTRE WATCH SMARTWATCH CLE USB CARTE MEMOIRE ADAPTATEUR SUPPORT HAUT PARLEUR ENCEINTE CASQUE BLUETOOTH NOIR BLANC BLEU VERT ROUGE GRIS ROSE VIOLET OR ARGENT DORE".split(" ");
+    const FIX = [
+      [/\bred\s*m[iy]e?\b|\bredmy\b/g, "redmi"], [/\b(?:xiao|chao|shao|ciao|chiao)\s*mi\b|\bchaumi\b|\bxiaomie\b|\bshaomi\b/g, "xiaomi"],
+      [/\bhonneur\b/g, "honor"], [/\bgalaxie\b/g, "galaxy"], [/\b(?:ai|aie|i|aille)\s*phone\b|\baiphone\b/g, "iphone"],
+      [/\b(?:ai|aie|i|aille)\s*pad\b/g, "ipad"], [/\btechno\b/g, "tecno"], [/\binfini\s*(?:x|ix|xe)\b|\binfinix\b/g, "infinix"],
+      [/\breal\s*(?:me|mi|mie)\b|\brealmi\b|\brealmy\b/g, "realme"], [/\bmoto\s*rola\b/g, "motorola"], [/\bsam\s*soung\b|\bsamsoung\b|\bsamsun\b/g, "samsung"],
+      [/\bpower\s*bank\b/g, "powerbank"], [/\bair\s*pods?\b/g, "airpods"], [/\b(?:z\s*t\s*e|zed\s*te|zede\s*te)\b/g, "zte"],
+      [/\bblue\s*tooth\b|\bbluetouth\b/g, "bluetooth"], [/\bpaux?\s*co\b|\bpoko\b/g, "poco"], [/\bi\s*tel\b|\baitel\b/g, "itel"]
+    ];
+    const SERIES = new Set(["note", "iphone", "galaxy", "redmi", "spark", "hot", "camon", "pova", "smart", "y", "a", "s", "x", "c", "tab", "mi", "poco", "nova", "reno", "pro"]);
+    /* nom du modèle tel que dit → nom propre : « red mi quatorze c noir cent vingt-huit giga » → « REDMI 14C NOIR 128GO » */
+    function model(s, vocab = []) {
+      let t = " " + low(s).replace(/[  ]/g, " ").replace(/[-_]/g, " ") + " ";
+      t = t.replace(/^\s*(?:(?:un|une|le|la|les|l'|des|du|nouvel|nouveau|nouvelle|article|produit|c'est)\s+)+/, " ");
+      FIX.forEach(([re, to]) => { t = t.replace(re, to); });
+      // nombres en lettres → chiffres (« neuf » seulement après une gamme : « note neuf », pas « téléphone neuf »)
+      let tk = t.split(/\s+/).filter(Boolean), out = [];
+      for (let i = 0; i < tk.length; i++) {
+        const w = tk[i];
+        if ((NUMW[w] !== undefined || w === "cent" || w === "mille") && !/^\d/.test(w)) {
+          const r = readNum(tk, i), solo = r && r.end === i + 1;
+          const skip = !r || (solo && (w === "un" || w === "une")) || (solo && w === "neuf" && !SERIES.has(out[out.length - 1] || ""));
+          if (!skip) { out.push(String(r.value)); i = r.end - 1; continue; }
+        }
+        out.push(w);
+      }
+      t = " " + out.join(" ") + " ";
+      // lettres épelées une à une : « a 0 5 s » → « a05s »
+      t = t.replace(/(?:\b[a-z0-9]\b ){2,}\b[a-z0-9]\b/g, m => /[a-z]/.test(m) && /\d/.test(m) ? m.replace(/ /g, "") : m);
+      // « a 05 s » → « a05s » (lettre + chiffres + lettre), avant la mémoire « 4 128 »
+      t = t.replace(/(\S+) ([a-z]) (\d{1,4}) ([a-z])\b/g, (m, p, a, n, b) => p === "type" ? m : `${p} ${a}${n}${b}`);
+      // mémoire « 8/256 » (séparateur ou unité dits, ou 2-8 Go de RAM)
+      t = t.replace(/\b(\d{1,2})\s*(?:go|gb|giga(?:s|octets?)?)?\s*(?:\/|sur)\s*(32|64|128|256|512|1024)\b/g, "$1/$2")
+           .replace(/\b(\d{1,2})\s*(?:go|gb|giga(?:s|octets?)?)\s+(32|64|128|256|512|1024)\b/g, "$1/$2")
+           // « 8 256 » sans unité : mémoire, sauf après une gamme (« note 8 128 go » = Note 8, 128 Go)
+           .replace(/(\S+) ([2-8]) (64|128|256|512)\b/g, (m, p, a, b) => SERIES.has(p) ? m : `${p} ${a}/${b}`);
+      // capacité « 128 giga » → « 128GO », « 1 tera » → « 1TO »
+      t = t.replace(/\b(\d{1,4})\s*(?:go|gb|giga(?:s|octets?)?)\b/g, "$1go").replace(/\b(\d)\s*(?:to|tb|tera(?:s|octets?)?)\b/g, "$1to")
+           .replace(/(\/\d+)go\b/g, "$1go");
+      // « a 15 » → « a15 », « 14 c » → « 14c », « x 6 b » → « x6b », « 5 g » → « 5g »
+      // (sauf « type c 1 mètre » : la lettre appartient au mot « type »)
+      t = t.replace(/(\S+) ([a-z]) (\d{1,4})\b/g, (m, p, a, n) => p === "type" ? m : `${p} ${a}${n}`).replace(/^ ?([a-z]) (\d{1,4})\b/, "$1$2")
+           .replace(/\b(\d{1,4}) ([a-z])\b/g, (m, n, a, i, all) => /type $/.test(all.slice(0, i)) ? m : n + a);
+      // correction d'après les noms connus (« galaxi » → « galaxy », « redmy » → « redmi »)
+      const V = [...new Set(vocab.concat(BRANDS).map(w => low(w)).filter(w => /^[a-z]{4,}$/.test(w)))];
+      t = t.split(" ").filter(Boolean).map(w => {
+        if (!/^[a-z]{4,}$/.test(w) || V.includes(w)) return w;
+        const tol = w.length >= 6 ? 2 : 1; let best = null, bd = 9;
+        for (const v of V) { if (Math.abs(v.length - w.length) > tol) continue; const d = lev(w, v); if (d < bd) { bd = d; best = v; } }
+        return best && bd <= tol ? best : w;
+      }).join(" ");
+      return t.replace(/\s+/g, " ").trim().toUpperCase();
+    }
+    const key = s => low(s).replace(/[^a-z0-9]/g, "").replace(/(?:s|x)$/, "");
+    /* valeur la plus proche dans une liste (catégories, fournisseurs) → { value, known } */
+    function pick(list, said) {
+      const k = key(said); if (!k) return null;
+      let best = null, bd = 9;
+      for (const it of list) {
+        const ki = key(it); if (!ki) continue;
+        if (ki === k) return { value: it, known: true };
+        // début du nom dit (« atlas » pour « ATLAS MOBILE ») : très proche ; sinon distance d'édition
+        const d = (ki.startsWith(k) || k.startsWith(ki)) && Math.min(ki.length, k.length) >= 4 ? 0.5 : lev(k, ki);
+        if (d < bd) { bd = d; best = it; }
+      }
+      const tol = k.length >= 8 ? 2 : k.length >= 5 ? 1 : 0.5;
+      return best && bd <= tol ? { value: best, known: true } : { value: String(said).replace(/\s+/g, " ").trim().toUpperCase(), known: false };
+    }
+    // mots-clés → champ (cherchés sans accents ; le plus long l'emporte : « prix d'achat » avant « prix »)
+    const KEYS = [
+      ["achat", /\bprix\s*d\s*'?\s*achats?\b|\bprix\s+achats?\b|\bprix\s+de\s+revient\b|\bcouts?\s+d\s*'?\s*achat\b|\bachete\s+a\b|\bcouts?\b|\bachats?\b/g],
+      ["prix", /\bprix\s+de\s+ventes?\b|\bprix\s+ventes?\b|\bvendus?\s+a\b|\ba\s+vendre\s+a\b|\bventes?\b|\bprix\b/g],
+      ["stock", /\bquantites?\b|\bqte\b|\ben\s+stock\b|\bstock\b|\bnombre\s+de\s+pieces\b|\bnombre\b/g],
+      ["categorie", /\bcategories?\b|\brayon\b|\bfamille\b/g],
+      ["fournisseur", /\bfournisseurs?\b|\bfournie?s?\s+par\b|\bvenant\s+de\b/g],
+      ["marque", /\bmarques?\b/g],
+      ["designation", /\bmodeles?\b|\bdesignations?\b|\bnom\s+de\s+l\s*'?\s*article\b|\bnom\b/g],
+      ["caract", /\bcaracteristiques?\b|\bdescriptions?\b|\bdetails?\b/g],
+      ["seuil", /\bseuil(?:\s+d\s*'?\s*alerte)?\b|\balerte\b/g],
+      ["reference", /\breferences?\b/g]
+    ];
+    const NUMERIC = new Set(["achat", "prix", "stock", "seuil"]);
+    /* phrase complète → { fields: {clé: valeur}, info: {clé: "existante"|"nouvelle"}, score }
+       ctx : { has: Set des champs disponibles, cats: [...], sups: [...], vocab: [...] } */
+    function parse(text, ctx = {}) {
+      const has = ctx.has || new Set(KEYS.map(k => k[0]).concat("designation"));
+      let orig = " " + String(text || "").replace(/\s+/g, " ") + " ", lw = low(orig);
+      const fields = {}, info = {};
+      // « 3 pièces » / « trois unités » : quantité dite après le nombre
+      const pc = /\b(\d+|un|une|deux|trois|quatre|cinq|six|sept|huit|neuf|dix|onze|douze|quinze|vingt|trente|cinquante|cent)\s+(?:pieces?|unites?|exemplaires?|boites?|articles?)\b/.exec(lw);
+      if (pc && has.has("stock")) { fields.stock = number(pc[1]); const a = pc.index, b = a + pc[0].length; orig = orig.slice(0, a) + " ".repeat(b - a) + orig.slice(b); lw = low(orig); }
+      // repérage des mots-clés
+      let hits = [];
+      for (const [f, re] of KEYS) { re.lastIndex = 0; let m; while ((m = re.exec(lw))) hits.push({ f, a: m.index, b: m.index + m[0].length }); }
+      hits.sort((x, y) => x.a - y.a || (y.b - y.a) - (x.b - x.a));
+      hits = hits.filter((h, i) => !hits.slice(0, i).some(o => h.a < o.b && h.b > o.a)); // chevauchements : le plus long gagne
+      const seg = (a, b, num) => {
+        let s = orig.slice(a, b), l = lw.slice(a, b);
+        // mots de liaison en tête (« prix de vente : 1890 », « c'est 1890 », « à 1890 ») ; « a » seulement devant un nombre
+        const lead = (num ? /^(?:\s|[:=,.;]|est\b|c'est\b|de\b|du\b|d'|a\b|egale?\b|soit\b)+/ : /^(?:\s|[:=,.;]|est\b|c'est\b|egale?\b|soit\b)+/).exec(l);
+        if (lead) { s = s.slice(lead[0].length); l = l.slice(lead[0].length); }
+        const tail = /(?:\s|[,.;]|\bet\b|\bpuis\b|\bavec\b|\bdirhams?\b|\bdhs?\b|\bmad\b|\beuros?\b)+$/.exec(l); if (tail) s = s.slice(0, s.length - tail[0].length);
+        return s.trim();
+      };
+      const first = hits.length ? hits[0].a : orig.length;
+      const leading = seg(0, first);
+      hits.forEach((h, i) => {
+        const v = seg(h.b, i + 1 < hits.length ? hits[i + 1].a : orig.length, NUMERIC.has(h.f));
+        if (!v || !has.has(h.f)) return;
+        if (NUMERIC.has(h.f)) { const n = number(v); if (n != null) fields[h.f] = h.f === "stock" || h.f === "seuil" ? Math.round(n) : n; }
+        else fields[h.f] = v;
+      });
+      if (leading && !fields.designation && has.has("designation")) { fields.designation = leading; info.implicit = true; } // modèle dit sans le mot « modèle »
+      if (fields.designation) fields.designation = model(fields.designation, ctx.vocab || []);
+      if (fields.categorie) { const p = pick(ctx.cats || [], fields.categorie); fields.categorie = p.value; info.categorie = p.known ? "existante" : "nouvelle"; }
+      if (fields.fournisseur) { const p = pick(ctx.sups || [], fields.fournisseur); fields.fournisseur = p.value; info.fournisseur = p.known ? "connu" : "nouveau"; }
+      if (fields.marque) fields.marque = model(fields.marque, ctx.vocab || []);
+      // score : sert à choisir la meilleure des transcriptions proposées par le navigateur
+      const vocab = new Set((ctx.vocab || []).concat(BRANDS).map(w => low(w)));
+      const score = Object.keys(fields).length * 10 + (info.categorie === "existante" ? 4 : 0) + (info.fournisseur === "connu" ? 4 : 0)
+        + (fields.designation ? low(fields.designation).split(" ").filter(w => vocab.has(w)).length * 2 : 0);
+      return { fields, info, score };
+    }
+    /* valeur d'un seul champ dicté (micro à côté du champ) */
+    function single(f, text, ctx = {}) {
+      if (NUMERIC.has(f)) { const n = number(text); return n == null ? null : (f === "stock" || f === "seuil" ? Math.round(n) : n); }
+      if (f === "designation" || f === "marque") return model(text, ctx.vocab || []) || null;
+      if (f === "categorie") return pick(ctx.cats || [], text)?.value || null;
+      if (f === "fournisseur") return pick(ctx.sups || [], text)?.value || null;
+      return String(text || "").trim() || null;
+    }
+    return { number, model, pick, parse, single, low };
+  })();
+
+  /* Reconnaissance vocale du navigateur (Chrome, Edge, Safari) : écoute jusqu'à 2,5 s de silence */
+  const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition || null;
+  function listenSpeech({ onInterim, onResult, onError, onEnd, single }) {
+    const r = new SpeechRec();
+    r.lang = "fr-FR"; r.interimResults = true; r.maxAlternatives = 5; r.continuous = !single;
+    const segs = []; let alts = null, timer = 0, stopped = false;
+    const stopSoon = ms => { clearTimeout(timer); timer = setTimeout(() => { try { r.stop(); } catch (_) {} }, ms); };
+    r.onresult = e => {
+      let interim = "";
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        const res = e.results[i];
+        if (res.isFinal) {
+          const top = res[0].transcript.trim();
+          // certains Android renvoient le texte cumulé : on ne garde pas les doublons
+          const prev = segs[segs.length - 1];
+          if (prev && top.toLowerCase().startsWith(prev.toLowerCase())) segs[segs.length - 1] = top; else segs.push(top);
+          alts = [...res].map(a => a.transcript.trim());
+        } else interim += res[0].transcript;
+      }
+      if (onInterim) onInterim((segs.join(" ") + " " + interim).trim());
+      stopSoon(2500);
+    };
+    r.onerror = e => { if (e.error !== "aborted" && onError) onError(e.error); };
+    r.onend = () => {
+      clearTimeout(timer);
+      if (stopped) return; stopped = true;
+      // une seule phrase : toutes les variantes proposées ; plusieurs : leur enchaînement
+      const out = !segs.length ? [] : segs.length === 1 && alts ? alts : [segs.join(" ")];
+      if (onEnd) onEnd();
+      if (out.length && onResult) onResult(out);
+    };
+    r.start();
+    stopSoon(single ? 8000 : 30000); // durée maximale
+    return { stop: () => { try { r.stop(); } catch (_) {} } };
+  }
+  const speechErr = code => ({
+    "not-allowed": "Micro refusé : autorisez le micro pour ce site (cadenas à gauche de l'adresse), puis réessayez.",
+    "service-not-allowed": "Micro refusé : autorisez le micro pour ce site, puis réessayez.",
+    "no-speech": "Je n'ai rien entendu : appuyez sur 🎤 puis parlez près du micro.",
+    "audio-capture": "Aucun micro détecté sur cet appareil.",
+    "network": "La dictée a besoin d'Internet : vérifiez la connexion."
+  }[code] || "Dictée interrompue (" + code + "). Réessayez.");
+
   function fieldInput(col, value) {
     const id = "f_" + col.name;
     const req = col.required ? "required" : "";
@@ -3358,14 +3582,26 @@ self.onmessage = async e => {
     // valeurs proposées pour un nouvel article créé depuis un scan : 1 pièce en stock
     const preset = c => isNew && opts.code && c.name === M.stock ? 1 : "";
     const isReq = c => c.required || c.name === M.designation || (opts.forSale && c.name === M.prix);
+    // dictée vocale : champ de la phrase → colonne de la liste
+    const caractCol = findCol("Caractéristiques") || findCol("Caracteristiques") || findCol("Description");
+    const DK = { designation: M.designation, categorie: M.categorie, marque: M.marque, achat: M.achat, prix: M.prix, stock: M.stock, seuil: M.seuil,
+      reference: M.reference, caract: caractCol && caractCol.name, fournisseur: supCol ? supCol.name : isNew ? "__sup" : null };
+    const keyOfCol = name => Object.keys(DK).find(k => DK[k] && DK[k] === name);
+    const micHTML = (k, lab) => SpeechRec && k ? `<button type="button" class="mic-btn" data-mic="${k}" title="Dicter : ${esc(lab)}" aria-label="Dicter ${esc(lab)}">🎤</button>` : "";
     const fieldHTML = c => `<label class="field ${c.type === "note" || c.name === M.designation ? "full" : ""}" for="f_${esc(c.name)}">
-        <span>${esc(colTitle(c))}${isReq(c) ? ' <span class="req">*</span>' : ""}</span>${fieldInput(c, article ? (c.type === "lookup" ? article[c.name + "LookupId"] : article[c.name]) : preset(c))}</label>`;
+        <span>${esc(colTitle(c))}${isReq(c) ? ' <span class="req">*</span>' : ""}${micHTML(keyOfCol(c.name), colTitle(c))}</span>${fieldInput(c, article ? (c.type === "lookup" ? article[c.name + "LookupId"] : article[c.name]) : preset(c))}</label>`;
     const codesVal = (article ? codesOf(article).join(" ") : (opts.code || "")).replace(/(\S)$/, "$1 "); // espace final : prêt pour le code suivant
     const body = `<form id="art-form" class="form-grid" novalidate>
       ${opts.code ? `<div class="full alert info af-code">${ICON.scan}<div>Code-barres scanné : <strong>${esc(opts.code)}</strong>. Il sera rattaché à ce nouvel article.</div></div>` : ""}
+      ${SpeechRec ? `<div class="full dict-box" id="dict-box">
+        <button type="button" class="dict-go" id="dict-go"><span class="dict-ico">🎤</span><span class="dict-lab"><strong>Dicter ${isNew ? "l'article" : "les modifications"}</strong><small>Parlez, puis vérifiez avant d'enregistrer</small></span></button>
+        <div class="dict-help">Dites par exemple : « <em>Redmi 14C noir 128 Go, catégorie smartphone, prix d'achat 1430, prix de vente 1890, quantité 3, fournisseur Sud Télécom</em> ». Le 🎤 à côté d'un champ dicte ce champ seul.</div>
+        <div class="dict-live" id="dict-live" hidden></div>
+        <div class="dict-sum" id="dict-sum" hidden></div>
+      </div>` : ""}
       ${mainCols.map(fieldHTML).join("")}
       ${M.achat && M.prix ? `<div class="full af-marge" id="af-marge"></div>` : ""}
-      ${isNew && !supCol ? `<label class="field" for="f__sup"><span>Fournisseur</span><input class="input" id="f__sup" list="${supDatalist()}" autocomplete="off" placeholder="Nom du fournisseur"></label>` : ""}
+      ${isNew && !supCol ? `<label class="field" for="f__sup"><span>Fournisseur${micHTML("fournisseur", "Fournisseur")}</span><input class="input" id="f__sup" list="${supDatalist()}" autocomplete="off" placeholder="Nom du fournisseur"></label>` : ""}
       <label class="field full" for="f__codes"><span>Codes-barres <span class="muted" style="font-weight:400">(plusieurs possibles : scannez-les l'un après l'autre)</span></span>
         <input class="input" id="f__codes" value="${esc(codesVal)}" autocomplete="off" placeholder="Scannez le code-barres de la boîte (EAN)…" inputmode="text"></label>
       ${isNew ? `<div class="full muted af-note">Avec un fournisseur, la quantité et le prix d'achat sont aussi enregistrés comme un achat (menu Achats). La date d'ajout est remplie automatiquement.</div>` : ""}
@@ -3391,6 +3627,105 @@ self.onmessage = async e => {
     };
     m.addEventListener("input", e => { if (e.target.id === "f_" + M.achat || e.target.id === "f_" + M.prix) marge(); });
     marge();
+
+    /* ---- Dictée vocale ---- */
+    const DLAB = { designation: "Modèle", categorie: "Catégorie", marque: "Marque", achat: "Prix d'achat", prix: "Prix de vente", stock: "Quantité", seuil: "Seuil d'alerte", reference: "Référence", caract: "Caractéristiques", fournisseur: "Fournisseur" };
+    const elOf = k => DK[k] === "__sup" ? $("#f__sup", m) : DK[k] ? $("#art-form", m).elements[DK[k]] : null;
+    const dctx = () => ({
+      has: new Set(Object.keys(DK).filter(k => elOf(k))),
+      cats: categories(true), sups: supplierNames(),
+      vocab: [...new Set(state.articles.flatMap(a => String(artName(a) || "").split(/[^A-Za-z0-9]+/)).filter(w => w.length >= 3))]
+    });
+    // écrit une valeur dans un champ (liste déroulante : option la plus proche) ; renvoie false si impossible
+    const setField = (k, v) => {
+      const el = elOf(k); if (!el || v == null || v === "") return false;
+      if (el.tagName === "SELECT") {
+        const opts2 = [...el.options].filter(o => o.value !== "");
+        const p = Dictee.pick(opts2.map(o => o.textContent), String(v));
+        const o = p && p.known && opts2.find(x => x.textContent === p.value); if (!o) return false;
+        el.value = o.value;
+      } else el.value = typeof v === "number" ? String(v) : v;
+      el.dispatchEvent(new Event("input", { bubbles: true })); el.dispatchEvent(new Event("change", { bubbles: true }));
+      const fld = el.closest(".field"); if (fld) { fld.classList.remove("dict-filled"); void fld.offsetWidth; fld.classList.add("dict-filled"); }
+      const det = el.closest("details"); if (det) det.open = true;
+      return true;
+    };
+    const fmtV = (k, v) => k === "achat" || k === "prix" ? money(v) : k === "stock" || k === "seuil" ? int(v) : esc(v);
+    let rec = null, undo = null;
+    const stopRec = () => { if (rec) { rec.stop(); rec = null; } };
+    new MutationObserver((_, o) => { if (!document.body.contains(m)) { o.disconnect(); stopRec(); } }).observe($("#modal-root"), { childList: true });
+    const goBtn = $("#dict-go", m), live = $("#dict-live", m), sum = $("#dict-sum", m);
+    const setListening = on => {
+      if (!goBtn) return;
+      goBtn.classList.toggle("on", on);
+      goBtn.querySelector(".dict-lab strong").textContent = on ? "J'écoute… parlez" : `Dicter ${isNew ? "l'article" : "les modifications"}`;
+      goBtn.querySelector(".dict-lab small").textContent = on ? "Cliquez pour terminer (arrêt automatique après un silence)" : "Parlez, puis vérifiez avant d'enregistrer";
+    };
+    // phrase complète : la meilleure des transcriptions proposées est retenue, puis appliquée aux champs
+    const applyPhrase = alts => {
+      const cx = dctx();
+      const best = alts.map(t => ({ t, r: Dictee.parse(t, cx) })).sort((a, b) => b.r.score - a.r.score)[0];
+      const { fields, info } = best.r;
+      // texte sans mot-clé : il ne remplace jamais un modèle déjà rempli (dire « modèle … » pour le changer)
+      let kept = "";
+      const curModel = elOf("designation") ? elOf("designation").value.trim() : "";
+      if (info.implicit && curModel && fields.designation !== curModel) { kept = fields.designation; delete fields.designation; }
+      const keys = Object.keys(DLAB).filter(k => k in fields); // ordre de la fiche
+      if (!keys.length) { beep(false); sum.hidden = false; sum.innerHTML = `<div class="dict-warn">Je n'ai reconnu aucun champ dans « ${esc(best.t)} ».${kept ? " Le modèle est déjà rempli : pour le changer, dites « modèle » puis le nom." : ""} Dites par exemple « prix de vente 1890 ».</div><div class="dict-acts"><button type="button" class="btn sm" id="dict-more">🎤 Réessayer</button></div>`; return; }
+      undo = keys.map(k => [k, elOf(k) ? elOf(k).value : ""]);
+      const done = [], failed = [];
+      keys.forEach(k => (setField(k, fields[k]) ? done : failed).push(k));
+      // contrôles de vraisemblance
+      const num = k => parseFloat((elOf(k) || {}).value);
+      const warn = [];
+      if (num("achat") > 0 && num("prix") > 0 && num("prix") < num("achat")) warn.push("prix de vente inférieur au prix d'achat");
+      if (num("achat") > 0 && num("prix") > num("achat") * 5) warn.push("prix de vente plus de 5 fois le prix d'achat");
+      if (num("stock") > 500) warn.push("quantité très élevée");
+      if (fields.designation && fields.designation.length < 3) warn.push("modèle très court");
+      beep(true);
+      sum.hidden = false;
+      sum.innerHTML = `<div class="dict-heard">Entendu : « ${esc(best.t)} »</div>
+        <div class="dict-items">${done.map(k => `<span class="dict-item"><b>${DLAB[k]}</b> ${fmtV(k, fields[k])}${info[k] ? ` <i>${info[k]}</i>` : ""}</span>`).join("")}</div>
+        ${failed.length ? `<div class="dict-warn">Non placé : ${failed.map(k => `${DLAB[k]} « ${esc(fields[k])} »`).join(", ")}</div>` : ""}
+        ${kept ? `<div class="dict-warn">Modèle déjà rempli, non remplacé par « ${esc(kept)} » (dites « modèle … » pour le changer).</div>` : ""}
+        ${warn.length ? `<div class="dict-warn">⚠ À vérifier : ${warn.join(" · ")}</div>` : ""}
+        <div class="dict-acts"><button type="button" class="btn sm" id="dict-undo">↶ Annuler la dictée</button><button type="button" class="btn sm" id="dict-more">🎤 Compléter</button><span class="muted">Vérifiez les champs surlignés, puis enregistrez.</span></div>`;
+    };
+    const startPhrase = () => {
+      if (rec) return stopRec();
+      live.hidden = false; live.textContent = "…"; setListening(true);
+      rec = listenSpeech({
+        onInterim: t => { live.textContent = t; },
+        onResult: alts => { live.hidden = true; applyPhrase(alts); },
+        onError: code => { beep(false); toast(speechErr(code), "bad"); },
+        onEnd: () => { rec = null; setListening(false); if (live.textContent === "…") live.hidden = true; }
+      });
+    };
+    // un seul champ (micro à côté du champ)
+    const startField = (k, btn) => {
+      if (rec) stopRec();
+      btn.classList.add("on");
+      rec = listenSpeech({
+        single: true,
+        onResult: alts => {
+          const cx = dctx();
+          const v = alts.map(t => Dictee.single(k, t, cx)).find(x => x != null && x !== "");
+          if (v == null || !setField(k, v)) { beep(false); toast(`${DLAB[k]} : « ${alts[0]} » non compris, réessayez.`, "bad"); return; }
+          beep(true);
+        },
+        onError: code => { beep(false); toast(speechErr(code), "bad"); },
+        onEnd: () => { rec = null; btn.classList.remove("on"); }
+      });
+    };
+    m.addEventListener("click", e => {
+      if (e.target.closest("#dict-go") || e.target.closest("#dict-more")) { e.preventDefault(); return startPhrase(); }
+      const mic = e.target.closest("[data-mic]");
+      if (mic) { e.preventDefault(); return startField(mic.dataset.mic, mic); }
+      if (e.target.closest("#dict-undo") && undo) {
+        undo.forEach(([k, v]) => { const el = elOf(k); if (el) { el.value = v; el.dispatchEvent(new Event("input", { bubbles: true })); const f = el.closest(".field"); if (f) f.classList.remove("dict-filled"); } });
+        undo = null; sum.hidden = true; toast("Dictée annulée : champs remis comme avant.", "ok");
+      }
+    });
     // lecteur code-barres dans le champ des codes : Entrée ajoute un espace au lieu d'enregistrer la fiche
     const codesInp = $("#f__codes", m);
     // curseur placé après un espace : le code scanné suivant ne se colle pas au précédent

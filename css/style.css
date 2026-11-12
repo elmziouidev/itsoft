@@ -1049,6 +1049,33 @@ body.has-dock .view { padding-bottom: calc(var(--dock-h, 0px) + 40px); }
 .cd-add .input { flex: 1; min-width: 0; font-family: ui-monospace, Consolas, monospace; }
 @media (max-width: 480px) { .cd-add { flex-wrap: wrap; } .cd-add .input { flex-basis: 100%; } .cd-add .btn { flex: 1; } }
 
+/* Dictée vocale (fiche article) */
+.dict-box { border: 1px solid color-mix(in srgb, #7c3aed 30%, var(--border)); background: color-mix(in srgb, #7c3aed 6%, var(--surface)); border-radius: 12px; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
+.dict-go { display: flex; align-items: center; gap: 12px; width: 100%; padding: 10px 14px; border: 0; border-radius: 12px; cursor: pointer; text-align: left; font: inherit; color: #fff; background: linear-gradient(135deg, #7c3aed, #4f46e5); box-shadow: 0 6px 16px rgba(79, 70, 229, .3); }
+.dict-go:hover { filter: brightness(1.06); }
+.dict-go .dict-ico { display: grid; place-items: center; width: 40px; height: 40px; border-radius: 50%; background: rgba(255,255,255,.2); font-size: 20px; flex-shrink: 0; }
+.dict-go .dict-lab { display: flex; flex-direction: column; line-height: 1.2; }
+.dict-go .dict-lab strong { font-size: 16px; font-weight: 800; }
+.dict-go .dict-lab small { font-size: 12px; opacity: .9; }
+.dict-go.on { background: linear-gradient(135deg, #dc2626, #b91c1c); box-shadow: 0 6px 16px rgba(220, 38, 38, .35); }
+.dict-go.on .dict-ico { animation: dictPulse 1.2s ease-in-out infinite; }
+@keyframes dictPulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(255,255,255,.6); } 50% { box-shadow: 0 0 0 9px rgba(255,255,255,0); } }
+.dict-help { font-size: 12.5px; color: var(--muted); line-height: 1.45; }
+.dict-help em { color: var(--text); font-style: normal; font-weight: 600; }
+.dict-live { font-size: 14px; padding: 8px 10px; border-radius: 8px; background: var(--surface); border: 1px dashed var(--border); color: var(--text); min-height: 1.4em; }
+.dict-sum { display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
+.dict-heard { color: var(--muted); font-style: italic; }
+.dict-items { display: flex; flex-wrap: wrap; gap: 6px; }
+.dict-item { padding: 3px 9px; border-radius: 999px; background: color-mix(in srgb, #16a34a 12%, var(--surface)); border: 1px solid color-mix(in srgb, #16a34a 35%, transparent); }
+.dict-item b { font-weight: 700; margin-right: 3px; }
+.dict-item i { font-style: normal; font-size: 11px; color: var(--muted); }
+.dict-warn { color: #b45309; font-weight: 600; }
+.dict-acts { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.mic-btn { border: 0; background: transparent; cursor: pointer; font-size: 13px; padding: 0 4px; margin-left: 4px; border-radius: 6px; opacity: .65; vertical-align: middle; }
+.mic-btn:hover { opacity: 1; background: color-mix(in srgb, #7c3aed 12%, transparent); }
+.mic-btn.on { opacity: 1; background: #dc2626; animation: dictPulse 1.2s ease-in-out infinite; }
+.field.dict-filled .input { border-color: #16a34a; box-shadow: 0 0 0 3px color-mix(in srgb, #16a34a 22%, transparent); background: color-mix(in srgb, #16a34a 5%, var(--surface)); }
+
 /* Code-barres inconnu : créer l'article ou l'associer à un article existant */
 .assoc-new { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 8px; padding: 10px 12px; border-radius: 10px; background: var(--surface); border: 1px solid var(--border); }
 .assoc-new > span { font-weight: 600; flex: 1 1 150px; }
