@@ -946,3 +946,11 @@ body.has-dock .view { padding-bottom: calc(var(--dock-h, 0px) + 40px); }
 .cam-zoom { display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: 999px; background: rgba(0,0,0,.55); color: #fff; font-size: 13px; }
 .cam-zoom input { width: 110px; accent-color: #22c55e; }
 .cam-ctrl { top: 10px; bottom: auto; }
+
+/* Annuler la vente (à côté de Valider) + prix de vente manquant */
+.sp-foot .btn.sc-cancel { flex: 0 1 38%; min-height: 46px; font-weight: 700; color: #b91c1c; border-color: #fca5a5; background: var(--surface); }
+.sp-foot .btn.sc-cancel:hover { background: #fef2f2; }
+.sp-foot .btn.sc-validate { flex: 1 1 55%; }
+.pv-missing { color: #c2410c !important; font-style: italic; font-weight: 600; }
+.pv-notice { margin: 0 0 10px; padding: 9px 12px; border-radius: 10px; background: #fff7ed; border: 1px solid #fed7aa; color: #9a3412; font-size: 13.5px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.pv-notice.bad { background: #fef2f2; border-color: #fecaca; color: #991b1b; }

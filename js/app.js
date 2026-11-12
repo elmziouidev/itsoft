@@ -70,6 +70,7 @@
   const RULES = [
     ["seuil", ["seuil", "seuilalerte", "stockmin", "stockminimum", "qtemin", "minimum", "alerte"], NUM],
     ["stock", ["stock", "qtestock", "quantitestock", "quantite", "qte", "qty", "quantity", "enstock"], NUM],
+    ["achat", ["prixachat", "prixdachat", "coutachat", "prixrevient", "prixderevient"], NUM],
     ["prix", ["prixvente", "prixdevente", "prixunitaire", "prix", "pu", "price", "tarif"], NUM],
     ["reference", ["reference", "ref", "codearticle", "idarticle", "code", "sku"], TXT.concat(NUM)],
     ["categorie", ["categorie", "famille", "category", "rayon", "nomarticle", "type"], CAT],
@@ -78,7 +79,7 @@
     ["photo", ["photo", "image", "img", "picture", "urlphoto"], TXT],
     ["designation", ["modele", "designation", "libelle", "nom", "produit", "title"], TXT]
   ];
-  const FIELD_LABELS = { designation: "Désignation / Modèle", reference: "Référence", categorie: "Catégorie", fournisseur: "Fournisseur", marque: "Marque", prix: "Prix de vente", stock: "Stock (quantité)", seuil: "Seuil d'alerte", photo: "Photo (adresse de l'image)" };
+  const FIELD_LABELS = { designation: "Désignation / Modèle", reference: "Référence", categorie: "Catégorie", fournisseur: "Fournisseur", marque: "Marque", achat: "Prix d'achat", prix: "Prix de vente", stock: "Stock (quantité)", seuil: "Seuil d'alerte", photo: "Photo (adresse de l'image)" };
 
   /* ============ Vignettes : photo ou icône « appareil + marque » ============ */
   const BRANDS = [ // [motif dans le modèle, marque, lettre, teinte]
@@ -202,9 +203,9 @@
     for (const k of Object.keys(FIELD_LABELS)) {
       const o = override[k], c = findCol(cfg.champs && cfg.champs[k]);
       if (o === "-") map[k] = "";
-      else if (o && names.has(o)) map[k] = o;
-      else if (c) map[k] = c.name;
-      else map[k] = "";
+      else if (o && names.has(o) && !taken.has(o)) map[k] = o;
+      else if (c && !taken.has(c.name)) map[k] = c.name;
+      else map[k] = ""; // une colonne ne sert qu'à un seul rôle (ex. « Prix » = prix d'achat, jamais prix de vente)
       if (map[k]) taken.add(map[k]);
     }
     for (const k of Object.keys(FIELD_LABELS)) {
@@ -453,6 +454,7 @@
     state.creditsReady = !!res.creditsReady;
     state.siteName = res.siteName;
     computeMapping();
+    ensurePrixVente();
     // retirer du panier les articles disparus
     state.cart = state.cart.filter(l => l.svc || state.articles.some(a => a.id === l.id));
     state.loaded = true;
@@ -462,6 +464,39 @@
       zxingReader().catch(() => {}); // décodeur rapide prêt avant le premier scan
       if (scanModeGet() === "price") { ocrWorker().catch(() => {}); ocrDigits().catch(() => {}); } // moteur de lecture des prix prêt d'avance
     }, 1500);
+  }
+
+  /* Colonne « Prix de vente » (cfg.champs.prix, ex. PrixVente) absente de la liste des articles :
+     créée une seule fois (colonne Nombre). L'ancienne colonne « Prix » reste le prix d'achat. */
+  let pvBusy = false;
+  async function ensurePrixVente(manual) {
+    const name = cfg.champs && cfg.champs.prix;
+    if (state.map.prix || !name || pvBusy || (!manual && state.pvErr)) return;
+    pvBusy = true;
+    try {
+      const c = await DS.addArticleColumn(name, { number: true, displayName: (cfg.libellesColonnes && cfg.libellesColonnes[name]) || name });
+      if (!findCol(c.name)) state.columns.push(c);
+      state.pvErr = null; computeMapping();
+      toast(`Colonne « Prix de vente » ajoutée à ${cfg.articlesList} : saisissez le prix de vente de chaque article (clic sur la cellule).`, "ok");
+      if (currentView() === "articles") render();
+    } catch (e) {
+      if (/exist|already|déjà/i.test(e.message || "")) { // déjà créée (autre appareil, chargement parallèle)
+        state.columns.push({ name, displayName: name, type: "number" }); computeMapping();
+        if (currentView() === "articles") render();
+        return;
+      }
+      state.pvErr = e.message || String(e);
+      if (manual) toast("Création de la colonne impossible : " + state.pvErr, "bad");
+      if (currentView() === "articles") render();
+    } finally { pvBusy = false; }
+  }
+  /* prix de vente manquant : signalé au lieu de vendre à 0 */
+  const noSalePrice = a => !!a && !(artPrice(a) > 0);
+  function pvNotice() {
+    const name = cfg.champs && cfg.champs.prix;
+    if (!state.map.prix) return name ? `<div class="pv-notice bad">La colonne <strong>Prix de vente</strong> (${esc(name)}) n'existe pas encore dans ${esc(cfg.articlesList)}${state.pvErr ? ` : ${esc(state.pvErr)}` : ""}. <button class="btn sm primary" type="button" id="pv-create">Créer la colonne Prix de vente</button></div>` : "";
+    const n = state.articles.filter(noSalePrice).length;
+    return n ? `<div class="pv-notice"><strong>${int(n)}</strong> article(s) sans prix de vente : cliquez sur « à saisir » dans la colonne <strong>Prix de vente</strong>. Sans ce prix, l'article ne peut pas être vendu au scan ni avoir d'étiquette.</div>` : "";
   }
 
   /* ============ Routage ============ */
@@ -1208,7 +1243,8 @@
     const v = a[c.name];
     const empty = '<span class="muted">—</span>';
     if (c.name === state.map.designation) return `<span class="name-cell">${thumbHTML(a)}<span class="name-text">${v == null || v === "" ? empty : esc(v)}</span></span>`;
-    if (c.name === state.map.prix) return v == null || v === "" ? empty : money(v);
+    if (c.name === state.map.prix) return v == null || v === "" || !(+v > 0) ? '<span class="muted pv-missing" title="Prix de vente à saisir">à saisir</span>' : money(v);
+    if (c.name === state.map.achat) return v == null || v === "" ? empty : money(v);
     if (c.name === state.map.stock) { const st = stockStatus(a); return `<span class="badge ${st.cls}" title="${esc(st.label)}">${int(v)}</span>`; }
     if (v == null || v === "") return empty;
     switch (c.type) {
@@ -1430,8 +1466,13 @@
   async function labelsDialog(list) {
     const cat = a => String(F(a, "categorie") || "Sans catégorie");
     // articles rangés par catégorie puis par nom (même ordre qu'à l'impression)
-    const arts = list.filter(a => a && a.id).sort((a, b) => cat(a).localeCompare(cat(b), "fr") || String(artName(a)).localeCompare(String(artName(b)), "fr", { numeric: true }));
-    if (!arts.length) return toast("Aucun article à étiqueter.", "bad");
+    const all = list.filter(a => a && a.id);
+    // l'étiquette porte le PRIX DE VENTE : un article sans prix de vente n'est pas imprimé
+    const noPv = all.filter(noSalePrice);
+    if (!state.map.prix) return toast("La colonne « Prix de vente » n'existe pas encore : créez-la depuis le menu Articles.", "bad");
+    if (noPv.length) toast(`${int(noPv.length)} article(s) sans prix de vente, non imprimé(s) : ${noPv.slice(0, 5).map(artName).join(", ")}${noPv.length > 5 ? "…" : ""}. Saisissez leur prix de vente dans Articles.`, "bad");
+    const arts = all.filter(a => !noSalePrice(a)).sort((a, b) => cat(a).localeCompare(cat(b), "fr") || String(artName(a)).localeCompare(String(artName(b)), "fr", { numeric: true }));
+    if (!arts.length) return noPv.length ? undefined : toast("Aucun article à étiqueter.", "bad");
     const m = openModal({
       title: `QR codes à imprimer — ${int(arts.length)} article(s)`, size: "cart lb-modal",
       body: `<div class="alert info lb-unique">${ICON.info}<div class="grow"><strong>Un seul QR code par article</strong> (ex. <code>ITS:62</code>) : il ne change jamais. Chaque étiquette porte ce QR code et le texte « MODELE - Prix : PRIX ».</div></div>
@@ -1660,7 +1701,7 @@
     if (panel) {
       panel.innerHTML = `<div class="scan-panel"><div class="sp-head"><h2>${ICON.scan} Scanner</h2><button class="btn sm ghost" id="sp-stop" type="button" title="Arrêter la caméra">Arrêter</button></div>
         <div class="sp-body">${scanBody}</div>
-        <div class="sp-foot"><button class="btn primary sc-validate" id="scan-cart" type="button">✔ Valider la vente</button></div></div>`;
+        <div class="sp-foot"><button class="btn sc-cancel" id="scan-cancel" type="button" title="Vider la vente en cours : rien n'est enregistré">✕ Annuler la vente</button><button class="btn primary sc-validate" id="scan-cart" type="button">✔ Valider la vente</button></div></div>`;
       m = panel.firstElementChild;
     } else m = openModal({
       title: "Scanner des articles", size: "cart scan-modal", body: scanBody,
@@ -1693,6 +1734,15 @@
       $("#sp-stop", m).addEventListener("click", async () => {
         if (sess.lines.length && !(await confirmBox("Arrêter le scan", `La vente en cours (${int(sess.lines.reduce((t, L) => t + L.qty, 0))} article(s)) n'est pas validée : elle sera abandonnée, rien ne sera enregistré.`, "Abandonner la vente", true, "Continuer le scan"))) return;
         resetSession(); if (opts.onStop) opts.onStop();
+      });
+      /* « Annuler la vente » : vide la vente en cours (rien n'a encore été enregistré), la caméra reste active */
+      $("#scan-cancel", m).addEventListener("click", async () => {
+        if (!sess.lines.length) return toast("Aucune vente en cours à annuler.", "bad");
+        const nb = sess.lines.reduce((t, L) => t + L.qty, 0), tot = sess.lines.reduce((t, L) => t + L.qty * L.price, 0);
+        if (!(await confirmBox("Annuler la vente", `La vente en cours (${int(nb)} article(s), ${money(tot)}) sera vidée. Rien n'a été enregistré.`, "Annuler la vente", true, "Continuer la vente"))) return;
+        resetSession(); beep(true);
+        toast("Vente en cours annulée : rien n'a été enregistré.", "ok");
+        if (opts.onChange) opts.onChange(null);
       });
       state.scanPanelHandle = { m, code: c => { last = { code: "", t: 0 }; handle(c); }, focus: () => { const i = $("#scan-input", m); if (i) i.focus(); } };
     }
@@ -1734,11 +1784,14 @@
             if (L.autoPrice && sp > 0 && Math.abs(sp - L.price) > 0.005) { toast(`Prix de « ${artName(L.a)} » mis à jour : ${money(sp)} (au lieu de ${money(L.price)}).`, "ok"); L.price = sp; }
           }
         }
+        const zero = sess.lines.filter(L => L.a && !(L.price > 0));
+        if (zero.length) { beep(false); toast("Prix de vente non défini, vente non enregistrée — " + zero.map(L => artName(L.a)).join(", ") + ". Saisissez le prix de vente dans Articles ou retirez l'article.", "bad"); showTotal(); return; }
         // 2. la vente complète : toutes les lignes + retrait du stock
         const d = new Date(), num = saleNumber(d);
         const pay = (cfg.modesPaiement || ["Espèces"])[0], client = cfg.clientParDefaut || "Client comptoir";
         const lines = sess.lines.map(L => {
-          const lp = L.a && lastPurchase(L.a), unit = L.a && lp ? (+lp.PrixAchat || 0) : null, ref = L.a ? F(L.a, "reference") : null;
+          const lp = L.a && lastPurchase(L.a), pa = L.a ? +F(L.a, "achat") : NaN; // coût : dernier achat, sinon prix d'achat de la fiche
+          const unit = L.a && lp ? (+lp.PrixAchat || 0) : pa > 0 ? pa : null, ref = L.a ? F(L.a, "reference") : null;
           return {
             Title: num, ArticleId: L.a ? parseInt(L.a.id, 10) : 0, Article: L.a ? String(artName(L.a)) : FREE.divers.label,
             Reference: L.a ? (ref == null ? "" : String(ref)) : FREE.divers.label,
@@ -1922,6 +1975,11 @@
       last = { code, t: now };
       const a = articleByCode(code);
       if (!a) { beep(false); flash(false, "Code non reconnu", 0, code); return askAssociate(code); }
+      if (noSalePrice(a)) { // jamais de vente au prix d'achat ni à 0
+        beep(false); flash(false, artName(a), 0, "Prix de vente non défini : saisissez-le dans Articles");
+        log(`<span class="bad-dot"></span><span class="ellipsis">${esc(artName(a))}</span><span class="muted">prix de vente non défini</span>`, "bad");
+        return;
+      }
       addItem(a, artPrice(a)).then(r => itemDone(a, artPrice(a), r));
     };
     /* modification d'une ligne de la vente en cours (quantité, annulation), dans l'ordre des scans */
@@ -2405,6 +2463,7 @@
           <button class="btn" id="art-export" title="Exporter en CSV">${ICON.download}<span class="hide-sm">Exporter</span></button>
           <button class="btn primary" id="art-new">${ICON.plus} Nouvel article</button>
         </div>
+        ${pvNotice()}
         <div class="sel-bar" id="sel-bar" hidden></div>
         <div id="art-table"></div>
       </div>`;
@@ -2437,6 +2496,7 @@
         const lab = esc(colTitle(c));
         if (c.name === state.map.designation) return `<td class="sellable primary-cell" data-free-sell="${k}" data-label="${lab}" title="Vendre : prix et nature saisis dans le panier"><span class="name-cell"><span class="thumb svc-ico ${k}">${ICON[K.ico]}</span><span class="name-text"><strong>${K.label}</strong></span></span></td>`;
         if (c.name === state.map.prix) return `<td class="num" data-label="${lab}"><span class="muted">Prix libre</span></td>`;
+        if (c.name === state.map.achat) return `<td class="num" data-label="${lab}"><span class="muted">—</span></td>`;
         if (c.name === state.map.stock) return `<td class="num" data-label="${lab}"><span class="muted">—</span></td>`;
         if (c.name === state.map.categorie) return `<td data-label="${lab}"><span class="muted">${k === "divers" ? "Divers" : "Prestation"}</span></td>`;
         return `<td data-label="${lab}"></td>`;
@@ -2668,6 +2728,7 @@
       const th = e.target.closest("[data-sort]");
       if (th) { if (f.sort === th.dataset.sort) f.dir = -f.dir; else { f.sort = th.dataset.sort; f.dir = 1; } return drawTable(); }
       if (e.target.closest("#art-new")) return articleForm(null);
+      if (e.target.closest("#pv-create")) { const b = e.target.closest("#pv-create"); busy(b, true, "Création…"); return ensurePrixVente(true); }
       if (e.target.closest("#art-labels")) return labelsDialog(sel.size ? [...sel].map(artById).filter(Boolean) : apply());
       if (e.target.closest("#sel-qr")) return labelsDialog([...sel].map(artById).filter(Boolean));
       if (e.target.closest("#sel-clear")) { sel.clear(); $$("#art-table [data-sel]").forEach(cb => { cb.checked = false; cb.closest("tr").classList.remove("row-sel"); }); return selBar(); }
@@ -2732,7 +2793,7 @@
 
   function articleForm(article) {
     const order = articleColumns().map(c => c.name)
-      .concat(["designation", "reference", "categorie", "fournisseur", "marque", "prix", "stock", "seuil"].map(k => state.map[k]).filter(Boolean));
+      .concat(["designation", "reference", "categorie", "fournisseur", "marque", "achat", "prix", "stock", "seuil"].map(k => state.map[k]).filter(Boolean));
     const cols = state.columns.filter(c => !(c.type === "lookup" && c.lookup && c.lookup.multi)).sort((a, b) => {
       const ia = order.indexOf(a.name), ib = order.indexOf(b.name);
       return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
@@ -3348,6 +3409,7 @@
           if (hasStock()) upd[state.map.stock] = (+fresh[state.map.stock] || 0) + l.qty;
           if (dateCol) upd[dateCol.name] = d.toISOString();
           if (l.sell !== "" && num(l.sell) !== null && state.map.prix) upd[state.map.prix] = num(l.sell);
+          if (price > 0 && state.map.achat) upd[state.map.achat] = price; // dernier prix d'achat sur la fiche article
           Object.assign(a, await DS.updateArticle(a.id, upd));
         }
         closeModal();
@@ -4319,7 +4381,7 @@
   function viewParametres(el) {
     const theme = store.get("ventesit-theme", "auto");
     const opts = (k) => {
-      const types = ["prix", "stock", "seuil"].includes(k) ? NUM : null;
+      const types = ["achat", "prix", "stock", "seuil"].includes(k) ? NUM : null;
       const cols = state.columns.filter(c => !types || types.includes(c.type));
       return `<option value="-">— Aucune —</option>` + cols.map(c => `<option value="${esc(c.name)}" ${state.map[k] === c.name ? "selected" : ""}>${esc(c.displayName)} (${esc(c.name)})</option>`).join("");
     };

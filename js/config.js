@@ -30,7 +30,8 @@ window.APP_CONFIG = {
     categorie: "Nom_article",
     fournisseur: "fournisseur",
     marque: "",
-    prix: "Prix",
+    prix: "PrixVente",       // prix de vente : imprimé sur les étiquettes et utilisé au scan (colonne créée par l'application si absente)
+    achat: "Prix",           // prix d'achat (ancienne colonne « Prix »)
     stock: "Quantite",
     seuil: "",
     photo: "Photo"           // colonne « Une ligne de texte » contenant l'adresse (https://…) de la photo
@@ -38,13 +39,14 @@ window.APP_CONFIG = {
 
   // Colonnes affichées (dans cet ordre) dans le menu « Articles »
   // (pas de colonne « fournisseur » : un article peut venir de plusieurs fournisseurs, voir le menu Achats)
-  colonnesArticles: ["Id_article", "Modele", "Quantite", "Prix", "Caractéristiques", "DATEe", "Nom_article"],
+  colonnesArticles: ["Id_article", "Modele", "Quantite", "Prix", "PrixVente", "Caractéristiques", "DATEe", "Nom_article"],
 
   // Titres affichés dans l'application (les noms des colonnes SharePoint ne changent pas)
   libellesColonnes: {
     Nom_article: "Catégorie",
     Quantite: "Quantité en stock",
-    Prix: "Prix de vente"
+    Prix: "Prix d'achat",
+    PrixVente: "Prix de vente"
   },
 
   // Liste des clients (proposés lors d'une vente ; les nouveaux clients y sont ajoutés)

@@ -635,10 +635,11 @@
         { method: "POST", body: JSON.stringify({ fields }) });
       return resolveLookups({ ...it.fields, id: String(it.id) }, this.columns);
     },
-    /* Ajoute une colonne texte à la liste des articles (ex. CodeBarre) */
-    async addArticleColumn(name) {
+    /* Ajoute une colonne à la liste des articles : texte (ex. CodeBarre) ou nombre (opts.number, ex. PrixVente) */
+    async addArticleColumn(name, opts = {}) {
+      const def = { name, displayName: opts.displayName || name, ...(opts.number ? { number: { decimalPlaces: "two" } } : { text: {} }) };
       const c = await this.call(`/sites/${this.siteId}/lists/${this.articlesListId}/columns`,
-        { method: "POST", body: JSON.stringify({ name, displayName: name, text: {} }) }, ["Sites.Manage.All"]);
+        { method: "POST", body: JSON.stringify(def) }, ["Sites.Manage.All"]);
       const n = normalizeColumn(c);
       this.columns.push(n);
       return n;
@@ -812,8 +813,8 @@
       const a = { ...fields, id: String(this.db.nextId++) };
       this.db.articles.push(a); this.persist(); return this.resolve(a);
     },
-    async addArticleColumn(name) {
-      const c = { name, displayName: name, type: "text" };
+    async addArticleColumn(name, opts = {}) {
+      const c = { name, displayName: opts.displayName || name, type: opts.number ? "number" : "text" };
       if (!this.db.columns.some(x => x.name === name)) { this.db.columns.push(c); this.persist(); }
       return { ...c };
     },
