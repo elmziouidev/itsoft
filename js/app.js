@@ -1530,6 +1530,93 @@ self.onmessage = async e => {
     if (!findCol(c.name)) state.columns.push(c);
     return codeCol() || c;
   }
+  /* cellule « Codes-barres » du tableau des articles */
+  const codesCellHTML = a => {
+    const cs = codesOf(a);
+    return cs.length
+      ? `<span class="code-chips">${cs.slice(0, 2).map(c => `<span class="code-chip">${esc(c)}</span>`).join("")}${cs.length > 2 ? `<span class="code-more">+${cs.length - 2}</span>` : ""}</span>`
+      : `<span class="code-none">＋ Associer</span>`;
+  };
+
+  /* Codes-barres d'un article : scan à la douchette ou à la caméra, retrait, enchaînement « article suivant ».
+     ctx.next(a) → article suivant sans code-barres · ctx.onClose() · ctx.add : code lu par la caméra à ajouter */
+  function codesDialog(a, ctx = {}) {
+    const camOK = window.isSecureContext && navigator.mediaDevices && navigator.mediaDevices.getUserMedia;
+    const m = openModal({
+      title: "Codes-barres de l'article", size: "codes-modal",
+      body: `<div class="cd-art"><strong>${esc(artName(a))}</strong><span class="muted">${esc([F(a, "categorie"), artPrice(a) > 0 ? money(artPrice(a)) : "prix de vente non défini"].filter(Boolean).join(" · "))}</span></div>
+        <div class="cd-ways">
+          <div class="cd-way ok"><span class="cd-ico">${ICON.tag}</span><div class="grow"><strong>QR code (étiquette)</strong><span class="muted">Toujours actif · contenu ${esc(labelCode(a))} · à imprimer depuis « QR codes »</span></div><span class="badge ok">Actif</span></div>
+          <div class="cd-way" id="cd-way-bc"><span class="cd-ico">${ICON.scan}</span><div class="grow"><strong>Code-barres (boîte du fabricant)</strong><div class="cd-list" id="cd-list"></div></div></div>
+        </div>
+        <div class="cd-add">
+          <input class="input" id="cd-inp" placeholder="Scannez le code-barres (douchette) ou tapez-le, puis Entrée" autocomplete="off" inputmode="numeric">
+          ${camOK ? `<button class="btn" id="cd-cam" type="button" title="Lire le code-barres avec la caméra">📷 Caméra</button>` : ""}
+          <button class="btn primary" id="cd-ok" type="button">Ajouter</button>
+        </div>
+        <div class="muted" style="font-size:12.5px;margin-top:6px">Plusieurs codes possibles (couleurs, capacités…). Chaque ajout ou retrait est enregistré tout de suite.${ctx.next ? " Entrée sur le champ vide : article suivant." : ""}</div>`,
+      foot: `<button class="btn" data-close>Fermer</button>${ctx.next ? `<button class="btn primary" id="cd-next" type="button">Article suivant sans code ▶</button>` : ""}`
+    });
+    let away = false; // fenêtre remplacée par la caméra ou par l'article suivant (pas une vraie fermeture)
+    const obs = new MutationObserver(() => { if (!document.body.contains(m)) { obs.disconnect(); if (!away && ctx.onClose) ctx.onClose(); } });
+    obs.observe($("#modal-root"), { childList: true });
+    const inp = $("#cd-inp", m), list = $("#cd-list", m);
+    const draw = () => {
+      const cs = codesOf(a);
+      list.innerHTML = cs.length
+        ? cs.map(c => `<span class="code-chip big">${esc(c)}<button type="button" data-rm="${esc(c)}" title="Retirer ce code" aria-label="Retirer le code ${esc(c)}">✕</button></span>`).join("")
+        : `<span class="muted">Aucun code-barres : scannez la boîte ci-dessous.</span>`;
+      $("#cd-way-bc", m).classList.toggle("ok", !!cs.length);
+    };
+    draw();
+    const save = async (codes, msg) => {
+      const col = await ensureCodeCol();
+      const val = codes.join(" ");
+      if (val.length > CODES_MAX) throw new Error("trop de codes-barres pour cet article : retirez-en un");
+      Object.assign(a, await DS.updateArticle(a.id, { [col.name]: val || null }));
+      codeIndex(true); draw(); toast(msg, "ok");
+    };
+    let saving = false;
+    const add = async raw => {
+      const code = String(raw || "").trim(); if (!code || saving) return;
+      const bad = msg => { beep(false); toast(msg, "bad"); inp.select(); };
+      if (/^ITS[:\-]?\d+$/i.test(code)) return bad("C'est une étiquette QR ITSoft : scannez le code-barres imprimé sur la boîte.");
+      if (codesOf(a).some(c => codeKey(c) === codeKey(code))) return bad("Ce code est déjà associé à cet article.");
+      const other = codeOwner(code, a);
+      if (other) return bad(`Le code ${code} est déjà utilisé par « ${artName(other)} ».`);
+      saving = true; const b = $("#cd-ok", m); busy(b, true, "…");
+      try { await save(parseCodes([...codesOf(a), code].join(" ")), `Code ${code} associé à « ${artName(a)} ».`); beep(true); inp.value = ""; }
+      catch (e) { bad(e.message); }
+      finally { saving = false; if (document.body.contains(b)) busy(b, false); inp.focus(); }
+    };
+    const goNext = () => {
+      const n = ctx.next && ctx.next(a);
+      if (!n) { toast("✔ Tous les articles affichés ont un code-barres.", "ok"); return closeModal(); }
+      away = true; codesDialog(n, { ...ctx, add: undefined });
+    };
+    inp.addEventListener("keydown", e => {
+      if (e.key !== "Enter") return;
+      e.preventDefault();
+      if (inp.value.trim()) add(inp.value); else if (ctx.next) goNext();
+    });
+    m.addEventListener("click", async e => {
+      const rm = e.target.closest("[data-rm]");
+      if (rm) {
+        const c = rm.dataset.rm;
+        try { await save(codesOf(a).filter(x => x !== c), `Code ${c} retiré.`); } catch (err) { toast(err.message, "bad"); }
+        return inp.focus();
+      }
+      if (e.target.closest("#cd-ok")) return add(inp.value);
+      if (e.target.closest("#cd-next")) return goNext();
+      if (e.target.closest("#cd-cam")) {
+        away = true;
+        // la caméra lit un seul code puis revient sur cette fiche
+        return scanDialog({ pick: code => codesDialog(a, { ...ctx, add: code }), onCancel: () => codesDialog(a, { ...ctx, add: undefined }) });
+      }
+    });
+    setTimeout(() => inp.focus(), 50);
+    if (ctx.add) add(ctx.add);
+  }
   function qrSVG(text) {
     // correction d'erreur maximale (H : lisible même abîmé à 30 %) en mode alphanumérique : « ITS:123 » tient
     // dans le plus petit QR code (21 × 21 modules), donc gros modules faciles à lire ; marge blanche de 2 modules
@@ -1951,13 +2038,17 @@ self.onmessage = async e => {
         <div class="sp-body">${scanBody}</div>
         <div class="sp-foot"><button class="btn sc-cancel" id="scan-cancel" type="button" title="Vider la vente en cours : rien n'est enregistré">✕ Annuler la vente</button><button class="btn primary sc-validate" id="scan-cart" type="button">✔ Valider la vente</button></div></div>`;
       m = panel.firstElementChild;
-    } else m = openModal({
+    } else m = openModal(opts.pick ? {
+      // lecture d'un seul code-barres (fiche « Codes-barres de l'article »)
+      title: "Scanner le code-barres de la boîte", size: "cart scan-modal", body: scanBody,
+      foot: `<button class="btn" data-close>Annuler</button><button id="scan-cart" type="button" hidden></button>`
+    } : {
       title: "Scanner des articles", size: "cart scan-modal", body: scanBody,
       foot: `<button class="btn" data-close>Terminer</button><button class="btn primary" id="scan-cart">${ICON.cart} Voir le panier</button>`
     });
     let reader = null, last = { code: "", t: 0 }, logged = 0;
     // vente automatique : chaque article scanné est enregistré tout de suite dans Ventes (sauf depuis le panier)
-    const auto = !fromCart && (panel || scanAutoGet()) && state.ventesReady;
+    const auto = !fromCart && !opts.pick && (panel || scanAutoGet()) && state.ventesReady;
     const sess = { num: null, date: null, lines: [], hist: [] };
     let queue = Promise.resolve();
     let camStream = null; // flux de la caméra ouvert directement (moteur rapide)
@@ -1972,6 +2063,7 @@ self.onmessage = async e => {
       obs.disconnect(); stop();
       if (state.scanPanelHandle && state.scanPanelHandle.m === m) state.scanPanelHandle = null;
       if (fromCart && !m.dataset.toCart) sellDialog(null);
+      if (opts.pick && !m.dataset.picked && opts.onCancel) opts.onCancel(); // lecture annulée : retour à la fiche
       // fenêtre fermée ou page quittée sans « Valider la vente » : rien n'a été enregistré
       if (auto && sess.lines.length && !m.dataset.validated)
         toast(`Vente non validée : ${int(sess.lines.reduce((t, L) => t + L.qty, 0))} article(s) abandonné(s), rien n'a été enregistré.`, "bad");
@@ -2227,6 +2319,10 @@ self.onmessage = async e => {
       const now = Date.now();
       if (code === last.code && now - last.t < 1500) return; // même code encore devant la caméra
       last = { code, t: now };
+      if (opts.pick) { // un seul code attendu : renvoyé à la fiche des codes-barres
+        if (/^ITS[:\-]?\d+$/i.test(code)) { beep(false); flash(false, "Étiquette QR ITSoft", 0, "Scannez le code-barres imprimé sur la boîte"); return; }
+        m.dataset.picked = "1"; beep(true); closeModal(); opts.pick(code); return;
+      }
       const a = articleByCode(code);
       if (!a) { beep(false); flash(false, "Code non reconnu", 0, code); return askAssociate(code); }
       if (noSalePrice(a)) { // jamais de vente au prix d'achat ni à 0
@@ -2312,7 +2408,7 @@ self.onmessage = async e => {
       if (e.key !== "Enter") return;
       e.preventDefault();
       // Entrée sur un champ vide : on passe au panier pour encaisser
-      if (!inp.value.trim()) { if (auto ? sess.num : state.cart.length) $("#scan-cart", m).click(); return; }
+      if (!inp.value.trim()) { if (!opts.pick && (auto ? sess.num : state.cart.length)) $("#scan-cart", m).click(); return; }
       if (mode === "price") {
         const lab = parseLabel(inp.value), p = lab.price;
         if (p == null) toast("Prix non valide.", "bad");
@@ -2507,7 +2603,8 @@ self.onmessage = async e => {
       if (silent === "manuel") toast(`Aucun article ne correspond à « ${model ? model + " - " : ""}Prix : ${labelPrice(p)} ». Saisissez le modèle et le prix (ex. HONOR PLAY 10 - Prix : 110).`, "bad");
     };
     if (opts.code) handle(opts.code);
-    setMode(opts.code ? "code" : scanModeGet()); // mode choisi dans Paramètres
+    setMode(opts.code || opts.pick ? "code" : scanModeGet()); // mode choisi dans Paramètres
+    if (opts.pick) $("#scan-log", m).innerHTML = `<div class="muted" style="padding:8px 2px">Visez le <strong>code-barres de la boîte</strong> : il est associé à l'article dès qu'il est lu.</div>`;
     m.addEventListener("click", e => { if (e.target.closest("[data-goset]")) m.dataset.toCart = "1"; }, true); // vers Paramètres : ne pas rouvrir le panier
 
     // caméra
@@ -2798,6 +2895,19 @@ self.onmessage = async e => {
     // colonnes du tableau : colonnes choisies + CA calculé juste après le prix
     const layout = [];
     for (const c of shownCols) layout.push(c);
+    // colonne « Codes-barres » toujours visible (juste après le nom), même avant la création de la colonne SharePoint
+    const codesC = codeCol() || { name: CODE_FIELD, displayName: "Codes-barres", type: "text", pseudo: true };
+    if (!layout.includes(codesC)) {
+      const di = layout.findIndex(c => c.name === state.map.designation);
+      layout.splice(di < 0 ? layout.length : di + 1, 0, codesC);
+      const saved = store.get(COL_ORDER_KEY, null); // position choisie par glisser-déposer, si elle existe
+      if (Array.isArray(saved) && saved.includes(codesC.name)) {
+        const pos = c => { const i = saved.indexOf(c.name); return i < 0 ? 1000 + layout.indexOf(c) : i; };
+        layout.sort((x, y) => pos(x) - pos(y));
+      }
+    }
+    if (!f.code) f.code = "";
+    const nCodes = state.articles.filter(a => codesOf(a).length).length;
     const val = (a, c) => (c.virtual ? artCA(a) : a[c.name]);
     // tri par défaut : date d'ajout (colonne DATEe) la plus récente en premier
     if (!f.sort || !layout.some(c => c.name === f.sort)) {
@@ -2812,6 +2922,8 @@ self.onmessage = async e => {
         if (f.cat && F(a, "categorie") !== f.cat) return false;
         if (f.stock === "low" && !(hasStock() && artStock(a) <= artSeuil(a))) return false;
         if (f.stock === "out" && !(hasStock() && artStock(a) <= 0)) return false;
+        if (f.code === "avec" && !codesOf(a).length) return false;
+        if (f.code === "sans" && codesOf(a).length) return false;
         if (q && !searchKey(a).includes(q)) return false;
         return true;
       }).sort((a, b) => {
@@ -2831,6 +2943,10 @@ self.onmessage = async e => {
           <div class="search">${ICON.search}<input class="input" id="art-q" type="search" placeholder="Rechercher…" value="${esc(f.q)}"></div>
           ${cats.length || catCanAdd ? `<select class="input" id="art-cat" style="width:auto;flex:0 1 190px"><option value="">Toutes catégories</option>${catCanAdd ? `<option value="__new__">＋ Nouvelle catégorie…</option>` : ""}${cats.map(c => `<option ${f.cat === c ? "selected" : ""}>${esc(c)}</option>`).join("")}</select>` : ""}
           ${hasStock() ? `<select class="input" id="art-stock" style="width:auto;flex:0 1 160px"><option value="">Tout le stock</option><option value="low" ${f.stock === "low" ? "selected" : ""}>Stock faible</option><option value="out" ${f.stock === "out" ? "selected" : ""}>En rupture</option></select>` : ""}
+          <select class="input" id="art-code" style="width:auto;flex:0 1 200px" title="Articles avec ou sans code-barres associé (le QR code, lui, existe pour tous)">
+            <option value="">Codes-barres : tous</option>
+            <option value="avec" ${f.code === "avec" ? "selected" : ""}>Avec code-barres (${int(nCodes)})</option>
+            <option value="sans" ${f.code === "sans" ? "selected" : ""}>Sans code-barres (${int(state.articles.length - nCodes)})</option></select>
           ${state.map.photo && cfg.afficherPhotos ? `<a class="btn" href="#/photos" title="Rechercher des photos par catégorie">${ICON.search}<span class="hide-sm">Photos</span></a>` : ""}
           <button class="btn" id="art-labels" title="Générer les QR codes des articles cochés (ou de ceux affichés)">${ICON.tag}<span class="hide-sm">QR codes</span></button>
           <button class="btn" id="art-export" title="Exporter en CSV">${ICON.download}<span class="hide-sm">Exporter</span></button>
@@ -2838,6 +2954,7 @@ self.onmessage = async e => {
         </div>
         ${pvNotice()}
         <div class="sel-bar" id="sel-bar" hidden></div>
+        <div class="code-bar" id="code-bar" hidden></div>
         <div id="art-table"></div>
       </div>`;
 
@@ -2856,6 +2973,7 @@ self.onmessage = async e => {
 
     const tdHTML = (a, c) => {
       if (c.virtual) return `<td class="num ca" data-label="${esc(colTitle(c))}">${money(artCA(a))}</td>`;
+      if (c === codesC) return `<td class="codes-td" data-codes="${esc(a.id)}" data-label="Codes-barres" title="Cliquer pour scanner, ajouter ou retirer des codes-barres">${codesCellHTML(a)}</td>`;
       // le nom de l'article ouvre la vente ; les autres cellules se modifient sur place
       if (c.name === state.map.designation) return `<td class="sellable primary-cell" data-sell="${esc(a.id)}" data-label="${esc(colTitle(c))}" title="Cliquer pour vendre cet article">${cellHTML(a, c)}</td>`;
       return `<td class="editable ${isNumCol(c) ? "num" : ""}" data-col="${esc(c.name)}" data-label="${esc(colTitle(c))}" title="Cliquer pour modifier">${cellHTML(a, c)}</td>`;
@@ -2863,7 +2981,7 @@ self.onmessage = async e => {
     const rowInner = a => selTd(a) + layout.map(c => tdHTML(a, c)).join("") +
       `<td class="actions"><button class="btn sm icon ghost sell-btn ${cartQty(a.id) ? "in-cart" : ""}" data-addcart="${esc(a.id)}" title="${cartQty(a.id) ? "Retirer du panier" : "Ajouter au panier"}" aria-label="${cartQty(a.id) ? "Retirer du panier" : "Ajouter au panier"}">${ICON.cartPlus}${cartQty(a.id) ? `<span class="cart-badge">${cartQty(a.id)}</span>` : ""}</button><button class="btn sm icon ghost rcv-btn ${pcartQty(a.id) ? "in-cart" : ""}" data-rcv="${esc(a.id)}" title="${pcartQty(a.id) ? "Retirer du bon de réception" : "Ajouter au bon de réception (entrée en stock)"}" aria-label="${pcartQty(a.id) ? "Retirer du bon de réception" : "Ajouter au bon de réception"}">📦${pcartQty(a.id) ? `<span class="cart-badge buy">${pcartQty(a.id)}</span>` : ""}</button><button class="btn sm icon ghost" data-edit="${esc(a.id)}" title="Modifier (formulaire complet)" aria-label="Modifier dans un formulaire">${ICON.edit}</button><button class="btn sm icon ghost danger" data-del="${esc(a.id)}" title="Supprimer" aria-label="Supprimer">${ICON.trash}</button></td>`;
     /* Lignes fixes « Article non classé » et « Service » : prix et nature saisis à la vente */
-    const freeRows = () => (f.cat || f.stock) ? "" : ["divers", "service"].filter(k => !norm(f.q) || norm(FREE[k].label).includes(norm(f.q))).map(k => {
+    const freeRows = () => (f.cat || f.stock || f.code) ? "" : ["divers", "service"].filter(k => !norm(f.q) || norm(FREE[k].label).includes(norm(f.q))).map(k => {
       const K = FREE[k];
       return `<tr class="free-row" data-free="${k}"><td class="sel-col"></td>${layout.map(c => {
         const lab = esc(colTitle(c));
@@ -2921,7 +3039,27 @@ self.onmessage = async e => {
       setupMore();
       pinFree();
       selBar();
+      codeBar(list);
     };
+    /* compteurs du filtre et bandeau « associer en série » (filtre « Sans code-barres ») */
+    const codeBar = list => {
+      const n = state.articles.filter(a => codesOf(a).length).length, s = $("#art-code");
+      if (s) { s.options[1].textContent = `Avec code-barres (${int(n)})`; s.options[2].textContent = `Sans code-barres (${int(state.articles.length - n)})`; }
+      const b = $("#code-bar"); if (!b) return;
+      b.hidden = f.code !== "sans";
+      b.innerHTML = f.code !== "sans" ? "" : list.length
+        ? `<span>${ICON.scan}<strong>${int(list.length)}</strong> article(s) sans code-barres. Scannez leur boîte l'un après l'autre (douchette ou caméra).</span>
+           <button class="btn primary" id="code-series" type="button">▶ Associer en série</button>`
+        : `<span>✔ Tous les articles affichés ont un code-barres.</span>`;
+    };
+    // ouverture de la fiche des codes ; « suivant » = prochain article affiché sans code-barres
+    const openCodes = a => codesDialog(a, {
+      next: cur => { // dans l'ordre du tableau, après l'article en cours (puis retour au début)
+        const all = apply().filter(x => x === cur || !codesOf(x).length), i = all.indexOf(cur);
+        return all.slice(i + 1).find(x => x !== cur) || all.find(x => x !== cur) || null;
+      },
+      onClose: () => { if (currentView() === "articles" && document.body.contains($("#art-table"))) drawTable(); }
+    });
     /* position des lignes figées : juste sous l'en-tête, l'une sous l'autre */
     const pinFree = () => requestAnimationFrame(() => {
       const th = $("#art-table thead"); if (!th) return;
@@ -3080,9 +3218,13 @@ self.onmessage = async e => {
         f.cat = e.target.value; drawTable();
       }
       if (e.target.id === "art-stock") { f.stock = e.target.value; drawTable(); }
+      if (e.target.id === "art-code") { f.code = e.target.value; drawTable(); }
     };
     el.onclick = async e => {
       if (e.target.closest("#art-more")) return appendMore();
+      const cd = e.target.closest("[data-codes]");
+      if (cd) { const a = artById(cd.dataset.codes); if (a) return openCodes(a); }
+      if (e.target.closest("#code-series")) { const l = apply().filter(x => !codesOf(x).length); if (l.length) return openCodes(l[0]); }
       const th0 = e.target.closest("[data-thumb]");
       if (th0) { const a = state.articles.find(x => x.id === th0.dataset.thumb); if (a) return showPhoto(a); }
       const fr = e.target.closest("[data-free-add],[data-free-sell]");
