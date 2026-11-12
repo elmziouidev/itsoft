@@ -1079,6 +1079,12 @@ body.has-dock .view { padding-bottom: calc(var(--dock-h, 0px) + 40px); }
 /* Code-barres inconnu : créer l'article ou l'associer à un article existant */
 .assoc-new { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 8px; padding: 10px 12px; border-radius: 10px; background: var(--surface); border: 1px solid var(--border); }
 .assoc-new > span { font-weight: 600; flex: 1 1 150px; }
+/* téléphone : le texte des boutons passe à la ligne au lieu d'élargir l'encadré (plus de défilement de côté) */
+.alert > .grow { min-width: 0; }
+.assoc-new .btn { white-space: normal; text-align: left; line-height: 1.25; height: auto; min-height: 40px; max-width: 100%; flex: 1 1 200px; justify-content: center; }
+#scan-unknown .row > .input { min-width: 0; }
+#scan-unknown .row > .btn { flex: 1 1 auto; justify-content: center; }
+.scan-panel { overflow-x: hidden; }
 .assoc-or { margin-top: 10px; font-size: 13px; color: var(--muted); }
 /* Fiche article : code scanné, marge, autres informations */
 .af-code { padding: 10px 12px; align-items: center; }
