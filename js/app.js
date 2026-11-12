@@ -1490,6 +1490,47 @@
       + `</div>${qr}</div>`;
   }
 
+  /* Texte jamais tronqué : la taille du texte de chaque étiquette est réduite jusqu'à ce que tout tienne
+     (nom complet, prix, référence…). Les mots ne sont coupés qu'en dernier recours (taille minimale atteinte). */
+  const LB_MIN_PT = 3.8;
+  function fitLabel(label) {
+    const els = [...label.querySelectorAll(".label-line, .label-pr, .label-ref, .label-model")];
+    if (!els.length) return;
+    const box = label.querySelector(".label-txt") || label;
+    const qr = label.querySelector(".label-qr");
+    const col = label.classList.contains("lbz-col");
+    const pt = e => parseFloat(e.style.fontSize) || parseFloat(getComputedStyle(e).fontSize) * 0.75;
+    const avail = () => {
+      if (!col) return box.clientHeight;
+      const cs = getComputedStyle(label);
+      return label.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom) - (qr ? qr.getBoundingClientRect().height : 0) - 2;
+    };
+    const over = () => {
+      const gap = parseFloat(getComputedStyle(box).rowGap) || 0;
+      const h = els.reduce((t, e) => t + e.getBoundingClientRect().height, 0) + gap * (els.length - 1);
+      return h > avail() + 0.5 || els.some(e => e.scrollWidth > e.clientWidth + 0.5);
+    };
+    const shrink = list => list.forEach(e => { e.style.fontSize = Math.max(LB_MIN_PT, pt(e) * 0.93).toFixed(2) + "pt"; });
+    const pr = els.filter(e => e.classList.contains("label-pr")), rest = els.filter(e => !pr.includes(e));
+    // 1. prix trop large pour la ligne : seul le prix est réduit
+    for (let i = 0; i < 30 && pr.some(e => e.scrollWidth > e.clientWidth + 0.5 && pt(e) > LB_MIN_PT); i++) shrink(pr);
+    // 2. le nom et les petites lignes rapetissent d'abord : le prix reste bien lisible
+    const floor = pr.length ? Math.max(LB_MIN_PT, pt(pr[0]) * 0.6) : LB_MIN_PT; // le nom ne descend pas sous 60 % du prix
+    for (let i = 0; i < 40 && over() && rest.some(e => pt(e) > floor); i++) rest.forEach(e => { if (pt(e) > floor) e.style.fontSize = Math.max(floor, pt(e) * 0.93).toFixed(2) + "pt"; });
+    // 3. si nécessaire, tout ensemble
+    for (let i = 0; i < 40 && over() && els.some(e => pt(e) > LB_MIN_PT); i++) shrink(els);
+    if (over()) els.forEach(e => e.classList.add("lb-brk")); // dernier recours : coupure à l'intérieur des mots longs
+  }
+  /* ajuste des étiquettes déjà affichées (aperçus) */
+  const fitIn = root => { if (root) root.querySelectorAll(".label").forEach(fitLabel); };
+  /* ajuste du HTML d'étiquette hors écran (zone d'impression invisible) et renvoie le HTML ajusté */
+  function fitHTML(html) {
+    const tmp = document.createElement("div");
+    tmp.className = "lb-measure"; tmp.innerHTML = html;
+    document.body.appendChild(tmp);
+    try { fitIn(tmp); return tmp.innerHTML; } finally { tmp.remove(); }
+  }
+
   /* Génération des QR codes / étiquettes des articles choisis */
   async function labelsDialog(list) {
     const cat = a => String(F(a, "categorie") || "Sans catégorie");
@@ -1516,8 +1557,8 @@
           <label class="field">Support d'impression<select class="input" id="lb-media"><option value="a4">Feuille A4 (planche d'étiquettes ou papier)</option><option value="roll">Imprimante d'étiquettes (rouleau, 1 étiquette par page)</option></select></label>
         </div>
         <div class="lb-checks">
-          <label><input type="checkbox" id="lb-sort" checked> Trier les QR codes par catégorie</label>
-          <label><input type="checkbox" id="lb-titles"> Titre de catégorie entre les groupes (papier à découper)</label>
+          <label><input type="checkbox" id="lb-group" checked> Grouper les QR codes par catégorie (titre au-dessus de chaque groupe)</label>
+          <label><input type="checkbox" id="lb-page"> Chaque catégorie sur une nouvelle page</label>
           <label><input type="checkbox" id="lb-cut" checked> Étiquettes jointives avec repères de découpe (même taille pour tous)</label>
         </div>
         <div class="lb-legend">${["qr", "mini", "s", "m", "l"].map(k => `<span><strong>${esc(LABEL_SIZES[k].name)}</strong> ${LABEL_SIZES[k].w}×${LABEL_SIZES[k].h} mm : ${esc(LABEL_SIZES[k].use)}</span>`).join("")}</div>
@@ -1537,6 +1578,7 @@
       const a = artById(prevId) || arts[0];
       $("#lb-prev-name", m).textContent = `${artName(a)} (${mm(LABEL_SIZES[size[a.id]].w)} × ${mm(LABEL_SIZES[size[a.id]].h)} mm)`;
       $("#lb-preview", m).innerHTML = qrReady ? labelHTML(a, size[a.id], qrSVG(labelCode(a))) : `<span class="muted">Chargement…</span>`;
+      if (qrReady) fitIn($("#lb-preview", m));
     };
     const draw = () => {
       const mode = $("#lb-mode", m).value;
@@ -1594,8 +1636,8 @@
     });
     $("#lb-print", m).addEventListener("click", async () => {
       const btn = $("#lb-print", m), roll = $("#lb-media", m).value === "roll";
-      const sorted = $("#lb-sort", m).checked, titles = $("#lb-titles", m).checked && !roll;
-      const order = sorted ? arts : list.filter(a => a && a.id && arts.includes(a));
+      const grouped = $("#lb-group", m).checked, newPage = grouped && $("#lb-page", m).checked && !roll;
+      const order = grouped ? arts : list.filter(a => a && a.id && arts.includes(a)); // arts : déjà rangés par catégorie
       const items = [];
       for (const a of order) for (let k = 0; k < (qty[a.id] || 0); k++) items.push(a);
       if (!items.length) return toast("Aucune étiquette à imprimer (nombres à 0).", "bad");
@@ -1606,15 +1648,24 @@
       try { await loadScript(LIB_QR); } catch (e) { busy(btn, false); return toast(e.message, "bad"); }
       const svg = {}, S = LABEL_SIZES[sizes[0]];
       const grid = !roll && sizes.length === 1 && $("#lb-cut", m).checked; // planche jointive : découpe droite et uniforme
-      let lastCat = null, html = "";
+      // une étiquette ajustée (texte jamais tronqué) par article et par taille, puis copiée autant de fois que nécessaire
+      const fitted = {};
+      const one = a => {
+        const key = a.id + "|" + size[a.id];
+        if (!fitted[key]) { if (!svg[a.id]) svg[a.id] = qrSVG(labelCode(a)); fitted[key] = fitHTML(labelHTML(a, size[a.id], svg[a.id])); }
+        return fitted[key];
+      };
+      // groupes par catégorie : titre + bloc d'étiquettes séparé (rouleau : même ordre, sans titre)
+      const groups = [];
       for (const a of items) {
-        if (titles && sorted && cat(a) !== lastCat) html += `<div class="lb-cat">${esc(cat(a))}</div>`;
-        lastCat = cat(a);
-        if (!svg[a.id]) svg[a.id] = qrSVG(labelCode(a));
-        html += labelHTML(a, size[a.id], svg[a.id]);
+        const c = grouped ? cat(a) : "";
+        if (!groups.length || groups[groups.length - 1].c !== c) groups.push({ c, list: [] });
+        groups[groups.length - 1].list.push(a);
       }
-      $("#print-area").innerHTML = (roll ? `<style>@page { size: ${S.w}mm ${S.h}mm; margin: 0; }</style>` : "")
-        + `<div class="labels ${roll ? "roll" : ""} ${grid ? "cut" : ""}" ${grid ? `style="grid-template-columns:repeat(auto-fill, ${S.w}mm)"` : ""}>${html}</div>`;
+      const labelsDiv = inner => `<div class="labels ${roll ? "roll" : ""} ${grid ? "cut" : ""}" ${grid ? `style="grid-template-columns:repeat(auto-fill, ${S.w}mm)"` : ""}>${inner}</div>`;
+      const html = roll ? labelsDiv(items.map(one).join(""))
+        : groups.map((g, i) => `<section class="lb-group ${newPage && i ? "lb-newpage" : ""}">${grouped ? `<div class="lb-cat">${esc(g.c)} <span>· ${int(g.list.length)} étiquette(s)</span></div>` : ""}${labelsDiv(g.list.map(one).join(""))}</section>`).join("");
+      $("#print-area").innerHTML = (roll ? `<style>@page { size: ${S.w}mm ${S.h}mm; margin: 0; }</style>` : "") + html;
       busy(btn, false);
       window.print();
     });
@@ -4356,6 +4407,7 @@
       const box = $("#lbinfo-prev"); if (!box || !sample) return;
       if (!window.qrcode) return;
       box.innerHTML = labelHTML(sample, "s", qrSVG(labelCode(sample)));
+      fitIn(box);
     };
     loadScript(LIB_QR).then(prev).catch(() => {});
     const save = (I, msg) => {

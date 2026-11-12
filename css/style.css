@@ -959,3 +959,16 @@ body.has-dock .view { padding-bottom: calc(var(--dock-h, 0px) + 40px); }
 .lbinfo-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px; }
 .lbinfo-prev { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-top: 14px; padding: 12px; border-radius: 12px; background: var(--surface-2); border: 1px dashed var(--border); }
 .label.lbz-qr { justify-content: center; }
+
+/* Étiquettes : texte jamais tronqué (pas de « … » ni de lignes coupées) ; la taille est ajustée par fitLabel() */
+.label .label-line { display: block; overflow: visible; -webkit-line-clamp: unset; word-break: normal; overflow-wrap: normal; }
+.label .label-ref, .label .label-model { white-space: normal; overflow: visible; text-overflow: clip; line-height: 1.1; word-break: normal; overflow-wrap: normal; }
+.label .label-pr { overflow: visible; }
+.label .label-txt { justify-content: center; }
+.label .lb-brk { overflow-wrap: anywhere; word-break: break-word; white-space: normal; }
+.lb-measure { position: fixed; left: -10000px; top: 0; visibility: hidden; pointer-events: none; display: flex; flex-wrap: wrap; gap: 2mm; }
+/* Impression groupée par catégorie */
+.lb-group { margin-bottom: 4mm; }
+.lb-group > .lb-cat { font: 800 9.5pt Arial, sans-serif; text-transform: uppercase; letter-spacing: .4pt; padding: 1mm 0 1mm; border-bottom: 0.4mm solid #000; margin-bottom: 1.5mm; color: #000; break-after: avoid; page-break-after: avoid; }
+.lb-group > .lb-cat span { font-weight: 600; text-transform: none; letter-spacing: 0; color: #444; }
+.lb-newpage { break-before: page; page-break-before: always; }
