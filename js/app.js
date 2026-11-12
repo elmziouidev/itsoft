@@ -3731,13 +3731,163 @@ self.onmessage = async e => {
   })();
 
   /* Reconnaissance vocale du navigateur (Chrome, Edge, Safari) : écoute jusqu'à 2,5 s de silence */
-  /* ==== LECTURE DE LA BOÎTE PAR L'IA (Claude, via le relais Azure : relais-ia/) ====
+  /* ==== LECTURE GRATUITE DE LA BOÎTE, SUR L'APPAREIL (sans compte, sans clé, sans serveur) ====
+     1. reconnaissance du texte imprimé (Tesseract, dans le navigateur ; la photo ne quitte pas l'appareil)
+     2. analyse du texte : marque, modèle, mémoire, couleur, catégorie (fonction pure, testable) */
+  const BoxRead = (() => {
+    const low = s => String(s || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
+    // marque mère → gammes imprimées sur les boîtes (le magasin écrit souvent la gamme seule : « REDMI 14C »)
+    const PARENT = { XIAOMI: ["REDMI", "POCO"], SAMSUNG: ["GALAXY"], TECNO: ["SPARK", "CAMON", "POVA", "PHANTOM"], INFINIX: ["HOT", "SMART", "ZERO"],
+      HUAWEI: ["NOVA", "MATE"], OPPO: ["RENO"], REALME: ["NARZO"], APPLE: ["IPHONE", "IPAD", "AIRPODS"], MOTOROLA: ["MOTO"], ZTE: ["BLADE"], HONOR: ["MAGIC"] };
+    const SERIES = Object.fromEntries(Object.entries(PARENT).flatMap(([p, s]) => s.map(x => [x, p])));
+    const BRANDS = new Set(Object.keys(PARENT).concat(Object.keys(SERIES), ["VIVO", "ITEL", "NOKIA", "ALCATEL", "LENOVO", "OSCAL", "DOOGEE", "ULEFONE", "CUBOT", "UMIDIGI",
+      "BLACKVIEW", "OUKITEL", "NOTHING", "GOOGLE", "PIXEL", "ONEPLUS", "ANKER", "BASEUS", "UGREEN", "JBL", "SONY", "HOCO", "BOROFONE", "LDNIO", "REMAX", "AWEI", "ORAIMO",
+      "HP", "DELL", "ASUS", "ACER", "LOGITECH", "SANDISK", "KINGSTON", "TOSHIBA", "LG", "BLU", "ENERGIZER", "HISENSE", "TCL", "CROSSCALL"]));
+    const STOP = new Set(["SMARTPHONE", "PHONE", "MOBILE", "TELEPHONE", "MODEL", "MODELE", "COLOR", "COLOUR", "COULEUR", "IMEI", "MADE", "IN", "CHINA", "DUAL", "SIM", "RAM", "ROM", "STORAGE", "CAPACITY", "NFC", "LTE", "AND", "WITH", "THE", "FOR", "DE", "ET"]);
+    const MODEL_WORDS = new Set(["NOTE", "PRO", "PLUS", "MAX", "ULTRA", "LITE", "GO", "NEO", "PRIME", "POWER", "SE", "FE", "MINI", "TURBO", "AIR", "PLAY", "EDGE", "FOLD", "FLIP", "STAR", "SMART", "HOT", "SPARK", "CAMON", "POVA", "TAB", "PAD", "BOOK", "BUDS", "WATCH", "BAND"]);
+    const COLORS = [["midnight black", "NOIR"], ["jet black", "NOIR"], ["black", "NOIR"], ["noir", "NOIR"], ["graphite", "GRIS"], ["gray", "GRIS"], ["grey", "GRIS"], ["gris", "GRIS"],
+      ["silver", "ARGENT"], ["argent", "ARGENT"], ["white", "BLANC"], ["blanc", "BLANC"], ["ocean blue", "BLEU"], ["sky blue", "BLEU"], ["navy", "BLEU"], ["blue", "BLEU"], ["bleu", "BLEU"],
+      ["mint", "VERT"], ["sage", "VERT"], ["green", "VERT"], ["vert", "VERT"], ["lavender", "VIOLET"], ["purple", "VIOLET"], ["violet", "VIOLET"], ["rose gold", "OR ROSE"], ["pink", "ROSE"],
+      ["rose", "ROSE"], ["gold", "OR"], ["red", "ROUGE"], ["rouge", "ROUGE"], ["orange", "ORANGE"], ["yellow", "JAUNE"], ["jaune", "JAUNE"], ["titanium", "TITANE"], ["cyan", "BLEU"]];
+    const lev = (a, b) => { if (a === b) return 0; let p = Array.from({ length: b.length + 1 }, (_, j) => j); for (let i = 1; i <= a.length; i++) { const c = [i]; for (let j = 1; j <= b.length; j++) c[j] = Math.min(p[j] + 1, c[j - 1] + 1, p[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1)); p = c; } return p[b.length]; };
+    // marque reconnue malgré une petite erreur de lecture (« REDMl » → REDMI) ; jamais pour les mots courts
+    const brandOf = (t, extra) => {
+      if (BRANDS.has(t) || extra.has(t)) return t;
+      if (t.length < 5 || /\d/.test(t)) return null;
+      for (const b of [...BRANDS, ...extra]) if (b.length >= 5 && Math.abs(b.length - t.length) <= 1 && lev(t, b) <= 1) return b;
+      return null;
+    };
+    // confusions classiques de la lecture dans un modèle : O↔0, I/l↔1 à côté des chiffres
+    const fixTok = t => /\d/.test(t) ? t.replace(/(?<=\d)O|O(?=\d)/g, "0").replace(/(?<=\d)[IL]|[IL](?=\d)/g, "1") : t;
+    const isModelTok = t => /^[A-Z]{0,4}\d{1,4}[A-Z+]{0,4}$/.test(t) || MODEL_WORDS.has(t) || /^[A-Z]$/.test(t);
+    const toks = s => String(s).toUpperCase().replace(/[^A-Z0-9+/ ]+/g, " ").split(/\s+/).filter(Boolean).map(fixTok);
+
+    /* lines : [{ text, conf (0-100), h (hauteur des lettres en px) }] · ctx : { cats, exemples } */
+    function analyse(lines, ctx = {}) {
+      const L = lines.filter(l => l && l.text && l.text.trim().length >= 2 && (l.conf == null || l.conf >= 35));
+      const all = L.map(l => l.text).join("\n"), up = all.toUpperCase(), lo = low(all);
+      const ex = (ctx.exemples || []).map(s => String(s).toUpperCase());
+      const extra = new Set(ex.flatMap(s => s.split(/\s+/)).filter(w => /^[A-Z]{4,}$/.test(w) && !STOP.has(w)));
+      // --- mémoire ---
+      let memoire = "", m;
+      if ((m = /(\d{1,2})\s*(?:GB|G|GO)?\s*(?:RAM)?\s*\+\s*(\d{2,4})\s*(?:GB|G|GO)\b/.exec(up)) && +m[2] >= 16) memoire = `${m[1]}/${m[2]}GO`;
+      else {
+        const ram = /\bRAM\s*:?\s*(\d{1,2})\s*(?:GB|GO)/.exec(up), rom = /\b(?:ROM|STORAGE|STOCKAGE|MEMOIRE|CAPACITY)\s*:?\s*(\d{2,4})\s*(?:GB|GO)/.exec(up.replace(/É/g, "E"));
+        if (ram && rom) memoire = `${ram[1]}/${rom[1]}GO`;
+        else if ((m = /\b(\d)\s*TB\b/.exec(up))) memoire = `${m[1]}TO`;
+        else { const caps = [...up.matchAll(/\b(\d{2,4})\s*(?:GB|GO)\b/g)].map(x => +x[1]).filter(n => n >= 16 && n <= 1024); if (caps.length) memoire = Math.max(...caps) + "GO"; }
+      }
+      // --- couleur : d'abord après « Color / Colour / Couleur », sinon le premier nom de couleur ---
+      let couleur = "";
+      const lab = /(?:colou?r|couleur)\s*[:\-]?\s*([a-z ]{3,24})/.exec(lo);
+      // la couleur écrite en premier (« Blue Black » → BLEU)
+      const pickColor = s => { let best = null; for (const [k, v] of COLORS) { const mm = new RegExp("\\b" + k + "\\b").exec(s); if (mm && (!best || mm.index < best.i)) best = { i: mm.index, v }; } return best ? best.v : ""; };
+      couleur = (lab && pickColor(lab[1])) || pickColor(lo);
+      // --- marque et modèle : ligne la plus grande contenant une marque ---
+      const scored = L.map((l, i) => ({ i, t: toks(l.text), h: l.h || 0 }));
+      let brand = null, bLine = null;
+      for (const s of scored.slice().sort((a, b) => b.h - a.h)) {
+        const k = s.t.findIndex(t => brandOf(t, extra)); if (k < 0) continue;
+        brand = brandOf(s.t[k], extra); bLine = { ...s, k }; break;
+      }
+      // --- nature de l'article (tablette avant téléphone : une tablette affiche aussi « 4GB + 64GB ») ---
+      const T = up.replace(/[^A-Z0-9+ ]/g, " ");
+      const kind = /\bTABLET\b|\bTABLETTE\b|\bTAB\b|\bIPAD\b|\bPAD\b/.test(T) ? "tablet"
+        : /\bIMEI\b|SMARTPHONE|\bDUAL SIM\b|\d+\s*GB\s*(?:RAM\s*)?\+|\bANDROID\b/.test(T) ? "phone"
+        : /CHARGER|CHARGEUR|ADAPTER|ADAPTATEUR/.test(T) ? "charger"
+        : /CABLE|EARPHONE|EARBUDS|HEADSET|ECOUTEUR|POWER\s?BANK|\bCASE\b|COQUE|GLASS|VERRE|SPEAKER|ENCEINTE|WATCH|MONTRE|AIRPODS|MEMORY CARD|MICRO SD|USB FLASH|WIRELESS/.test(T) ? "acc"
+        : /\b\d{2,3}\s?W\b/.test(T) && !memoire ? "charger"
+        : (memoire || /\b[45]G\b|LTE/.test(T)) && brand ? "phone" : "";
+      const isAcc = kind === "acc" || kind === "charger";
+      let model = [];
+      // accessoires : nom commercial en lettres accepté (« FreePods 4 ») ; téléphones : seulement des jetons de modèle
+      const takeModel = (t, from) => { const out = []; for (let j = from; j < t.length && out.length < 4; j++) { const w = t[j]; if (STOP.has(w) || /^\d{1,4}(GB|GO|TB|MAH|W)$/.test(w) || /\+/.test(w)) break; if (isAcc && /^(CHARGER|CHARGEUR|ADAPTER|CABLE|TYPE|USB|OUTPUT|INPUT|MAX|FAST|QUICK)$/.test(w)) break; if (!isModelTok(w) && !(isAcc && /^[A-Z][A-Z0-9]{1,11}$/.test(w)) && !(out.length && /^[A-Z]{2,6}$/.test(w) && MODEL_WORDS.has(w))) break; out.push(w); } return out; };
+      if (bLine) {
+        model = takeModel(bLine.t, bLine.k + 1);
+        // gamme imprimée sur la ligne suivante (« Redmi » en logo, « 14C » en dessous)
+        if (!model.length) { const nx = scored.find(s => s.i === bLine.i + 1) || scored.find(s => s.i === bLine.i - 1); if (nx) model = takeModel(nx.t, 0); }
+        // la marque mère est imprimée seule, mais une gamme apparaît ailleurs (« SAMSUNG » + « Galaxy A16 »)
+        if (PARENT[brand]) for (const s of scored) { const k = s.t.findIndex(t => PARENT[brand].includes(t)); if (k >= 0) { const mm = takeModel(s.t, k + 1); if (mm.length) { brand = s.t[k]; model = mm; break; } } }
+      } else {
+        // pas de marque connue : la plus grande ligne courte contenant lettres + chiffres
+        const c = scored.filter(s => s.t.length <= 5 && s.t.some(t => /[A-Z]/.test(t) && /\d/.test(t))).sort((a, b) => b.h - a.h)[0];
+        if (c) model = c.t.filter(t => !STOP.has(t)).slice(0, 4);
+      }
+      const parent = SERIES[brand] || (brand && PARENT[brand] ? brand : brand);
+      // habitude du magasin : « REDMI 14C » (gamme seule) ou « SAMSUNG GALAXY … » (marque + gamme)
+      const lead = brand ? (SERIES[brand] && ex.some(e => e.startsWith(SERIES[brand] + " " + brand)) ? SERIES[brand] + " " + brand : brand) : "";
+      // --- catégorie ---
+      const want = { phone: ["SMARTPHONE", "TELEPHONE", "PORTABLE"], tablet: ["TABLETTE", "TABLET"], charger: ["CHARGEUR", "ACCESSOIRE"], acc: ["ACCESSOIRE", "ACCESSOIRES"] }[kind] || [];
+      const cats = (ctx.cats || []).map(c => String(c));
+      const categorie = want.map(w => cats.find(c => low(c).replace(/s$/, "") === low(w).replace(/s$/, ""))).find(Boolean) || (want[0] || "");
+      // --- caractéristiques utiles ---
+      const car = [];
+      if ((m = /\b(5G|4G)\b/.exec(T))) car.push(m[1]);
+      if (/DUAL SIM/.test(T)) car.push("double SIM");
+      if (/\bNFC\b/.test(T)) car.push("NFC");
+      if ((m = /\b(\d{4,5})\s*MAH\b/.exec(T))) car.push(m[1] + " mAh");
+      if ((m = /\b(\d{2,3})\s?W\b/.exec(T))) car.push(m[1] + "W");
+      // chargeur : « XIAOMI CHARGEUR 33W TYPE-C BLANC » ; sinon marque/gamme + modèle + mémoire + couleur
+      const watt = (/\b(\d{2,3})\s?W\b/.exec(T) || [])[1];
+      const designation = (kind === "charger"
+        ? [lead, "CHARGEUR", ...model.filter(w => w !== watt + "W"), watt ? watt + "W" : "", /TYPE\s*C|USB\s*C/.test(T) ? "TYPE-C" : "", couleur]
+        : [lead, ...model, kind === "acc" ? "" : memoire, couleur]).filter(Boolean).join(" ").replace(/\s+/g, " ").trim();
+      const confOcr = L.length ? L.reduce((t, l) => t + (l.conf == null ? 80 : l.conf), 0) / L.length / 100 : 0;
+      const named = model.length || (kind === "charger" && watt); // un chargeur se désigne par sa puissance
+      const confiance = Math.min(1, ((brand ? 0.35 : 0) + (named ? 0.35 : 0) + (memoire || isAcc ? 0.15 : 0) + (couleur ? 0.05 : 0) + (categorie ? 0.1 : 0)) * (0.6 + 0.4 * confOcr));
+      return { designation, marque: parent || "", modele: model.join(" "), memoire, couleur, categorie, caracteristiques: car.join(", "),
+        texte_lisible: !!(brand || model.length), confiance: Math.round(confiance * 100) / 100 };
+    }
+
+    // moteur de lecture du texte imprimé (texte épars, comme sur une boîte), chargé une seule fois
+    let wP = null;
+    const worker = () => wP || (wP = (async () => {
+      await loadScript(LIB_OCR);
+      const w = await window.Tesseract.createWorker("eng", 1);
+      await w.setParameters({ tessedit_pageseg_mode: "11", preserve_interword_spaces: "1" });
+      return w;
+    })().catch(e => { wP = null; throw e; }));
+    // photo → niveaux de gris contrastés (meilleure lecture), 1600 px au plus
+    const prep = dataUrl => new Promise((res, rej) => {
+      const im = new Image();
+      im.onload = () => {
+        const k = Math.min(1, 1600 / Math.max(im.width, im.height)), c = document.createElement("canvas");
+        c.width = Math.round(im.width * k); c.height = Math.round(im.height * k);
+        const x = c.getContext("2d", { willReadFrequently: true }); x.drawImage(im, 0, 0, c.width, c.height);
+        const d = x.getImageData(0, 0, c.width, c.height), p = d.data, hist = new Uint32Array(256);
+        for (let i = 0; i < p.length; i += 4) { const g = (p[i] * 77 + p[i + 1] * 150 + p[i + 2] * 29) >> 8; p[i] = g; hist[g]++; }
+        const n = p.length / 4; let lo = 0, hi = 255, acc = 0;
+        for (; lo < 255 && (acc += hist[lo]) < n * 0.02; lo++); acc = 0;
+        for (; hi > 0 && (acc += hist[hi]) < n * 0.02; hi--);
+        const s = 255 / Math.max(1, hi - lo);
+        for (let i = 0; i < p.length; i += 4) { const g = Math.max(0, Math.min(255, (p[i] - lo) * s)); p[i] = p[i + 1] = p[i + 2] = g; }
+        x.putImageData(d, 0, 0); res(c);
+      };
+      im.onerror = () => rej(new Error("photo illisible")); im.src = dataUrl;
+    });
+    async function read(dataUrl, ctx) {
+      const [w, c] = await Promise.all([worker(), prep(dataUrl)]);
+      const r = await w.recognize(c, {}, { text: true, blocks: true });
+      const d = r.data || {};
+      const src = d.lines && d.lines.length ? d.lines : (d.blocks || []).flatMap(b => (b.paragraphs || []).flatMap(p => p.lines || []));
+      const lines = src.map(l => ({ text: String(l.text || "").trim(), conf: l.confidence, h: l.bbox ? l.bbox.y1 - l.bbox.y0 : 0 }));
+      return { fiche: analyse(lines, ctx), lu: lines.map(l => l.text).filter(Boolean).join(" · ").slice(0, 300) };
+    }
+    return { analyse, read, warm: () => worker().catch(() => {}) };
+  })();
+
+  /* ==== LECTURE DE LA BOÎTE PAR L'IA (Claude, via le relais Azure : relais-ia/) — FACULTATIF, payant ====
      Photo de l'emballage → marque, modèle, mémoire, couleur, catégorie. La clé de l'IA reste sur le relais. */
   const IA = {
-    on: () => !!cfg.iaUrl || DS.mode === "demo",
+    // lecture gratuite sur l'appareil par défaut ; relais Claude seulement si cfg.iaUrl est renseignée
+    on: () => typeof Worker !== "undefined" && typeof WebAssembly !== "undefined" || !!cfg.iaUrl,
+    local: () => !cfg.iaUrl,
     warmAt: 0,
-    // réveil du relais dès l'ouverture de la fiche : la 1re lecture n'attend pas le démarrage du serveur
-    warm() { if (!cfg.iaUrl || Date.now() - this.warmAt < 240000) return; this.warmAt = Date.now(); fetch(cfg.iaUrl, { method: "GET" }).catch(() => {}); },
+    // dès l'ouverture de la fiche : moteur de lecture préparé (ou relais réveillé) → la 1re lecture n'attend pas
+    warm() {
+      if (this.local()) return BoxRead.warm();
+      if (Date.now() - this.warmAt < 240000) return; this.warmAt = Date.now(); fetch(cfg.iaUrl, { method: "GET" }).catch(() => {});
+    },
     // netteté d'une image (variance du laplacien sur une version réduite) : on garde la photo la moins floue
     sharp(src, sw, sh) {
       const w = 240, h = Math.max(1, Math.round(sh * w / sw)), c = document.createElement("canvas"); c.width = w; c.height = h;
@@ -3770,23 +3920,16 @@ self.onmessage = async e => {
       const b = await createImageBitmap(file);
       try { return this.jpeg(b, b.width, b.height); } finally { b.close && b.close(); }
     },
-    // fiches de démonstration (mode démo, sans relais) : simulent une lecture réussie
-    DEMO: [
-      { designation: "REDMI 14C 8/256GO NOIR", marque: "Xiaomi", modele: "Redmi 14C", memoire: "8/256GO", couleur: "NOIR", categorie: "SMARTPHONE", caracteristiques: "Double SIM, 4G", texte_lisible: true, confiance: 0.94 },
-      { designation: "GALAXY A16 4/128GO BLEU", marque: "Samsung", modele: "Galaxy A16", memoire: "4/128GO", couleur: "BLEU", categorie: "SMARTPHONE", caracteristiques: "5G, double SIM", texte_lisible: true, confiance: 0.9 },
-      { designation: "CHARGEUR RAPIDE 33W USB-C", marque: "Xiaomi", modele: "33W", memoire: "", couleur: "BLANC", categorie: "ACCESSOIRE", caracteristiques: "Câble USB-C inclus", texte_lisible: true, confiance: 0.86 }
-    ],
     async read(dataUrl, code) {
       const t0 = performance.now();
-      if (!cfg.iaUrl) { // démo
-        await new Promise(r => setTimeout(r, 1100));
-        const i = [...String(code || "x")].reduce((t, ch) => t + ch.charCodeAt(0), 0) % this.DEMO.length;
-        return { fiche: { ...this.DEMO[i] }, ms: Math.round(performance.now() - t0), demo: true };
+      const ex = state.articles.slice().sort((a, b) => (+b.id || 0) - (+a.id || 0)).map(a => String(artName(a) || "").trim()).filter(Boolean).slice(0, 60);
+      if (this.local()) { // gratuit, sur l'appareil
+        const r = await BoxRead.read(dataUrl, { cats: categories(true), exemples: ex });
+        return { ...r, ms: Math.round(performance.now() - t0), local: true };
       }
       const token = await Auth.getToken(undefined, true).catch(() => Auth.getToken());
       const ac = new AbortController(), to = setTimeout(() => ac.abort(), 35000);
       try {
-        const ex = state.articles.slice().sort((a, b) => (+b.id || 0) - (+a.id || 0)).map(a => String(artName(a) || "").trim()).filter(Boolean).slice(0, 30);
         const r = await fetch(cfg.iaUrl, {
           method: "POST", signal: ac.signal,
           headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
@@ -3909,7 +4052,7 @@ self.onmessage = async e => {
       ${opts.code ? `<div class="full alert info af-code">${ICON.scan}<div>Code-barres scanné : <strong>${esc(opts.code)}</strong>. Il sera rattaché à ce nouvel article.</div></div>` : ""}
       ${IA.on() ? `<div class="full ia-box" id="ia-box">
         <div class="ia-row">
-          <button type="button" class="ia-go" id="ia-go"><span class="ia-ico">📷</span><span class="ia-lab"><strong>Lire la boîte avec l'IA</strong><small>Marque, modèle, mémoire, couleur et catégorie remplis tout seuls</small></span></button>
+          <button type="button" class="ia-go" id="ia-go"><span class="ia-ico">📷</span><span class="ia-lab"><strong>Lire la boîte</strong><small>${IA.local() ? "Gratuit, sur l'appareil : marque, modèle, mémoire, couleur" : "Marque, modèle, mémoire, couleur et catégorie remplis tout seuls"}</small></span></button>
           <label class="btn sm ia-file" title="Choisir ou prendre une photo de la boîte">🖼️<span class="hide-sm"> Photo</span><input type="file" accept="image/*" capture="environment" id="ia-file" hidden></label>
         </div>
         <div class="ia-cam" id="ia-cam" hidden><video playsinline muted autoplay></video><div class="ia-cam-acts"><button type="button" class="btn primary" id="ia-shot">📸 Photographier la boîte</button><button type="button" class="btn" id="ia-cam-x">Annuler</button></div></div>
@@ -4059,8 +4202,8 @@ self.onmessage = async e => {
       const liveVideo = () => { const v = $("#scan-dock .scan-cam > video") || $(".scan-cam > video"); return v && v.videoWidth && v.readyState >= 2 && !v.closest("#modal-root") ? v : null; };
       const setBusy = (on, thumb) => {
         iaBusy = on; go.disabled = on; go.classList.toggle("on", on);
-        go.querySelector(".ia-lab strong").textContent = on ? "L'IA lit la boîte…" : "Lire la boîte avec l'IA";
-        go.querySelector(".ia-lab small").textContent = on ? "2 à 4 secondes" : "Marque, modèle, mémoire, couleur et catégorie remplis tout seuls";
+        go.querySelector(".ia-lab strong").textContent = on ? "Lecture de la boîte…" : "Lire la boîte";
+        go.querySelector(".ia-lab small").textContent = on ? "2 à 4 secondes" : IA.local() ? "Gratuit, sur l'appareil : marque, modèle, mémoire, couleur" : "Marque, modèle, mémoire, couleur et catégorie remplis tout seuls";
         if (on && thumb) { res.hidden = false; res.innerHTML = `<div class="ia-wait"><img src="${thumb}" alt="Photo envoyée"><span class="spinner"></span><span>Lecture en cours…</span></div>`; }
       };
       // fiche reçue → champs ; « auto » : ne remplit que les champs encore vides
@@ -4068,7 +4211,8 @@ self.onmessage = async e => {
         const f = r.fiche, cx = dctx();
         if (!f.texte_lisible || !f.designation) {
           res.hidden = false;
-          res.innerHTML = `<div class="dict-warn">L'IA n'a pas pu lire le nom sur cette photo (floue, trop loin, ou mauvaise face de la boîte). Photographiez la face où le modèle est écrit en grand.</div>
+          res.innerHTML = `<div class="dict-warn">Nom de l'article non trouvé sur cette photo (floue, trop loin, ou mauvaise face de la boîte). Photographiez la face où le modèle est écrit en grand, ou l'étiquette blanche du téléphone.</div>
+            ${r.lu ? `<div class="muted" style="font-size:12px">Texte lu : « ${esc(r.lu)} »</div>` : ""}
             <div class="dict-acts"><button type="button" class="btn sm" id="ia-again">📷 Reprendre une photo</button></div>`;
           beep(false); return;
         }
@@ -4085,7 +4229,7 @@ self.onmessage = async e => {
         beep(true);
         const low = f.confiance < 0.6;
         res.hidden = false;
-        res.innerHTML = `<div class="dict-heard">Lu sur la boîte${r.demo ? " (démonstration)" : ""} en ${(r.ms / 1000).toFixed(1)} s${f.marque ? ` · marque ${esc(f.marque)}` : ""}${f.memoire ? ` · ${esc(f.memoire)}` : ""}${f.couleur ? ` · ${esc(f.couleur)}` : ""}</div>
+        res.innerHTML = `<div class="dict-heard">${r.local ? "Lu sur l'appareil (gratuit)" : "Lu par l'IA"} en ${(r.ms / 1000).toFixed(1)} s${f.marque ? ` · marque ${esc(f.marque)}` : ""}${f.memoire ? ` · ${esc(f.memoire)}` : ""}${f.couleur ? ` · ${esc(f.couleur)}` : ""}</div>
           <div class="dict-items">${done.map(([k, v]) => `<span class="dict-item"><b>${DLAB[k]}</b> ${esc(v)}</span>`).join("")}</div>
           ${kept.length ? `<div class="muted" style="font-size:12.5px">Déjà rempli, non modifié : ${kept.map(k => DLAB[k]).join(", ")}.</div>` : ""}
           ${low ? `<div class="dict-warn">⚠ Lecture incertaine (${Math.round(f.confiance * 100)} %) : vérifiez le modèle, ou reprenez une photo plus nette.</div>` : ""}

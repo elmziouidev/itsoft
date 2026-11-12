@@ -87,8 +87,9 @@ window.APP_CONFIG = {
     Nom_article: { liste: "Tbl_categorie", cle: "ID", libelle: "" }
   },
 
-  // Lecture de la boîte par l'IA (photo → marque, modèle, mémoire, couleur, catégorie).
-  // Adresse du relais Azure installé avec le guide relais-ia/LISEZMOI.md ; "" = fonction désactivée.
+  // Lecture de la boîte (photo → marque, modèle, mémoire, couleur, catégorie).
+  // "" = lecture GRATUITE sur l'appareil (aucun compte, aucune clé, la photo ne quitte pas l'appareil).
+  // Facultatif et payant : adresse d'un relais IA Claude (guide relais-ia/LISEZMOI.md) pour les boîtes difficiles.
   iaUrl: "",
   iaAuto: true,   // lecture automatique dès l'ouverture de la fiche quand la caméra du scanner est allumée
 
