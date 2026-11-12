@@ -179,8 +179,8 @@
     ventesListId: null,
     columns: [],
 
-    async call(path, options = {}, scopes) {
-      const token = await window.Auth.getToken(scopes);
+    async call(path, options = {}, scopes, quiet) {
+      const token = await window.Auth.getToken(scopes, quiet); // quiet : synchronisation en arrière-plan (jamais de redirection)
       const res = await fetch(path.startsWith("http") ? path : GRAPH + path, {
         ...options,
         headers: {
@@ -201,7 +201,7 @@
     },
 
     /* Requêtes groupées Microsoft Graph ($batch : jusqu'à 20 opérations par envoi, un seul aller-retour) */
-    async batch(reqs) {
+    async batch(reqs, quiet) {
       const out = new Array(reqs.length);
       for (let i = 0; i < reqs.length; i += 20) {
         const chunk = reqs.slice(i, i + 20).map((r, k) => {
@@ -209,7 +209,7 @@
           if (r.body !== undefined) { q.body = r.body; q.headers = { "Content-Type": "application/json" }; }
           return q;
         });
-        const res = await this.call("/$batch", { method: "POST", body: JSON.stringify({ requests: chunk }) });
+        const res = await this.call("/$batch", { method: "POST", body: JSON.stringify({ requests: chunk }) }, undefined, quiet);
         for (const x of (res && res.responses) || []) out[+x.id] = x;
       }
       return out;
@@ -252,6 +252,102 @@
       const bad = rs.find(r => !r || r.status >= 300);
       if (bad) throw batchErr(bad);
       return rs.slice(lineIds.length).map((r, i) => resolveLookups({ ...r.body, id: String(stock[i].id) }, this.columns));
+    },
+
+    /* ==== Synchronisation en temps réel : modifications faites ailleurs (autre appareil, SharePoint directement) ====
+       Requêtes « delta » de Microsoft Graph : SharePoint ne renvoie QUE ce qui a changé depuis la dernière fois.
+       Toutes les listes sont interrogées en une seule requête groupée ($batch). Repli si le delta est refusé :
+       date de dernière modification de chaque liste, et rechargement de la liste modifiée. */
+    syncLists() {
+      return [["articles", this.articlesListId, true], ["ventes", this.ventesListId, true], ["achats", this.achatsListId, true],
+        ["credits", this.creditsId, false], ["versements", this.versementsId, false], ["clients", this.clientsListId, false],
+        ["fournisseurs", this.fournisseursListId, false], ["categories", this.categoriesListId, false]].filter(x => x[1]);
+    },
+    // élément SharePoint → objet de l'application (mêmes conversions qu'au chargement)
+    convertItem(key, it) {
+      const f = it.fields || {}, id = String(it.id);
+      switch (key) {
+        case "articles": return resolveLookups({ ...f, id }, this.columns);
+        case "ventes": return this.fromVente(it);
+        case "achats": return this.fromMapped(it, this.amap || {}, ACHAT_FIELDS);
+        case "credits": return this.fromMapped(it, this.creditsMap || {}, CREDIT_FIELDS);
+        case "versements": return this.fromMapped(it, this.versementsMap || {}, VERS_FIELDS);
+        case "clients": { const nf = cfg.clientsField || "Title", pf = cfg.clientsPhone || ""; return { id, name: String(f[nf] || "").trim(), phone: pf ? String(f[pf] || "") : "" }; }
+        case "fournisseurs": return { id, name: String(f[cfg.fournisseursField || "Title"] || "").replace(/\s+/g, " ").trim() };
+        case "categories": { const s = this.catSeuilField ? f[this.catSeuilField] : null; return { id, name: String(f[cfg.categoriesField || "Title"] || "").replace(/\s*[\r\n]+\s*/g, " ").trim(), seuil: s == null || s === "" ? null : +s }; }
+      }
+      return null;
+    },
+    rel(url) { return String(url).replace(/^https:\/\/graph\.microsoft\.com\/v1\.0/i, ""); },
+    // suit les pages d'une réponse delta jusqu'au jeton suivant
+    async deltaFollow(body, quiet) {
+      let items = body.value || [];
+      while (body["@odata.nextLink"] && !body["@odata.deltaLink"]) { body = await this.call(body["@odata.nextLink"], {}, undefined, quiet); items = items.concat(body.value || []); }
+      return { items, link: body["@odata.deltaLink"] ? this.rel(body["@odata.deltaLink"]) : null };
+    },
+    // point de départ : « à partir de maintenant » pour chaque liste
+    async syncInit(quiet = true) {
+      const ls = this.syncLists();
+      const rs = await this.batch(ls.map(([, id]) => ({ method: "GET", url: `/sites/${this.siteId}/lists/${id}/items/delta?token=latest` })), quiet);
+      this.deltaLinks = {};
+      for (let i = 0; i < ls.length; i++) {
+        const r = rs[i];
+        if (r && r.status < 300 && r.body) { try { const d = await this.deltaFollow(r.body, quiet); if (d.link) this.deltaLinks[ls[i][0]] = d.link; } catch (_) {} }
+      }
+      this.syncMode = Object.keys(this.deltaLinks).length ? "delta" : "stamp";
+      if (this.syncMode === "stamp") this.stamps = await this.readStamps(quiet);
+    },
+    async readStamps(quiet) {
+      const ls = this.syncLists();
+      const rs = await this.batch(ls.map(([, id]) => ({ method: "GET", url: `/sites/${this.siteId}/lists/${id}?$select=id,lastModifiedDateTime` })), quiet);
+      const s = {};
+      ls.forEach(([k], i) => { const r = rs[i]; if (r && r.status < 300 && r.body) s[k] = r.body.lastModifiedDateTime; });
+      return s;
+    },
+    /* changements depuis le dernier appel → { liste: { upserts: [...], deletes: [ids] } } ou { reloadAll: true } */
+    async pollChanges(full) {
+      const quiet = true;
+      if (!(this.syncMode === "stamp" && this.stamps) && !this.deltaLinks) { await this.syncInit(quiet); return {}; }
+      if (this.syncMode === "stamp") {
+        const s = await this.readStamps(quiet), changed = Object.keys(s).filter(k => this.stamps && this.stamps[k] && s[k] !== this.stamps[k]);
+        this.stamps = s;
+        return changed.length ? { reloadAll: true, changed } : {};
+      }
+      // listes très actives (articles, ventes, achats) à chaque fois ; les autres une fois sur trois
+      this._pollN = (this._pollN || 0) + 1;
+      const ls = this.syncLists().filter(([k, , fast]) => this.deltaLinks[k] && (fast || full || this._pollN % 3 === 0));
+      if (!ls.length) return {};
+      const rs = await this.batch(ls.map(([k]) => ({ method: "GET", url: this.deltaLinks[k] })), quiet);
+      const out = {}, toRead = [];
+      for (let i = 0; i < ls.length; i++) {
+        const [k, listId] = ls[i], r = rs[i];
+        if (!r || r.status >= 300) {
+          if (r && r.status === 429) { const e = new Error("SharePoint demande de ralentir (429)"); e.status = 429; throw e; }
+          if (r && (r.status === 410 || r.status === 400 || r.status === 404)) { // jeton expiré : tout recharger
+            const now = Date.now();
+            this._resyncs = (this._resyncs || []).filter(t => now - t < 120000).concat(now);
+            if (this._resyncs.length > 3) { this.syncMode = "stamp"; this.stamps = await this.readStamps(quiet); return { reloadAll: true }; } // delta instable : méthode de repli
+            this.deltaLinks = null; return { reloadAll: true };
+          }
+          continue;
+        }
+        const d = await this.deltaFollow(r.body, quiet);
+        if (d.link) this.deltaLinks[k] = d.link;
+        const del = [];
+        for (const it of d.items) { if (it.deleted) del.push(String(it.id)); else toRead.push({ k, listId, id: String(it.id) }); }
+        out[k] = { upserts: [], deletes: del };
+      }
+      // valeurs à jour des éléments modifiés, en une seule requête groupée
+      const uniq = toRead.filter((x, i) => toRead.findIndex(y => y.k === x.k && y.id === x.id) === i);
+      if (uniq.length) {
+        const rr = await this.batch(uniq.map(x => ({ method: "GET", url: `/sites/${this.siteId}/lists/${x.listId}/items/${x.id}?$expand=fields` })), quiet);
+        rr.forEach((r, j) => {
+          const x = uniq[j];
+          if (r && r.status < 300 && r.body) { const v = this.convertItem(x.k, r.body); if (v) out[x.k].upserts.push(v); }
+          else if (r && r.status === 404) out[x.k].deletes.push(x.id);
+        });
+      }
+      return out;
     },
 
     async getAll(path) {
@@ -751,6 +847,26 @@
     },
 
     persist() { try { localStorage.setItem(DEMO_KEY, JSON.stringify(this.db)); } catch (_) {} },
+    /* Démo : changements faits dans un autre onglet (même navigateur) depuis le dernier appel */
+    SYNC_KEYS: ["articles", "ventes", "achats", "credits", "versements", "clients", "fournisseurs", "categories"],
+    snapAll(db) { this._snap = {}; for (const k of this.SYNC_KEYS) this._snap[k] = new Map((db[k] || []).map(x => [String(x.id), JSON.stringify(x)])); },
+    async pollChanges() {
+      let fresh = null;
+      try { fresh = JSON.parse(localStorage.getItem(DEMO_KEY)); } catch (_) {}
+      if (!fresh) return {};
+      if (!this._snap) { this.snapAll(fresh); this.db = fresh; return {}; }
+      const out = {};
+      for (const k of this.SYNC_KEYS) {
+        const prev = this._snap[k] || new Map(), cur = new Map((fresh[k] || []).map(x => [String(x.id), JSON.stringify(x)]));
+        const up = [], del = [];
+        cur.forEach((j, id) => { if (prev.get(id) !== j) up.push(JSON.parse(j)); });
+        prev.forEach((_, id) => { if (!cur.has(id)) del.push(id); });
+        if (up.length || del.length) out[k] = { upserts: k === "articles" ? up.map(a => resolveLookups(a, fresh.columns)) : up, deletes: del };
+        this._snap[k] = cur;
+      }
+      this.db = fresh; // les prochaines écritures partent de la version la plus récente
+      return out;
+    },
     reset() { try { localStorage.removeItem(DEMO_KEY); } catch (_) {} this.db = null; },
     resolve(a) { return resolveLookups(JSON.parse(JSON.stringify(a)), this.db.columns); },
 
@@ -765,6 +881,7 @@
       if (!this.db.achats) this.db.achats = [];
       if (!this.db.credits) this.db.credits = [];
       if (!this.db.versements) this.db.versements = [];
+      this.snapAll(this.db); // point de départ de la synchronisation entre onglets
       return { columns: clone(this.db.columns), articles: this.db.articles.map(a => this.resolve(a)), ventes: clone(this.db.ventes),
         categories: clone(this.db.categories || []), clients: clone(this.db.clients), fournisseurs: clone(this.db.fournisseurs),
         achats: clone(this.db.achats), achatsReady: !!this.db.achatsReady,

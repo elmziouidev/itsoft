@@ -465,6 +465,112 @@
     }, 1500);
   }
 
+  /* ============ Synchronisation automatique avec SharePoint (temps réel) ============
+     Toutes les 4 s (30 s quand l'onglet est en arrière-plan), l'application demande à SharePoint ce qui a changé
+     depuis la dernière fois (autre caisse, autre appareil, modification directe dans SharePoint) et met l'écran
+     à jour sans toucher à une saisie en cours. Les modifications faites ici partent déjà tout de suite. */
+  const SYNC_KEYS = ["articles", "ventes", "achats", "credits", "versements", "clients", "fournisseurs", "categories"];
+  // écran « au repos » : pas de fenêtre ouverte, pas de cellule ou de champ en cours de saisie dans la page
+  const screenIdle = () => {
+    if ($("#modal-root").children.length || $("td.editing")) return false;
+    const a = document.activeElement;
+    return !(a && a.closest && a.closest("#view") && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName) && !a.closest("#scan-dock"));
+  };
+  let syncSaveT = 0;
+  const saveCacheSoon = () => { clearTimeout(syncSaveT); syncSaveT = setTimeout(() => saveCache({ columns: state.columns, articles: state.articles, ventes: state.ventes, categories: state.categories, clients: state.clients, fournisseurs: state.fournisseurs, achats: state.achats, achatsReady: state.achatsReady, credits: state.credits, versements: state.versements, creditsReady: state.creditsReady, ventesReady: state.ventesReady, siteName: state.siteName }), 1500); };
+  /* applique les changements reçus ; renvoie le nombre d'éléments réellement modifiés */
+  function applyChanges(ch) {
+    let n = 0; const touched = new Set();
+    for (const k of SYNC_KEYS) {
+      const c = ch[k], arr = state[k];
+      if (!c || !Array.isArray(arr)) continue;
+      for (const id of c.deletes || []) {
+        const i = arr.findIndex(x => String(x.id) === String(id));
+        if (i >= 0) { arr.splice(i, 1); n++; touched.add(k); }
+      }
+      for (const it of c.upserts || []) {
+        if (!it) continue;
+        const cur = arr.find(x => String(x.id) === String(it.id));
+        if (!cur) { arr.push(it); n++; touched.add(k); }
+        else if (Object.keys(it).some(f => JSON.stringify(cur[f]) !== JSON.stringify(it[f]))) { Object.assign(cur, it); n++; touched.add(k); }
+      }
+    }
+    if (n) { saveCacheSoon(); refreshAfterSync(touched); }
+    return n;
+  }
+  /* mise à jour de l'écran : tout de suite si rien n'est en cours de saisie, sinon dès que l'écran est libre */
+  let syncRedraw = null;
+  function refreshAfterSync(touched) {
+    syncRedraw = new Set([...(syncRedraw || []), ...touched]);
+    const v = currentView();
+    // page Ventes : seul le tableau est redessiné (le scanner et la vente en cours ne bougent pas)
+    if (v === "ventes" && state.ventesRedraw) { state.ventesRedraw(); syncRedraw = null; renderCartBar(); return; }
+    if (!screenIdle()) return; // repris par la vérification ci-dessous
+    syncRedraw = null;
+    const sc = $("#art-table .table-scroll"), st = sc ? sc.scrollTop : 0, y = window.scrollY;
+    render();
+    const sc2 = $("#art-table .table-scroll"); if (sc2) sc2.scrollTop = st;
+    window.scrollTo(0, y);
+  }
+  setInterval(() => { if (syncRedraw && state.loaded && screenIdle()) refreshAfterSync(new Set()); }, 1000);
+
+  const Sync = {
+    timer: 0, busy: false, last: 0, err: null, backoff: 0, changes: 0,
+    interval() { return document.hidden ? 30000 : 4000; },
+    start() {
+      if (!DS.pollChanges || this.started) return;
+      this.started = true;
+      this.schedule(1500);
+      document.addEventListener("visibilitychange", () => { if (!document.hidden) this.now(300); });
+      window.addEventListener("online", () => this.now(500));
+      // autre onglet sur ce même appareil : il prévient dès qu'il a écrit (synchronisation immédiate)
+      try { this.bc = new BroadcastChannel("itsoft-sync"); this.bc.onmessage = () => this.now(400); } catch (_) {}
+      if (DS.mode === "demo") window.addEventListener("storage", e => { if (e.key && /demo/i.test(e.key)) this.now(150); });
+      // chaque écriture faite ici prévient les autres onglets
+      for (const name of Object.keys(DS)) {
+        const f = DS[name];
+        if (typeof f !== "function" || !/^(create|update|delete|commit|cancel|set|add)/.test(name)) continue;
+        DS[name] = async function (...args) { const r = await f.apply(this, args); Sync.ping(); return r; };
+      }
+      setInterval(() => this.badge(), 1000);
+      this.badge();
+    },
+    ping() { try { this.bc && this.bc.postMessage(Date.now()); } catch (_) {} },
+    schedule(ms) { clearTimeout(this.timer); this.timer = setTimeout(() => this.run(), ms); },
+    now(ms = 0) { this.schedule(ms); },
+    async run(manual) {
+      if (this.busy) return;
+      if (!state.loaded) return this.schedule(this.interval());
+      if (!navigator.onLine) { this.err = "hors ligne"; this.badge(); return this.schedule(this.interval()); }
+      this.busy = true; this.badge();
+      try {
+        const ch = await DS.pollChanges(manual);
+        if (ch && ch.reloadAll) { // reprise complète (jeton expiré, ou méthode de repli)
+          const res = await DS.load();
+          await whenIdle();
+          applyData(res); saveCache(res); refreshAfterSync(new Set(SYNC_KEYS));
+        } else if (ch) this.changes += applyChanges(ch);
+        this.last = Date.now(); this.err = null; this.backoff = 0;
+      } catch (e) {
+        this.err = e.auth ? "session à renouveler (cliquez sur Actualiser)" : e.status === 429 ? "SharePoint demande de ralentir" : (e.message || String(e));
+        this.backoff = Math.min(60000, this.backoff ? this.backoff * 2 : 5000); // nouvel essai : 5 s, 10 s, 20 s… (60 s au plus)
+      } finally {
+        this.busy = false; this.badge();
+        this.schedule(this.backoff || this.interval());
+      }
+    },
+    badge() {
+      const b = $("#sync-dot"); if (!b) return;
+      const s = this.last ? Math.round((Date.now() - this.last) / 1000) : null;
+      const cls = this.err ? "bad" : this.busy ? "busy" : this.last ? "ok" : "wait";
+      b.className = "sync-dot " + cls;
+      const txt = this.err ? "Synchro en pause" : !this.last ? "Synchro…" : s < 5 ? "À jour" : `À jour · ${s < 60 ? s + " s" : Math.round(s / 60) + " min"}`;
+      b.querySelector(".sd-txt").textContent = txt;
+      b.title = this.err ? `Synchronisation avec SharePoint en pause : ${this.err}. Nouvel essai automatique.`
+        : `Synchronisation automatique avec SharePoint toutes les ${document.hidden ? 30 : 4} s${this.last ? ` · dernière vérification il y a ${s} s` : ""}. Cliquez pour vérifier maintenant.`;
+    }
+  };
+
   /* Colonne « Prix de vente » (cfg.champs.prix, ex. PrixVente) absente de la liste des articles :
      créée une seule fois (colonne Nombre). L'ancienne colonne « Prix » reste le prix d'achat. */
   let pvBusy = false;
@@ -3701,6 +3807,9 @@ self.onmessage = async e => {
      opts.onDone  : appelé avec l'article enregistré (ou null si la fiche est fermée sans enregistrer) */
   function articleForm(article, opts = {}) {
     const isNew = !article;
+    // valeurs à l'ouverture de la fiche : seules les modifications faites ICI sont envoyées
+    // (une modification arrivée entre-temps d'un autre appareil n'est pas écrasée)
+    const orig = article ? JSON.parse(JSON.stringify(article)) : null;
     const M = state.map;
     const cc = codeCol();
     const supCol = findCol(M.fournisseur);
@@ -3899,7 +4008,7 @@ self.onmessage = async e => {
           const key = c.relationField ? c.name : c.name + "LookupId";
           const raw = inp.value;
           if (c.required && !raw) { inp.focus(); return toast(`Le champ « ${colTitle(c)} » est obligatoire.`, "bad"); }
-          const old = article ? String(article[c.name + "LookupId"] || "") : "";
+          const old = article ? String(orig[c.name + "LookupId"] || "") : "";
           if (raw === old) continue;
           fields[key] = raw === "" ? null : (/^\d+$/.test(raw) ? parseInt(raw, 10) : raw);
           continue;
@@ -3910,7 +4019,7 @@ self.onmessage = async e => {
         else val = inp.value.trim();
         if (c.required && (val === null || val === "")) { inp.focus(); return toast(`Le champ « ${colTitle(c)} » est obligatoire.`, "bad"); }
         if (article) { // n'envoyer que les champs modifiés
-          const old = article[c.name];
+          const old = orig[c.name];
           const same = (old == null || old === "") && (val == null || val === "") || old === val;
           if (same) continue;
         } else if (val === null || val === "") continue;
@@ -3932,7 +4041,7 @@ self.onmessage = async e => {
       try {
         // codes-barres : colonne créée au premier code, valeur envoyée seulement si elle change
         const codesTxt = codes.join(" ");
-        if (codesTxt !== (article ? codesOf(article).join(" ") : "")) {
+        if (codesTxt !== (article ? codesOf(orig).join(" ") : "")) {
           if (codes.length || codeCol()) fields[(await ensureCodeCol()).name] = codesTxt || null;
         }
         let a = article;
@@ -5744,9 +5853,13 @@ self.onmessage = async e => {
     $("#btn-refresh").addEventListener("click", async e => {
       const b = e.currentTarget; if (b.classList.contains("spinning")) return;
       setSyncing(true);
-      try { await loadData(true); render(); toast("Données actualisées."); } catch (err) { toast(err.message, "bad"); }
+      try { await loadData(true); render(); Sync.last = Date.now(); Sync.err = null; toast("Données actualisées."); } catch (err) { toast(err.message, "bad"); }
       setSyncing(false);
     });
+    // indicateur de synchronisation automatique (à côté du bouton Actualiser) ; clic = vérifier maintenant
+    $("#btn-refresh").insertAdjacentHTML("beforebegin", `<button type="button" class="sync-dot wait" id="sync-dot"><span class="sd-dot"></span><span class="sd-txt">Synchro…</span></button>`);
+    $("#sync-dot").addEventListener("click", () => Sync.run(true));
+    Sync.start();
   }
 
   start();

@@ -46,12 +46,15 @@
       return this.msal.logoutRedirect({ account: this.account });
     },
 
-    async getToken(scopes) {
+    /* silent : synchronisation en arrière-plan → jamais de redirection vers la page de connexion
+       (une erreur est renvoyée ; la prochaine action de l'utilisateur renouvellera la session) */
+    async getToken(scopes, silent) {
       const request = { scopes: scopes || SCOPES, account: this.account };
       try {
         const r = await this.msal.acquireTokenSilent(request);
         return r.accessToken;
       } catch (e) {
+        if (silent) { const err = new Error("session à renouveler"); err.auth = true; throw err; }
         if (e instanceof msal.InteractionRequiredAuthError || /interaction_required|consent_required|login_required/i.test(e.errorCode || "")) {
           await this.msal.acquireTokenRedirect(request);
           return new Promise(() => {}); // la page va être redirigée
