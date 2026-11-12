@@ -46,7 +46,9 @@ window.APP_CONFIG = {
     Nom_article: "Catégorie",
     Quantite: "Quantité en stock",
     Prix: "Prix d'achat",
-    PrixVente: "Prix de vente"
+    PrixVente: "Prix de vente",
+    CodeBarre: "Codes-barres",
+    fournisseur: "Fournisseur"
   },
 
   // Liste des clients (proposés lors d'une vente ; les nouveaux clients y sont ajoutés)

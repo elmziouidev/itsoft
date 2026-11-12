@@ -460,8 +460,7 @@
     state.loaded = true;
     // préchargement de la lecture des codes : la fenêtre « Scanner » s'ouvre ensuite sans attente
     setTimeout(() => {
-      loadScript(LIB_SCAN).catch(() => {});
-      zxingReader().catch(() => {}); // décodeur rapide prêt avant le premier scan
+      zxPool().catch(() => {}); nativeDetector(); // décodeurs rapides prêts avant le premier scan
       if (scanModeGet() === "price") { ocrWorker().catch(() => {}); ocrDigits().catch(() => {}); } // moteur de lecture des prix prêt d'avance
     }, 1500);
   }
@@ -1269,6 +1268,133 @@
     }).catch(e => { zxingP = null; throw e; });
     return zxingP;
   }
+
+  /* ============ Moteur de lecture rapide : QR codes + codes-barres en même temps ============
+     - décodage ZXing dans des « workers » (processeurs en parallèle) : la page reste fluide,
+       et plusieurs images de la caméra sont analysées en même temps ;
+     - détecteur intégré du téléphone (Android, Mac) quand il existe : accéléré par le matériel ;
+     - chaque nouvelle image de la caméra est analysée une seule fois, dès qu'elle arrive. */
+  const ZX_FORMATS = ["QRCode", "EAN-13", "EAN-8", "UPC-A", "UPC-E", "Code128", "Code39", "Code93", "ITF"];
+  // les images sont analysées à tour de rôle avec 3 réglages complémentaires (mesuré sur 1280×720) :
+  //  - rapide (~18 ms) : seuil local, résiste aux ombres et reflets ;
+  //  - éclair (~11 ms) : seuil global, idéal en bonne lumière ;
+  //  - approfondi (~50 ms, 1 image sur 3) : codes petits, abîmés, inversés ou de travers.
+  const ZX_FAST = { formats: ZX_FORMATS, tryHarder: false, tryRotate: true, tryInvert: false, tryDownscale: true, maxNumberOfSymbols: 4, returnErrors: true };
+  const ZX_FLASH = { ...ZX_FAST, binarizer: "GlobalHistogram" };
+  const ZX_DEEP = { formats: ZX_FORMATS, tryHarder: true, tryRotate: true, tryInvert: true, tryDownscale: true, maxNumberOfSymbols: 4, returnErrors: true };
+  const ZX_CYCLE = [ZX_FAST, ZX_FLASH, ZX_DEEP];
+  const ZX_WORKER_SRC = `
+let Z = null, cv = null, cx = null, buf = null, gray = null;
+const viaCanvas = (src, w, h) => {
+  if (!cv || cv.width !== w || cv.height !== h) { cv = new OffscreenCanvas(w, h); cx = cv.getContext("2d", { willReadFrequently: true }); }
+  cx.drawImage(src, 0, 0); return cx.getImageData(0, 0, w, h);
+};
+/* image de la caméra (VideoFrame) → ImageData : copie directe des pixels, sans passer par le processeur graphique.
+   Caméras YUV (le cas courant) : le 1er plan est déjà l'image en niveaux de gris, exactement ce que lit ZXing. */
+async function fromVideoFrame(f) {
+  const r = f.visibleRect, W = r.width, H = r.height, fmt = f.format || "";
+  const yuv = /^(I420A?|I422|I444|NV12)$/.test(fmt), rgb = /^(RGB[AX]|BGR[AX])$/.test(fmt);
+  if (!yuv && !rgb) return viaCanvas(f, f.displayWidth, f.displayHeight);
+  const size = f.allocationSize({ rect: r });
+  if (!buf || buf.length < size) buf = new Uint8Array(size);
+  const lay = await f.copyTo(buf, { rect: r });
+  if (!gray || gray.width !== W || gray.height !== H) gray = new ImageData(W, H);
+  const o = lay[0].offset, s = lay[0].stride;
+  if (yuv) {
+    const u32 = new Uint32Array(gray.data.buffer);
+    for (let y = 0; y < H; y++) { let p = o + y * s, q = y * W; for (let x = 0; x < W; x++) { const g = buf[p++]; u32[q++] = 0xFF000000 | (g << 16) | (g << 8) | g; } }
+  } else { const d8 = gray.data; for (let y = 0; y < H; y++) d8.set(buf.subarray(o + y * s, o + y * s + W * 4), y * W * 4); }
+  return gray;
+}
+self.onmessage = async e => {
+  const d = e.data;
+  if (d.type === "init") {
+    try { Z = await import(d.url); await Z.readBarcodes(new ImageData(16, 16), { formats: ["QRCode"] }); self.postMessage({ type: "ready" }); }
+    catch (err) { self.postMessage({ type: "error", message: String((err && err.message) || err) }); }
+    return;
+  }
+  const t0 = performance.now();
+  try {
+    let img = d.img;
+    if (d.vf) {
+      try { img = await fromVideoFrame(d.vf); }
+      catch (_) { img = viaCanvas(d.vf, d.vf.displayWidth, d.vf.displayHeight); } // format inattendu : par le dessin
+      finally { d.vf.close(); }
+    }
+    else if (d.bitmap) { const b = d.bitmap; try { img = viaCanvas(b, b.width, b.height); } finally { b.close(); } }
+    const res = await Z.readBarcodes(img, d.opts);
+    self.postMessage({ type: "result", ms: performance.now() - t0, res: res.map(r => ({ text: r.text, format: r.format, valid: r.isValid })) });
+  } catch (err) { self.postMessage({ type: "result", ms: performance.now() - t0, res: [], error: String((err && err.message) || err) }); }
+};`;
+  /* un décodeur = { busy, decode(frame, opts) → Promise<{res, ms}> } ; frame = { bitmap } ou { img } */
+  let zxPoolP = null;
+  function zxPool() {
+    if (zxPoolP) return zxPoolP;
+    zxPoolP = (async () => {
+      const canBitmap = typeof OffscreenCanvas !== "undefined" && typeof createImageBitmap === "function";
+      const canFrame = typeof VideoFrame === "function"; // image de la caméra transmise telle quelle au décodeur
+      const wrap = w => {
+        const dec = { busy: false, worker: true, canBitmap, canFrame };
+        let done = null;
+        w.onmessage = e => { if (e.data.type === "result" && done) { const f = done; done = null; dec.busy = false; f(e.data); } };
+        w.onerror = () => { if (done) { const f = done; done = null; dec.busy = false; f({ res: [], ms: 0 }); } };
+        dec.decode = (frame, opts) => new Promise(r => {
+          dec.busy = true; done = r;
+          if (frame.vf) {
+            try { w.postMessage({ vf: frame.vf, opts }, [frame.vf]); } // transfert sans copie
+            catch (_) { w.postMessage({ vf: frame.vf, opts }); frame.vf.close(); } // navigateur sans transfert : copie
+          }
+          else if (frame.bitmap) w.postMessage({ bitmap: frame.bitmap, opts }, [frame.bitmap]);
+          else w.postMessage({ img: frame.img, opts }, [frame.img.data.buffer]);
+        });
+        return dec;
+      };
+      const make = url => new Promise((res, rej) => {
+        let w;
+        try { w = new Worker(url, { type: "module" }); } catch (e) { return rej(e); }
+        const to = setTimeout(() => { w.terminate(); rej(new Error("délai dépassé")); }, 25000);
+        w.onmessage = e => {
+          if (e.data.type === "ready") { clearTimeout(to); res(wrap(w)); }
+          else if (e.data.type === "error") { clearTimeout(to); w.terminate(); rej(new Error(e.data.message)); }
+        };
+        w.onerror = e => { clearTimeout(to); w.terminate(); rej(new Error(e.message || "worker")); };
+        w.postMessage({ type: "init", url: LIB_ZXING });
+      });
+      try {
+        if (typeof Worker === "undefined") throw new Error("workers indisponibles");
+        const url = URL.createObjectURL(new Blob([ZX_WORKER_SRC], { type: "text/javascript" }));
+        const pool = [await make(url)];
+        // processeurs supplémentaires selon l'appareil (2 à 3 décodeurs en parallèle), prêts en arrière-plan
+        const extra = Math.max(0, Math.min(2, (navigator.hardwareConcurrency || 2) - 2));
+        for (let i = 0; i < extra; i++) make(url).then(d => pool.push(d)).catch(() => {});
+        return pool;
+      } catch (e) {
+        // repli : ZXing dans la page elle-même (navigateur ancien)
+        const Z = await zxingReader();
+        const dec = { busy: false, worker: false, canBitmap: false };
+        dec.decode = async (frame, opts) => {
+          dec.busy = true; const t0 = performance.now();
+          try { const res = await Z.readBarcodes(frame.img, opts); return { res: res.map(r => ({ text: r.text, format: r.format, valid: r.isValid })), ms: performance.now() - t0 }; }
+          catch (_) { return { res: [], ms: performance.now() - t0 }; } finally { dec.busy = false; }
+        };
+        return [dec];
+      }
+    })().catch(e => { zxPoolP = null; throw e; });
+    return zxPoolP;
+  }
+  /* détecteur intégré au navigateur (téléphones Android, Mac, Chromebook) : null s'il n'existe pas */
+  let nativeDetP = null;
+  function nativeDetector() {
+    if (!nativeDetP) nativeDetP = (async () => {
+      if (!("BarcodeDetector" in window)) return null;
+      const want = ["qr_code", "ean_13", "ean_8", "upc_a", "upc_e", "code_128", "code_39", "code_93", "itf"];
+      const sup = await window.BarcodeDetector.getSupportedFormats().catch(() => []);
+      const f = want.filter(x => sup.includes(x));
+      if (!f.includes("qr_code") || !f.includes("ean_13")) return null;
+      return new window.BarcodeDetector({ formats: f });
+    })().catch(() => null);
+    return nativeDetP;
+  }
   const libCache = {};
   function loadScript(url) {
     if (!libCache[url]) libCache[url] = new Promise((ok, ko) => {
@@ -1362,15 +1488,47 @@
   const labelPrice = n => { const v = Math.round((+n || 0) * 100) / 100; return Number.isInteger(v) ? String(v) : v.toFixed(2).replace(".", ","); };
   /* formule de l'étiquette : colonne MODELE + « - Prix : » + colonne PRIX DE VENTE */
   const labelText = a => `${String(artName(a)).trim()} - Prix : ${labelPrice(artPrice(a))}`;
+  /* Codes-barres d'un article : plusieurs codes possibles (couleurs, capacités, emballages…), séparés par un espace */
   const codesOf = a => { const c = codeCol(); return c && a[c.name] ? String(a[c.name]).split(/[\s,;]+/).filter(Boolean) : []; };
+  const CODES_MAX = 255; // colonne SharePoint « Une ligne de texte »
+  /* forme comparable d'un code : un UPC-A (12 chiffres) lu comme EAN-13 (« 0 » + 12 chiffres) reste le même code */
+  const codeKey = c => { let s = String(c || "").trim().toUpperCase(); if (/^0\d{12}$/.test(s)) s = s.slice(1); return s; };
+  const parseCodes = txt => { const seen = new Set(); return String(txt || "").split(/[\s,;]+/).map(s => s.trim()).filter(s => s && !seen.has(codeKey(s)) && seen.add(codeKey(s))); };
+  /* index code → article : lecture instantanée même avec des milliers d'articles */
+  let _codeIdx = { src: null, len: -1, map: null };
+  function codeIndex(force) {
+    if (force || _codeIdx.src !== state.articles || _codeIdx.len !== state.articles.length) {
+      const map = new Map();
+      for (const a of state.articles) for (const c of codesOf(a)) { const k = codeKey(c); if (k && !map.has(k)) map.set(k, a); }
+      _codeIdx = { src: state.articles, len: state.articles.length, map };
+    }
+    return _codeIdx.map;
+  }
+  /* article qui porte déjà ce code-barres (autre que « except ») */
+  function codeOwner(code, except) {
+    const k = codeKey(code); if (!k) return null;
+    let a = codeIndex().get(k);
+    if (!a || !codesOf(a).some(c => codeKey(c) === k)) a = codeIndex(true).get(k); // fiche modifiée depuis : index reconstruit
+    if (a && except && a.id === except.id) a = state.articles.find(x => x !== a && codesOf(x).some(c => codeKey(c) === k));
+    return a || null;
+  }
   /* Article correspondant à un code lu (étiquette ITSoft, code-barres associé ou référence) */
   function articleByCode(raw) {
     const code = String(raw || "").trim();
     if (!code) return null;
     const m = /^ITS[:\-]?(\d+)$/i.exec(code);
     if (m) return artById(m[1]) || null;
-    return state.articles.find(a => codesOf(a).includes(code))
+    return codeOwner(code)
       || state.articles.find(a => { const r = F(a, "reference"); return r != null && String(r) === code; }) || null;
+  }
+  /* crée la colonne des codes-barres dans la liste des articles (une seule fois) */
+  async function ensureCodeCol() {
+    if (codeCol()) return codeCol();
+    let c;
+    try { c = await DS.addArticleColumn(CODE_FIELD, { displayName: "Codes-barres" }); }
+    catch (e) { if (!/exist|déjà|already/i.test(e.message)) throw e; c = { name: CODE_FIELD, displayName: "Codes-barres", type: "text" }; }
+    if (!findCol(c.name)) state.columns.push(c);
+    return codeCol() || c;
   }
   function qrSVG(text) {
     // correction d'erreur maximale (H : lisible même abîmé à 30 %) en mode alphanumérique : « ITS:123 » tient
@@ -1778,7 +1936,7 @@
     const panel = opts.container || null; // scanner intégré dans une page (Ventes) au lieu d'une fenêtre
     const camId = "scan-cam-" + (++scanSeq);
     const scanBody = `<div class="scan-mode-info" id="scan-mode-info"></div>
-        <div class="scan-wrap"><div id="${camId}" class="scan-cam"></div><div class="price-guide" id="price-guide" hidden><span id="price-guide-txt">Placez le prix dans le cadre</span></div><div class="scan-wait" id="scan-wait">Démarrage de la caméra…<br><span>Si le navigateur affiche « Utiliser les caméras », cliquez sur <strong>Autoriser</strong>.</span></div><div class="scan-flash" id="scan-flash" hidden></div><div class="cam-ctrl" id="cam-ctrl" hidden></div></div>
+        <div class="scan-wrap"><div id="${camId}" class="scan-cam"></div><div class="price-guide" id="price-guide" hidden><span id="price-guide-txt">Placez le prix dans le cadre</span></div><div class="scan-wait" id="scan-wait">Démarrage de la caméra…<br><span>Si le navigateur affiche « Utiliser les caméras », cliquez sur <strong>Autoriser</strong>.</span></div><div class="scan-flash" id="scan-flash" hidden></div><div class="cam-ctrl" id="cam-ctrl" hidden></div><div class="scan-speed" id="scan-speed" hidden></div></div>
         <div class="scan-total" id="scan-total"></div>
         <div id="last-sale"></div>
         <div class="form-grid" style="margin-top:10px">
@@ -1802,7 +1960,13 @@
     const auto = !fromCart && (panel || scanAutoGet()) && state.ventesReady;
     const sess = { num: null, date: null, lines: [], hist: [] };
     let queue = Promise.resolve();
-    const stop = async () => { const r = reader; reader = null; if (r) { try { await r.stop(); } catch (_) {} try { r.clear(); } catch (_) {} } };
+    let camStream = null; // flux de la caméra ouvert directement (moteur rapide)
+    const stop = async () => {
+      fastId++; // arrête la boucle de lecture
+      const s = camStream; camStream = null;
+      if (s) { s.getTracks().forEach(t => { try { t.stop(); } catch (_) {} }); const v = $(".scan-cam video", m); if (v) v.srcObject = null; }
+      const r = reader; reader = null; if (r) { try { await r.stop(); } catch (_) {} try { r.clear(); } catch (_) {} }
+    };
     const obs = new MutationObserver(() => {
       if (document.body.contains(m)) return;
       obs.disconnect(); stop();
@@ -2100,11 +2264,27 @@
       const box = $("#scan-unknown", m); if (!box) return;
       const isLabel = /^ITS[:\-]?\d+$/i.test(code);
       box.innerHTML = `<div class="alert warn" style="margin-top:10px">${ICON.warn}<div class="grow">
-        <strong>Code inconnu : ${esc(code)}</strong>${isLabel ? "<br>Cette étiquette correspond à un article supprimé." : `<br>Associez-le à un article : les prochains scans de ce code l'ajouteront directement. Un article n'a qu'un seul code-barres : s'il en avait déjà un, il est remplacé.${codeCol() ? "" : ` <span class="muted">(la colonne ${CODE_FIELD} sera ajoutée à ${esc(cfg.articlesList)}, une seule fois)</span>`}
-        <div class="row" style="gap:8px;margin-top:8px;flex-wrap:wrap"><input class="input" id="scan-assoc" list="dl-scan-arts" placeholder="Rechercher l'article…" style="flex:1 1 220px">
+        <strong>Code inconnu : ${esc(code)}</strong>${isLabel ? "<br>Cette étiquette correspond à un article supprimé." : `
+        <div class="assoc-new"><span>Article absent de la liste ?</span><button class="btn primary" id="scan-new-art" type="button">${ICON.plus} Créer un nouvel article avec ce code</button></div>
+        <div class="assoc-or">ou associez ce code à un article existant (un article peut avoir plusieurs codes-barres : couleurs, capacités…) :</div>
+        <div class="row" style="gap:8px;margin-top:6px;flex-wrap:wrap"><input class="input" id="scan-assoc" list="dl-scan-arts" placeholder="Rechercher l'article…" style="flex:1 1 220px">
         <datalist id="dl-scan-arts">${state.articles.slice(0, 2000).map(a => `<option value="${esc(artName(a))}${F(a, "reference") != null ? " · " + esc(F(a, "reference")) : ""}" data-id="${esc(a.id)}"></option>`).join("")}</datalist>
-        <button class="btn primary" id="scan-assoc-ok" type="button">Associer et ajouter</button><button class="btn" id="scan-assoc-no" type="button">Ignorer</button></div>`}</div></div>`;
+        <button class="btn" id="scan-assoc-ok" type="button">Associer et ajouter</button><button class="btn ghost" id="scan-assoc-no" type="button">Ignorer</button></div>
+        ${codeCol() ? "" : `<div class="muted" style="font-size:12px;margin-top:6px">La colonne « Codes-barres » sera ajoutée à ${esc(cfg.articlesList)} (une seule fois).</div>`}`}</div></div>`;
       const no = $("#scan-assoc-no", box); if (no) no.onclick = () => { box.innerHTML = ""; $("#scan-input", m).focus(); };
+      const nb = $("#scan-new-art", box);
+      if (nb) nb.onclick = () => {
+        // scanner en fenêtre avec une vente en cours : la fiche article remplacerait la fenêtre et la vente serait perdue
+        if (!panel && auto && sess.lines.length) return toast("Validez d'abord la vente en cours, puis scannez de nouveau ce code pour créer l'article.", "bad");
+        const after = a => {
+          if (panel) { // page Ventes : le scanner est resté ouvert, l'article est ajouté à la vente
+            box.innerHTML = ""; last = { code: "", t: 0 };
+            if (a) handle(code); else $("#scan-input", m).focus();
+          } else scanDialog(a ? { ...opts, code } : { ...opts, code: undefined }); // fenêtre de scan rouverte (avec le nouvel article)
+        };
+        if (!panel) m.dataset.toCart = "1"; // la fiche remplace la fenêtre de scan : ne pas rouvrir le panier
+        articleForm(null, { code, forSale: true, onDone: after });
+      };
       const okb = $("#scan-assoc-ok", box); if (!okb) return;
       okb.onclick = async () => {
         const v = $("#scan-assoc", box).value.trim();
@@ -2113,12 +2293,13 @@
         if (!a) return toast("Choisissez un article dans la liste proposée.", "bad");
         busy(okb, true, "Association…");
         try {
-          if (!codeCol()) { const c = await DS.addArticleColumn(CODE_FIELD); state.columns.push(c); }
-          const col = codeCol();
-          const val = code; // un seul code-barres par article : l'ancien éventuel est remplacé
-          const old = codesOf(a).filter(x => x !== code);
-          if (old.length) toast(`Ancien code-barres de « ${artName(a)} » remplacé : ${old.join(", ")}.`, "ok");
+          const col = await ensureCodeCol();
+          const val = parseCodes([...codesOf(a), code].join(" ")).join(" "); // le code s'ajoute aux codes déjà connus
+          if (val.length > CODES_MAX) throw new Error(`trop de codes-barres pour « ${artName(a)} » : retirez-en dans sa fiche (Articles → Modifier).`);
           Object.assign(a, await DS.updateArticle(a.id, { [col.name]: val }));
+          codeIndex(true);
+          const n = codesOf(a).length;
+          toast(`Code ${code} associé à « ${artName(a)} »${n > 1 ? ` (${n} codes-barres pour cet article)` : ""}.`, "ok");
           box.innerHTML = "";
           last = { code: "", t: 0 };
           handle(code);
@@ -2350,16 +2531,12 @@
       camBox.innerHTML = "";
       const wt = $("#scan-wait", m); if (wt) wt.hidden = false;
       if (!window.isSecureContext || !navigator.mediaDevices) { camMsg("Caméra indisponible ici (connexion non sécurisée). Utilisez le champ Code ou un lecteur code-barres."); return; }
-      try { await loadScript(LIB_SCAN); } catch (e) { camMsg(esc(e.message)); return; }
       if (!document.body.contains(m) || !camWanted) return;
-      const F_ = window.Html5QrcodeSupportedFormats;
-      // formats utiles seulement : chaque format en plus ralentit l'analyse de chaque image
-      // QR + tous les codes-barres courants des produits (EAN, UPC, Code 128/39/93, ITF)
-      formats = F_ ? [F_.QR_CODE, F_.EAN_13, F_.EAN_8, F_.UPC_A, F_.UPC_E, F_.CODE_128, F_.CODE_39, F_.CODE_93, F_.ITF].filter(v => v !== undefined) : undefined;
       try {
         const pref = camGet() || null;
         await start(pref ? { deviceId: { exact: pref } } : { facingMode: "environment" }).catch(() => start({ facingMode: "environment" }));
-        const cams = camSelDone ? [] : await window.Html5Qrcode.getCameras().catch(() => []);
+        const cams = camSelDone ? [] : (await navigator.mediaDevices.enumerateDevices().catch(() => []))
+          .filter(d => d.kind === "videoinput" && d.deviceId).map((d, i) => ({ id: d.deviceId, label: d.label || `Caméra ${i + 1}` }));
         if (cams.length > 1 && document.body.contains(m)) {
           camSelDone = true;
           const sel = $("#scan-cam-sel", m);
@@ -2432,11 +2609,36 @@
       p.seen = now; p.frame = frameNo;
       if (!p.counted && onCode(txt, { result: { format: { formatName: fmt } } })) p.counted = true;
     };
+    /* Démarrage de la caméra : ouverte directement (plus rapide), décodeurs chargés en parallèle */
     const start = async source => {
       await stop();
       if (!document.body.contains(m)) return;
       camBox.innerHTML = "";
-      // décodeur natif du navigateur quand il existe (beaucoup plus rapide), sinon décodeur JavaScript
+      const engP = Promise.all([zxPool().catch(() => null), nativeDetector()]);
+      const streamP = navigator.mediaDevices.getUserMedia({
+        audio: false,
+        // image HD (codes-barres fins), 30 images/s, mise au point continue
+        video: { ...source, width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 }, advanced: [{ focusMode: "continuous" }] }
+      });
+      const [[pool, nat], s] = await Promise.all([engP, streamP]);
+      if (!document.body.contains(m) || !camWanted) { s.getTracks().forEach(t => t.stop()); return; }
+      if (!pool && !nat) { s.getTracks().forEach(t => t.stop()); return startLegacy(source); } // décodeurs rapides indisponibles
+      camStream = s;
+      camBox.innerHTML = `<video playsinline muted autoplay disablepictureinpicture></video>`;
+      const v = $("video", camBox);
+      v.srcObject = s;
+      await v.play().catch(() => {});
+      const wt = $("#scan-wait", m); if (wt) wt.hidden = true;
+      setTimeout(camControls, 300);
+      fastLoop(v, pool, nat);
+    };
+    /* Ancien lecteur (html5-qrcode), seulement si les décodeurs rapides n'ont pas pu être chargés */
+    const startLegacy = async source => {
+      await loadScript(LIB_SCAN);
+      if (!document.body.contains(m) || !camWanted) return;
+      const F_ = window.Html5QrcodeSupportedFormats;
+      formats = F_ ? [F_.QR_CODE, F_.EAN_13, F_.EAN_8, F_.UPC_A, F_.UPC_E, F_.CODE_128, F_.CODE_39, F_.CODE_93, F_.ITF].filter(v => v !== undefined) : undefined;
+      camBox.innerHTML = "";
       reader = new window.Html5Qrcode(camId, { formatsToSupport: formats, verbose: false, experimentalFeatures: { useBarCodeDetectorIfSupported: true } });
       // zone de lecture = toute l'image : le code est reconnu où qu'il soit, sans viser
       const box = (w, h) => ({ width: Math.max(50, Math.floor(w * 0.98)), height: Math.max(50, Math.floor(h * 0.98)) });
@@ -2448,12 +2650,8 @@
       }, (txt, res) => detect(txt, String(res && res.result && res.result.format && (res.result.format.formatName || res.result.format) || "")), () => {});
       const wt = $("#scan-wait", m); if (wt) wt.hidden = true;
       setTimeout(camControls, 400);
-      // décodeur rapide ZXing (WebAssembly) : il lit lui-même l'image de la caméra ; l'ancien décodeur est mis en pause
-      fastLoop();
     };
-    /* Lecture rapide : chaque image entière de la caméra est analysée (QR + codes-barres) en ~35 ms */
     let fastId = 0;
-    const FAST_FORMATS = ["QRCode", "EAN-13", "EAN-8", "UPC-A", "UPC-E", "Code128", "Code39", "Code93", "ITF"];
     /* Lampe et zoom (téléphones surtout) : affichés seulement si la caméra les propose */
     function camControls() {
       const box = $("#cam-ctrl", m); if (!box) return;
@@ -2481,30 +2679,78 @@
         tr.applyConstraints({ advanced: [{ zoom: +z.value }] }).catch(() => {});
       };
     }
-    async function fastLoop() {
+    /* Boucle de lecture : chaque NOUVELLE image de la caméra est confiée à un décodeur libre
+       (plusieurs travaillent en parallèle) ; le détecteur intégré du téléphone lit aussi chaque image. */
+    function fastLoop(v, pool, nat) {
       const id = ++fastId;
-      let Z; try { Z = await zxingReader(); } catch (_) { return; } // indisponible : le décodeur classique continue
-      if (id !== fastId || !reader || !document.body.contains(m)) return;
-      try { reader.pause(false); } catch (_) {}
-      const cvs = document.createElement("canvas"), cx = cvs.getContext("2d", { willReadFrequently: true });
-      while (id === fastId && reader && document.body.contains(m)) {
-        const v = $(".scan-cam video", m);
-        if (v && v.videoWidth && v.readyState >= 2) {
-          if (cvs.width !== v.videoWidth) { cvs.width = v.videoWidth; cvs.height = v.videoHeight; }
-          cx.drawImage(v, 0, 0);
-          try {
-            // returnErrors : les codes repérés mais illisibles sur cette image sont aussi signalés (présence)
-            const res = await Z.readBarcodes(cx.getImageData(0, 0, cvs.width, cvs.height), { formats: FAST_FORMATS, tryHarder: true, maxNumberOfSymbols: 4, returnErrors: true });
-            zxActive = true; frameNo++;
-            for (const r of res || []) {
-              if (r.isValid && r.text) detect(r.text, r.format);
-              else { lastUnread = Date.now(); lastUnreadFrame = frameNo; }
-            }
-          } catch (_) {}
+      const alive = () => id === fastId && !!camStream && document.body.contains(m);
+      let k = 0, natBusy = false, lastSend = 0, cvs = null, cx = null;
+      // vitesse affichée sur l'image (images analysées par seconde)
+      const sp = $("#scan-speed", m);
+      let stT = performance.now(), stN = 0, stMs = 0, stNat = 0;
+      const stat = () => {
+        const now = performance.now(); if (now - stT < 1000) return;
+        const s = (now - stT) / 1000, fps = Math.round(stN / s), nfps = Math.round(stNat / s);
+        if (sp) {
+          sp.hidden = false;
+          sp.textContent = `⚡ ${Math.max(fps, nfps)} img/s · QR + codes-barres`;
+          sp.title = `Décodeurs ZXing : ${pool ? pool.length : 0}${pool && pool[0].worker ? " (en parallèle)" : ""} · ${fps} img/s${stN ? ` · ${Math.round(stMs / stN)} ms par image` : ""}${nat ? ` · détecteur intégré : ${nfps} img/s` : ""}`;
         }
-        // en mode « prix écrit », on laisse du temps à la lecture des chiffres
-        await new Promise(r => setTimeout(r, mode === "price" ? 120 : 10));
+        stT = now; stN = 0; stMs = 0; stNat = 0;
+      };
+      // copie directe (VideoFrame) : en cas d'échec passager, autre méthode pendant 3 s puis nouvel essai
+      let vfRetry = 0;
+      const vfFail = () => { vfRetry = performance.now() + 3000; };
+      const grabFrame = async dec => {
+        // image de la caméra confiée telle quelle au décodeur (aucune copie dans la page)
+        if (dec.canFrame && performance.now() >= vfRetry) { try { return { vf: new VideoFrame(v) }; } catch (_) { vfFail(); } }
+        if (dec.canBitmap) return { bitmap: await createImageBitmap(v) }; // copie de l'image traitée hors de la page
+        if (!cvs) { cvs = document.createElement("canvas"); cx = cvs.getContext("2d", { willReadFrequently: true }); }
+        if (cvs.width !== v.videoWidth || cvs.height !== v.videoHeight) { cvs.width = v.videoWidth; cvs.height = v.videoHeight; }
+        cx.drawImage(v, 0, 0);
+        return { img: cx.getImageData(0, 0, cvs.width, cvs.height) };
+      };
+      const onResult = out => {
+        if (!alive()) return;
+        zxActive = true; frameNo++; stN++; stMs += out.ms || 0;
+        for (const r of out.res || []) {
+          if (r.valid && r.text) detect(r.text, r.format);
+          else { lastUnread = Date.now(); lastUnreadFrame = frameNo; } // code visible mais illisible : toujours « présent »
+        }
+        stat();
+      };
+      // prochaine image : dès que la caméra en fournit une nouvelle ; minuterie de secours (40 ms)
+      // si le navigateur ne signale pas les images (fenêtre masquée, économie d'énergie…)
+      let rv = 0, tm = 0;
+      const fire = () => { clearTimeout(tm); if (rv && v.cancelVideoFrameCallback) v.cancelVideoFrameCallback(rv); rv = 0; tick(); };
+      const next = () => { if (v.requestVideoFrameCallback) rv = v.requestVideoFrameCallback(fire); tm = setTimeout(fire, 40); };
+      function tick() {
+        if (!alive()) return;
+        next();
+        if (!v.videoWidth || v.readyState < 2) return;
+        const now = performance.now();
+        if (nat && !natBusy) { // détecteur intégré : lit directement l'image affichée, sans copie
+          natBusy = true;
+          nat.detect(v).then(rs => {
+            if (!alive()) return;
+            stNat++;
+            for (const r of rs) if (r.rawValue) detect(r.rawValue, r.format);
+            stat();
+          }).catch(() => {}).finally(() => { natBusy = false; });
+        }
+        if (!pool) return;
+        // détecteur intégré présent : ZXing en renfort (codes abîmés), à cadence réduite pour économiser la batterie ;
+        // mode « prix écrit » : processeur laissé à la lecture des chiffres
+        const gap = mode === "price" ? 120 : nat ? 150 : 0;
+        if (gap && now - lastSend < gap) return;
+        const dec = pool.find(d => !d.busy); if (!dec) return; // tous occupés : cette image est sautée
+        dec.busy = true; lastSend = now;
+        const opts = nat ? ZX_DEEP : ZX_CYCLE[k++ % 3];
+        grabFrame(dec)
+          .then(f => dec.decode(f, opts).then(out => { if (out.error && f.vf) vfFail(); return out; })) // échec : autre méthode de copie
+          .then(onResult).catch(() => { dec.busy = false; });
       }
+      next();
     }
     // démarrage : caméra allumée, sauf si elle a été désactivée sur la page Ventes
     camQ = camQ.then(() => camWanted ? camStart() : camOff()).catch(() => {});
@@ -2918,25 +3164,90 @@
     }
   }
 
-  function articleForm(article) {
-    const order = articleColumns().map(c => c.name)
-      .concat(["designation", "reference", "categorie", "fournisseur", "marque", "achat", "prix", "stock", "seuil"].map(k => state.map[k]).filter(Boolean));
-    const cols = state.columns.filter(c => !(c.type === "lookup" && c.lookup && c.lookup.multi)).sort((a, b) => {
+  /* Fiche article (ajout ou modification).
+     opts.code    : code-barres scanné à rattacher au nouvel article
+     opts.forSale : article créé depuis le scan → prix de vente obligatoire (il est ajouté aussitôt à la vente)
+     opts.onDone  : appelé avec l'article enregistré (ou null si la fiche est fermée sans enregistrer) */
+  function articleForm(article, opts = {}) {
+    const isNew = !article;
+    const M = state.map;
+    const cc = codeCol();
+    const supCol = findCol(M.fournisseur);
+    // champs essentiels d'abord, dans l'ordre de saisie au comptoir
+    const MAIN = ["designation", "categorie", "marque", "achat", "prix", "stock", "seuil", "fournisseur", "reference"].map(k => M[k]).filter(Boolean);
+    const order = MAIN.concat(articleColumns().map(c => c.name), ["reference"].map(k => M[k]).filter(Boolean));
+    const cols = state.columns.filter(c => !(c.type === "lookup" && c.lookup && c.lookup.multi) && !(cc && c.name === cc.name)).sort((a, b) => {
       const ia = order.indexOf(a.name), ib = order.indexOf(b.name);
       return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
     });
+    // colonnes obligatoires de SharePoint toujours visibles (jamais cachées dans « Autres informations »)
+    const isMain = c => MAIN.includes(c.name) || c.required;
+    const mainCols = cols.filter(isMain), otherCols = cols.filter(c => !isMain(c));
+    // valeurs proposées pour un nouvel article créé depuis un scan : 1 pièce en stock
+    const preset = c => isNew && opts.code && c.name === M.stock ? 1 : "";
+    const isReq = c => c.required || c.name === M.designation || (opts.forSale && c.name === M.prix);
+    const fieldHTML = c => `<label class="field ${c.type === "note" || c.name === M.designation ? "full" : ""}" for="f_${esc(c.name)}">
+        <span>${esc(colTitle(c))}${isReq(c) ? ' <span class="req">*</span>' : ""}</span>${fieldInput(c, article ? (c.type === "lookup" ? article[c.name + "LookupId"] : article[c.name]) : preset(c))}</label>`;
+    const codesVal = (article ? codesOf(article).join(" ") : (opts.code || "")).replace(/(\S)$/, "$1 "); // espace final : prêt pour le code suivant
     const body = `<form id="art-form" class="form-grid" novalidate>
-      ${cols.map(c => `<label class="field ${c.type === "note" || c.name === state.map.designation ? "full" : ""}" for="f_${esc(c.name)}">
-        <span>${esc(colTitle(c))}${c.required ? ' <span class="req">*</span>' : ""}</span>${fieldInput(c, article ? (c.type === "lookup" ? article[c.name + "LookupId"] : article[c.name]) : "")}</label>`).join("")}
+      ${opts.code ? `<div class="full alert info af-code">${ICON.scan}<div>Code-barres scanné : <strong>${esc(opts.code)}</strong>. Il sera rattaché à ce nouvel article.</div></div>` : ""}
+      ${mainCols.map(fieldHTML).join("")}
+      ${M.achat && M.prix ? `<div class="full af-marge" id="af-marge"></div>` : ""}
+      ${isNew && !supCol ? `<label class="field" for="f__sup"><span>Fournisseur</span><input class="input" id="f__sup" list="${supDatalist()}" autocomplete="off" placeholder="Nom du fournisseur"></label>` : ""}
+      <label class="field full" for="f__codes"><span>Codes-barres <span class="muted" style="font-weight:400">(plusieurs possibles : scannez-les l'un après l'autre)</span></span>
+        <input class="input" id="f__codes" value="${esc(codesVal)}" autocomplete="off" placeholder="Scannez le code-barres de la boîte (EAN)…" inputmode="text"></label>
+      ${isNew ? `<div class="full muted af-note">Avec un fournisseur, la quantité et le prix d'achat sont aussi enregistrés comme un achat (menu Achats). La date d'ajout est remplie automatiquement.</div>` : ""}
+      ${otherCols.length ? `<details class="full af-more" ${isNew ? "" : "open"}><summary>Autres informations (${otherCols.length})</summary><div class="form-grid">${otherCols.map(fieldHTML).join("")}</div></details>` : ""}
       <button type="submit" hidden></button>
     </form>`;
     const m = openModal({
       title: article ? "Modifier l'article" : "Nouvel article", body,
-      foot: `<button class="btn" data-close>Annuler</button><button class="btn primary" id="art-save">Enregistrer</button>`
+      foot: `<button class="btn" data-close>Annuler</button><button class="btn primary" id="art-save">Enregistrer${opts.forSale ? " et ajouter à la vente" : ""}</button>`
     });
+    let savedArt = null;
+    if (opts.onDone) {
+      const obs = new MutationObserver(() => { if (!document.body.contains(m)) { obs.disconnect(); opts.onDone(savedArt); } });
+      obs.observe($("#modal-root"), { childList: true });
+    }
+    // marge calculée en direct
+    const marge = () => {
+      const box = $("#af-marge", m); if (!box) return;
+      const pa = parseFloat(($("#f_" + CSS.escape(M.achat), m) || {}).value), pv = parseFloat(($("#f_" + CSS.escape(M.prix), m) || {}).value);
+      if (!(pa > 0) || !(pv > 0)) { box.innerHTML = `<span class="muted">Saisissez le prix d'achat et le prix de vente pour voir la marge.</span>`; return; }
+      const mg = pv - pa;
+      box.innerHTML = `Marge par pièce : <strong class="${mg < 0 ? "neg" : "pos"}">${money(mg)}</strong> <span class="muted">(${Math.round(mg / pa * 100)} % du prix d'achat)</span>${mg < 0 ? ` <span class="neg">— vente à perte</span>` : ""}`;
+    };
+    m.addEventListener("input", e => { if (e.target.id === "f_" + M.achat || e.target.id === "f_" + M.prix) marge(); });
+    marge();
+    // lecteur code-barres dans le champ des codes : Entrée ajoute un espace au lieu d'enregistrer la fiche
+    const codesInp = $("#f__codes", m);
+    // curseur placé après un espace : le code scanné suivant ne se colle pas au précédent
+    let committed = codesInp.value; // valeur après le dernier code complet (pré-remplissage ou Entrée)
+    const sepEnd = () => { if (codesInp.value.trim() && !/\s$/.test(codesInp.value)) codesInp.value += " "; committed = codesInp.value; };
+    codesInp.addEventListener("focus", () => {
+      sepEnd();
+      const n = codesInp.value.length; try { codesInp.setSelectionRange(n, n); } catch (_) {}
+    });
+    codesInp.addEventListener("keydown", e => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        codesInp.value = parseCodes(codesInp.value).join(" ");
+        sepEnd();
+        return;
+      }
+      // 1er caractère d'un nouveau code tapé juste après un code complet : séparateur ajouté d'abord
+      if (e.key.length === 1 && !/\s/.test(e.key) && !e.ctrlKey && !e.metaKey && codesInp.value === committed
+        && codesInp.selectionStart === codesInp.value.length) sepEnd();
+    });
+    setTimeout(() => { const d = M.designation && $("#f_" + CSS.escape(M.designation), m); if (d && isNew) d.focus(); }, 60);
     const save = async () => {
       const form = $("#art-form", m);
       const fields = {};
+      // codes-barres : pas de doublon, et un code ne peut désigner qu'un seul article
+      const codes = parseCodes(codesInp.value);
+      const clash = codes.map(c => [c, codeOwner(c, article)]).find(x => x[1]);
+      if (clash) { codesInp.focus(); return toast(`Le code ${clash[0]} est déjà utilisé par « ${artName(clash[1])} ».`, "bad"); }
+      if (codes.join(" ").length > CODES_MAX) { codesInp.focus(); return toast("Trop de codes-barres pour un seul article.", "bad"); }
       for (const c of cols) {
         const inp = form.elements[c.name];
         if (!inp) continue;
@@ -2963,9 +3274,26 @@
         } else if (val === null || val === "") continue;
         fields[c.name] = val;
       }
+      // champs indispensables : désignation, et prix de vente quand l'article est vendu tout de suite
+      for (const c of cols.filter(isReq)) {
+        const inp = form.elements[c.name]; if (!inp) continue;
+        const v = c.type === "number" || c.type === "currency" ? parseFloat(inp.value) : inp.value.trim();
+        if (v === "" || (typeof v === "number" && (isNaN(v) || (c.name === M.prix && v <= 0)))) {
+          inp.focus();
+          return toast(c.name === M.prix ? "Saisissez le prix de vente : il est utilisé à la vente et imprimé sur l'étiquette." : `Le champ « ${colTitle(c)} » est obligatoire.`, "bad");
+        }
+      }
+      const supInp = $("#f__sup", m);
+      const sup = cleanSup(supInp ? supInp.value : supCol ? (fields[supCol.name] || "") : "");
       const btn = $("#art-save", m);
       busy(btn, true, "Enregistrement…");
       try {
+        // codes-barres : colonne créée au premier code, valeur envoyée seulement si elle change
+        const codesTxt = codes.join(" ");
+        if (codesTxt !== (article ? codesOf(article).join(" ") : "")) {
+          if (codes.length || codeCol()) fields[(await ensureCodeCol()).name] = codesTxt || null;
+        }
+        let a = article;
         if (article) {
           if (Object.keys(fields).length) {
             const upd = await DS.updateArticle(article.id, fields);
@@ -2975,11 +3303,35 @@
         } else {
           const dc = findCol("DATEe"); // date d'ajout renseignée automatiquement si laissée vide
           if (dc && !fields[dc.name]) fields[dc.name] = new Date().toISOString();
-          const a = await DS.createArticle(fields);
+          a = await DS.createArticle(fields);
           state.articles.push(a);
-          toast("Article ajouté.", "ok");
+          // fournisseur + quantité + prix d'achat → achat initial (menu Achats), comme un bon de réception
+          let achatMsg = "";
+          const qty = hasStock() ? +fields[M.stock] || 0 : 0, pa = M.achat ? +fields[M.achat] || 0 : 0;
+          if (sup) {
+            try {
+              const known = supplierNames().find(n => supKey(n) === supKey(sup)) || sup;
+              await ensureSupplier(known);
+              if (qty > 0) {
+                if (!state.achatsReady) { await DS.createAchatsList(); state.achatsReady = true; }
+                const d = new Date();
+                const line = await DS.createAchatLine({
+                  Title: "A" + saleNumber(d).slice(1), ArticleId: parseInt(a.id, 10), Article: String(artName(a)), Fournisseur: known,
+                  Quantite: qty, PrixAchat: pa, Montant: Math.round(qty * pa * 100) / 100, DateAchat: d.toISOString(), Utilisateur: Auth.userName()
+                });
+                (state.achats || (state.achats = [])).push(line);
+                achatMsg = ` Achat enregistré : ${int(qty)} pièce(s) chez ${known}.`;
+              }
+            } catch (err) { achatMsg = ` (achat non enregistré : ${err.message})`; }
+          }
+          toast(`Article « ${artName(a)} » ajouté.${achatMsg}`, achatMsg.startsWith(" (") ? "bad" : "ok");
         }
-        closeModal(); render();
+        codeIndex(true);
+        savedArt = a;
+        closeModal();
+        // depuis le scanner : la page reste telle quelle (vente en cours conservée)
+        if (opts.onDone) { if (currentView() === "articles") render(); }
+        else render();
       } catch (e) { busy(btn, false); toast(e.message, "bad"); }
     };
     $("#art-save", m).addEventListener("click", save);
