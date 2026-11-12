@@ -1282,7 +1282,11 @@
   const ZX_FAST = { formats: ZX_FORMATS, tryHarder: false, tryRotate: true, tryInvert: false, tryDownscale: true, maxNumberOfSymbols: 4, returnErrors: true };
   const ZX_FLASH = { ...ZX_FAST, binarizer: "GlobalHistogram" };
   const ZX_DEEP = { formats: ZX_FORMATS, tryHarder: true, tryRotate: true, tryInvert: true, tryDownscale: true, maxNumberOfSymbols: 4, returnErrors: true };
-  const ZX_CYCLE = [ZX_FAST, ZX_FLASH, ZX_DEEP];
+  //  - centre lissé (1 image sur 4, ~17 ms) : petits codes-barres (tube, chargeur, câble) tenus au centre ; le grain
+  //    de la caméra est moyenné le long des barres. Mesuré sur des barres fines de 2 px : 18 lectures sur 20,
+  //    contre 15 sur 20 pour la lecture approfondie (un agrandissement ×2, lui, n'apportait rien).
+  const ZX_CENTER = { formats: ZX_FORMATS, tryHarder: true, tryRotate: false, tryInvert: false, tryDownscale: false, maxNumberOfSymbols: 2, returnErrors: true, center: 3 };
+  const ZX_CYCLE = [ZX_FAST, ZX_FLASH, ZX_DEEP, ZX_CENTER];
   const ZX_WORKER_SRC = `
 let Z = null, cv = null, cx = null, buf = null, gray = null;
 const viaCanvas = (src, w, h) => {
@@ -1306,6 +1310,29 @@ async function fromVideoFrame(f) {
   } else { const d8 = gray.data; for (let y = 0; y < H; y++) d8.set(buf.subarray(o + y * s, o + y * s + W * 4), y * W * 4); }
   return gray;
 }
+/* centre de l'image (moitié de la largeur et de la hauteur), en niveaux de gris, lissé verticalement sur 2r+1 lignes :
+   le grain de la caméra disparaît, les barres (verticales) restent nettes → petits codes-barres mieux lus */
+let cL = null, cOut = null;
+function centerSmooth(img, r) {
+  const W = img.width, H = img.height, s = img.data;
+  const cw = W >> 1, ch = H >> 1, x0 = (W - cw) >> 1, y0 = (H - ch) >> 1;
+  if (!cL || cL.length !== cw * ch) cL = new Uint8Array(cw * ch);
+  for (let y = 0; y < ch; y++) { let p = ((y0 + y) * W + x0) * 4, q = y * cw; for (let x = 0; x < cw; x++, p += 4) cL[q++] = (s[p] * 77 + s[p + 1] * 150 + s[p + 2] * 29) >> 8; }
+  if (!cOut || cOut.width !== cw || cOut.height !== ch) cOut = new ImageData(cw, ch);
+  const u = new Uint32Array(cOut.data.buffer);
+  for (let x = 0; x < cw; x++) { // moyenne glissante verticale, colonne par colonne
+    let acc = 0, n = 0;
+    for (let y = 0; y < Math.min(r, ch); y++) { acc += cL[y * cw + x]; n++; }
+    for (let y = 0; y < ch; y++) {
+      const ya = y + r, yr = y - r - 1;
+      if (ya < ch) { acc += cL[ya * cw + x]; n++; }
+      if (yr >= 0) { acc -= cL[yr * cw + x]; n--; }
+      const g = (acc / n) | 0;
+      u[y * cw + x] = 0xFF000000 | (g << 16) | (g << 8) | g;
+    }
+  }
+  return cOut;
+}
 self.onmessage = async e => {
   const d = e.data;
   if (d.type === "init") {
@@ -1322,7 +1349,9 @@ self.onmessage = async e => {
       finally { d.vf.close(); }
     }
     else if (d.bitmap) { const b = d.bitmap; try { img = viaCanvas(b, b.width, b.height); } finally { b.close(); } }
-    const res = await Z.readBarcodes(img, d.opts);
+    const { center, ...opts } = d.opts;
+    if (center) img = centerSmooth(img, center);
+    const res = await Z.readBarcodes(img, opts);
     self.postMessage({ type: "result", ms: performance.now() - t0, res: res.map(r => ({ text: r.text, format: r.format, valid: r.isValid })) });
   } catch (err) { self.postMessage({ type: "result", ms: performance.now() - t0, res: [], error: String((err && err.message) || err) }); }
 };`;
@@ -1374,7 +1403,7 @@ self.onmessage = async e => {
         const dec = { busy: false, worker: false, canBitmap: false };
         dec.decode = async (frame, opts) => {
           dec.busy = true; const t0 = performance.now();
-          try { const res = await Z.readBarcodes(frame.img, opts); return { res: res.map(r => ({ text: r.text, format: r.format, valid: r.isValid })), ms: performance.now() - t0 }; }
+          try { const { center, ...o } = opts; const res = await Z.readBarcodes(frame.img, center ? ZX_DEEP : o); return { res: res.map(r => ({ text: r.text, format: r.format, valid: r.isValid })), ms: performance.now() - t0 }; }
           catch (_) { return { res: [], ms: performance.now() - t0 }; } finally { dec.busy = false; }
         };
         return [dec];
@@ -2714,8 +2743,8 @@ self.onmessage = async e => {
       const engP = Promise.all([zxPool().catch(() => null), nativeDetector()]);
       const streamP = navigator.mediaDevices.getUserMedia({
         audio: false,
-        // image HD (codes-barres fins), 30 images/s, mise au point continue
-        video: { ...source, width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 }, advanced: [{ focusMode: "continuous" }] }
+        // image Full HD si la caméra le permet (plus de pixels par barre : petits codes-barres), 30 images/s, mise au point continue
+        video: { ...source, width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30 }, advanced: [{ focusMode: "continuous" }] }
       });
       const [[pool, nat], s] = await Promise.all([engP, streamP]);
       if (!document.body.contains(m) || !camWanted) { s.getTracks().forEach(t => t.stop()); return; }
@@ -2791,7 +2820,7 @@ self.onmessage = async e => {
         if (sp) {
           sp.hidden = false;
           sp.textContent = `⚡ ${Math.max(fps, nfps)} img/s · QR + codes-barres`;
-          sp.title = `Décodeurs ZXing : ${pool ? pool.length : 0}${pool && pool[0].worker ? " (en parallèle)" : ""} · ${fps} img/s${stN ? ` · ${Math.round(stMs / stN)} ms par image` : ""}${nat ? ` · détecteur intégré : ${nfps} img/s` : ""}`;
+          sp.title = `Caméra ${v.videoWidth}×${v.videoHeight} · décodeurs ZXing : ${pool ? pool.length : 0}${pool && pool[0].worker ? " (en parallèle)" : ""} · ${fps} img/s${stN ? ` · ${Math.round(stMs / stN)} ms par image` : ""}${nat ? ` · détecteur intégré : ${nfps} img/s` : ""} · analyse renforcée du centre (petits codes)`;
         }
         stT = now; stN = 0; stMs = 0; stNat = 0;
       };
@@ -2842,7 +2871,8 @@ self.onmessage = async e => {
         if (gap && now - lastSend < gap) return;
         const dec = pool.find(d => !d.busy); if (!dec) return; // tous occupés : cette image est sautée
         dec.busy = true; lastSend = now;
-        const opts = nat ? ZX_DEEP : ZX_CYCLE[k++ % 3];
+        // avec le détecteur intégré : ZXing alterne lecture approfondie et centre lissé (ce que le détecteur rate)
+        const opts = nat ? (k++ % 2 ? ZX_CENTER : ZX_DEEP) : ZX_CYCLE[k++ % ZX_CYCLE.length];
         grabFrame(dec)
           .then(f => dec.decode(f, opts).then(out => { if (out.error && f.vf) vfFail(); return out; })) // échec : autre méthode de copie
           .then(onResult).catch(() => { dec.busy = false; });
