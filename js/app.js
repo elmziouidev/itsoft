@@ -1437,29 +1437,57 @@
     if (/telephone|smartphone|afficheur|lcd|ecran/.test(t)) return "s";
     return "m";
   }
-  /* Une étiquette : QR code + « MODELE - Prix : PRIX », mise en page calculée d'après ses dimensions réelles */
+  /* Informations imprimées à côté du QR code (menu Paramètres). Par défaut : le QR code seul. */
+  const LABEL_INFOS = [
+    ["modele", "Modèle", "ex. REDMI 14C"],
+    ["prix", "Prix de vente", "« Prix : 1890 »"],
+    ["ref", "Référence", "colonne Id_article"],
+    ["categorie", "Catégorie", "ex. SMARTPHONE"],
+    ["code", "Code de l'article", "texte du QR code, ex. ITS:40"],
+    ["entreprise", "Nom de l'entreprise", cfg.nomEntreprise || "ITSoft"]
+  ];
+  const LABEL_INFO_KEY = "itsoft-etiquette-infos";
+  const labelInfoGet = () => { const v = store.get(LABEL_INFO_KEY, null); return v && typeof v === "object" ? v : {}; };
+  const labelInfoText = () => { const i = labelInfoGet(), on = LABEL_INFOS.filter(([k]) => i[k]).map(([, l]) => l.toLowerCase()); return on.length ? "le QR code + " + on.join(", ") : "le QR code seul"; };
+
+  /* Une étiquette : QR code + les informations choisies dans Paramètres, mise en page d'après ses dimensions réelles */
   function labelHTML(a, k, svg) {
-    const S = LABEL_SIZES[k] || LABEL_SIZES.m, ref = F(a, "reference");
+    const S = LABEL_SIZES[k] || LABEL_SIZES.m, I = labelInfoGet();
     const pad = S.h <= 18 ? 0.8 : 1.5;
     const box = `width:${S.w}mm;height:${S.h}mm;padding:${pad}mm ${pad + 0.4}mm`;
-    const model = esc(String(artName(a)).trim());
-    // étiquette étroite : le modèle est imprimé sous le QR code (toujours présent sur l'étiquette)
+    const ref = F(a, "reference"), catv = F(a, "categorie");
+    const model = I.modele ? esc(String(artName(a)).trim()) : "";
+    const price = I.prix ? esc(labelPrice(artPrice(a))) : "";
+    const small = [I.entreprise ? cfg.nomEntreprise : "", I.ref && ref != null && ref !== "" ? ref : "", I.categorie && catv ? catv : "", I.code ? labelCode(a) : ""]
+      .filter(Boolean).map(x => esc(String(x))).join(" · ");
+    // QR code seul : centré, le plus grand possible (lecture la plus rapide)
+    if (!model && !price && !small) {
+      const q = Math.max(9, Math.min(S.w, S.h) - 2 * pad);
+      return `<div class="label lbz-qr" style="${box}"><div class="label-qr" style="width:${q}mm;height:${q}mm">${svg}</div></div>`;
+    }
+    // étiquette étroite : les informations sous le QR code
     if (S.w < 26) {
       const q2 = Math.max(9, Math.min(S.w - 2 * pad, S.h - 2 * pad - 3.2));
-      return `<div class="label lbz-col" style="${box}"><div class="label-qr" style="width:${q2}mm;height:${q2}mm">${svg}</div><div class="label-model" style="font-size:5pt">${model}</div></div>`;
+      return `<div class="label lbz-col" style="${box}"><div class="label-qr" style="width:${q2}mm;height:${q2}mm">${svg}</div><div class="label-model" style="font-size:5pt">${[model, price ? "Prix : " + price : "", small].filter(Boolean).join(" · ")}</div></div>`;
     }
     const qrmm = Math.max(9, Math.min(S.h - 2 * pad, S.w * 0.46));
     const qr = `<div class="label-qr" style="width:${qrmm}mm;height:${qrmm}mm">${svg}</div>`;
     const fs = Math.max(5.2, Math.min(13, S.h * 0.27)), lines = S.h <= 18 ? 2 : 3;
-    // très petite étiquette (hauteur ≤ 15 mm) : QR code + modèle à côté
-    if (S.h <= 15) return `<div class="label lbz-mini" style="${box}">${qr}<div class="label-txt">
-        <div class="label-line" style="font-size:${Math.max(5, fs)}pt;-webkit-line-clamp:2">${model}</div><div class="label-pr" style="font-size:${Math.max(5.6, fs + 0.8)}pt">Prix : ${esc(labelPrice(artPrice(a)))}</div></div></div>`;
-    if (S.h <= 18) return `<div class="label lbz-mini" style="${box}">${qr}<div class="label-txt">
-        <div class="label-line" style="font-size:${fs}pt;-webkit-line-clamp:${lines}">${esc(String(artName(a)).trim())} -</div><div class="label-pr" style="font-size:${fs + 1.6}pt">Prix : ${esc(labelPrice(artPrice(a)))}</div></div></div>`;
+    const sep = model && price ? " -" : "";
+    if (S.h <= 18) { // petite étiquette : QR code + texte à côté
+      const fsm = S.h <= 15 ? Math.max(5, fs) : fs;
+      return `<div class="label lbz-mini" style="${box}">${qr}<div class="label-txt">`
+        + (model ? `<div class="label-line" style="font-size:${fsm}pt;-webkit-line-clamp:${small && price ? 1 : 2}">${model}${sep}</div>` : "")
+        + (price ? `<div class="label-pr" style="font-size:${S.h <= 15 ? Math.max(5.6, fs + 0.8) : fs + 1.6}pt">Prix : ${price}</div>` : "")
+        + (small ? `<div class="label-ref" style="font-size:${Math.max(4.6, fsm * 0.75)}pt">${small}</div>` : "")
+        + `</div></div>`;
+    }
     // « MODELE - » puis « Prix : PRIX » sur sa propre ligne : le prix n'est jamais coupé, même avec un nom long
-    return `<div class="label" style="${box}"><div class="label-txt"><div class="label-line" style="font-size:${fs}pt;-webkit-line-clamp:${lines - 1}">${esc(String(artName(a)).trim())} -</div>
-        <div class="label-pr" style="font-size:${Math.min(14, fs + (labelPrice(artPrice(a)).length > 3 ? 0.3 : 1.2))}pt">Prix : ${esc(labelPrice(artPrice(a)))}</div>
-        <div class="label-ref" style="font-size:${Math.max(5, fs * 0.62)}pt">${esc(cfg.nomEntreprise)}${ref != null && ref !== "" ? " · " + esc(ref) : ""}</div></div>${qr}</div>`;
+    return `<div class="label" style="${box}"><div class="label-txt">`
+      + (model ? `<div class="label-line" style="font-size:${fs}pt;-webkit-line-clamp:${price ? lines - 1 : lines}">${model}${sep}</div>` : "")
+      + (price ? `<div class="label-pr" style="font-size:${Math.min(14, fs + (price.length > 3 ? 0.3 : 1.2))}pt">Prix : ${price}</div>` : "")
+      + (small ? `<div class="label-ref" style="font-size:${Math.max(5, fs * (model || price ? 0.62 : 0.8))}pt">${small}</div>` : "")
+      + `</div>${qr}</div>`;
   }
 
   /* Génération des QR codes / étiquettes des articles choisis */
@@ -1467,15 +1495,16 @@
     const cat = a => String(F(a, "categorie") || "Sans catégorie");
     // articles rangés par catégorie puis par nom (même ordre qu'à l'impression)
     const all = list.filter(a => a && a.id);
-    // l'étiquette porte le PRIX DE VENTE : un article sans prix de vente n'est pas imprimé
-    const noPv = all.filter(noSalePrice);
-    if (!state.map.prix) return toast("La colonne « Prix de vente » n'existe pas encore : créez-la depuis le menu Articles.", "bad");
+    // si l'étiquette porte le PRIX DE VENTE (Paramètres), un article sans prix de vente n'est pas imprimé
+    const withPrice = !!labelInfoGet().prix;
+    const noPv = withPrice ? all.filter(noSalePrice) : [];
+    if (withPrice && !state.map.prix) return toast("La colonne « Prix de vente » n'existe pas encore : créez-la depuis le menu Articles.", "bad");
     if (noPv.length) toast(`${int(noPv.length)} article(s) sans prix de vente, non imprimé(s) : ${noPv.slice(0, 5).map(artName).join(", ")}${noPv.length > 5 ? "…" : ""}. Saisissez leur prix de vente dans Articles.`, "bad");
-    const arts = all.filter(a => !noSalePrice(a)).sort((a, b) => cat(a).localeCompare(cat(b), "fr") || String(artName(a)).localeCompare(String(artName(b)), "fr", { numeric: true }));
+    const arts = all.filter(a => !noPv.includes(a)).sort((a, b) => cat(a).localeCompare(cat(b), "fr") || String(artName(a)).localeCompare(String(artName(b)), "fr", { numeric: true }));
     if (!arts.length) return noPv.length ? undefined : toast("Aucun article à étiqueter.", "bad");
     const m = openModal({
       title: `QR codes à imprimer — ${int(arts.length)} article(s)`, size: "cart lb-modal",
-      body: `<div class="alert info lb-unique">${ICON.info}<div class="grow"><strong>Un seul QR code par article</strong> (ex. <code>ITS:62</code>) : il ne change jamais. Chaque étiquette porte ce QR code et le texte « MODELE - Prix : PRIX ».</div></div>
+      body: `<div class="alert info lb-unique">${ICON.info}<div class="grow"><strong>Un seul QR code par article</strong> (ex. <code>ITS:62</code>) : il ne change jamais. Chaque étiquette porte <strong>${esc(labelInfoText())}</strong> <a href="#/parametres" data-close class="lb-set-link">(modifier dans Paramètres)</a>.</div></div>
         <div class="lb-all">
           <label class="field lb-all-size">Taille des étiquettes<select class="input" id="lb-size">${sizeOptions("auto", true)}</select></label>
           <label class="field lb-custom" hidden>Largeur (mm)<input class="input" id="lb-cw" type="number" min="15" max="120" step="0.5" value="${LABEL_SIZES.custom.w}" inputmode="decimal"></label>
@@ -4306,6 +4335,45 @@
           </div>
         </div>`;
 
+  /* Paramètres : informations imprimées avec le QR code (aperçu en direct) */
+  const labelInfoSectionHTML = () => {
+    const I = labelInfoGet();
+    return `
+        <div class="card" id="lbinfo-card">
+          <div class="card-head"><h2>${ICON.tag} Impression des QR codes</h2></div>
+          <div class="card-pad">
+            <p class="muted" style="margin:0 0 12px;font-size:14px">Informations imprimées à côté du QR code de chaque article. Aucune case cochée : <strong>seul le QR code</strong> est imprimé (le plus grand possible). Choix mémorisé sur cet appareil.</p>
+            <div class="lbinfo-grid">${LABEL_INFOS.map(([k, l, h]) => `<label class="cam-opt"><input type="checkbox" data-lbinfo="${k}" ${I[k] ? "checked" : ""}><span><strong>${esc(l)}</strong><span class="muted">${esc(h)}</span></span></label>`).join("")}</div>
+            <div class="row" style="gap:8px;margin-top:10px;flex-wrap:wrap"><button class="btn sm" type="button" id="lbinfo-none">QR code seul</button><button class="btn sm" type="button" id="lbinfo-std">Modèle + prix de vente</button></div>
+            <div class="lbinfo-prev"><span class="muted" style="font-size:13px">Aperçu (étiquette petite 40 × 25 mm) :</span><div class="lb-preview" id="lbinfo-prev"><span class="muted">Chargement…</span></div></div>
+          </div>
+        </div>`;
+  };
+  function labelInfoSectionInit() {
+    const card = $("#lbinfo-card"); if (!card) return;
+    const sample = state.articles.find(a => artPrice(a) > 0) || state.articles[0];
+    const prev = () => {
+      const box = $("#lbinfo-prev"); if (!box || !sample) return;
+      if (!window.qrcode) return;
+      box.innerHTML = labelHTML(sample, "s", qrSVG(labelCode(sample)));
+    };
+    loadScript(LIB_QR).then(prev).catch(() => {});
+    const save = (I, msg) => {
+      store.set(LABEL_INFO_KEY, I);
+      $$("[data-lbinfo]", card).forEach(c => { c.checked = !!I[c.dataset.lbinfo]; });
+      prev(); if (msg) toast(msg, "ok");
+    };
+    card.addEventListener("change", e => {
+      const c = e.target.closest("[data-lbinfo]"); if (!c) return;
+      const I = { ...labelInfoGet(), [c.dataset.lbinfo]: c.checked };
+      save(I, "Étiquettes : " + (LABEL_INFOS.some(([k]) => I[k]) ? labelInfoText() : "QR code seul") + ".");
+    });
+    card.addEventListener("click", e => {
+      if (e.target.closest("#lbinfo-none")) save({}, "Étiquettes : QR code seul.");
+      if (e.target.closest("#lbinfo-std")) save({ modele: true, prix: true }, "Étiquettes : QR code + modèle et prix de vente.");
+    });
+  }
+
   async function camRefresh(askPermission) {
     const box = $("#cam-list"); if (!box) return;
     if (!window.isSecureContext || !navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) {
@@ -4418,6 +4486,7 @@
           </div>
         </div>
         ${camSectionHTML()}
+        ${labelInfoSectionHTML()}
         <div class="card">
           <div class="card-head"><h2>Affichage</h2></div>
           <div class="card-pad"><label class="field" style="max-width:260px">Thème<select class="input" id="theme-sel">
@@ -4427,6 +4496,7 @@
         </div>
       </div>`;
     camSectionInit();
+    labelInfoSectionInit();
     const seuilFilter = () => {
       const q = norm(($("#seuil-q") || {}).value || "");
       $$("#seuil-table tbody tr").forEach(tr => { tr.hidden = q && !norm(tr.dataset.cat).includes(q); });

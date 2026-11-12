@@ -954,3 +954,8 @@ body.has-dock .view { padding-bottom: calc(var(--dock-h, 0px) + 40px); }
 .pv-missing { color: #c2410c !important; font-style: italic; font-weight: 600; }
 .pv-notice { margin: 0 0 10px; padding: 9px 12px; border-radius: 10px; background: #fff7ed; border: 1px solid #fed7aa; color: #9a3412; font-size: 13.5px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .pv-notice.bad { background: #fef2f2; border-color: #fecaca; color: #991b1b; }
+
+/* Paramètres : informations imprimées avec le QR code */
+.lbinfo-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px; }
+.lbinfo-prev { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-top: 14px; padding: 12px; border-radius: 12px; background: var(--surface-2); border: 1px dashed var(--border); }
+.label.lbz-qr { justify-content: center; }
