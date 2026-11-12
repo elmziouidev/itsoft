@@ -1757,6 +1757,16 @@
     state.ventes = state.ventes.filter(v => v.Title !== num);
   }
 
+  /* Page Ventes : caméra du scanner activée / désactivée (mémorisé sur cet appareil).
+     Désactivée, la vente continue avec le lecteur code-barres ou la saisie du code. */
+  const VCAM_KEY = "itsoft-ventes-camera";
+  const vcamGet = () => { try { return localStorage.getItem(VCAM_KEY) !== "0"; } catch (_) { return true; } };
+  const vcamSet = on => { try { localStorage.setItem(VCAM_KEY, on ? "1" : "0"); } catch (_) {} };
+  const CAM_SVG = off => `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 8.5A2 2 0 0 1 5 6.5h2.2L9 4h6l1.8 2.5H19a2 2 0 0 1 2 2V18a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><circle cx="12" cy="13" r="3.6"/>${off ? '<path d="M3 3l18 18"/>' : ""}</svg>`;
+  const camToggleHTML = (on, busy) => `<button type="button" class="cam-toggle ${on ? "on" : "off"}" id="sp-cam" aria-pressed="${on}" ${busy ? "disabled" : ""}
+      title="${on ? "Désactiver la caméra : le lecteur code-barres et la saisie du code restent actifs" : "Activer la caméra pour scanner les étiquettes"}">
+      <span class="ct-ico">${CAM_SVG(!on)}</span><span class="ct-txt"><strong>${on ? "Caméra activée" : "Caméra désactivée"}</strong><small>${busy ? "Démarrage…" : on ? "Cliquer pour désactiver" : "Cliquer pour activer"}</small></span><span class="ct-sw" aria-hidden="true"><span></span></span></button>`;
+
   let scanSeq = 0;
   /* Bouton « Scanner » / F2 : sur la page Ventes, le scanner intégré à droite ; ailleurs, la fenêtre de scan */
   function openScanner() {
@@ -1779,7 +1789,7 @@
         <div class="scan-log" id="scan-log"><div class="muted" style="padding:8px 2px">Visez l'étiquette (QR code) ou le code-barres : l'article est ajouté au panier avec son prix.</div></div>`;
     let m;
     if (panel) {
-      panel.innerHTML = `<div class="scan-panel"><div class="sp-head"><h2>${ICON.scan} Scanner</h2><button class="btn sm ghost" id="sp-stop" type="button" title="Arrêter la caméra">Arrêter</button></div>
+      panel.innerHTML = `<div class="scan-panel"><div class="sp-head"><h2>${ICON.scan} Scanner</h2><div class="sp-tools">${camToggleHTML(vcamGet())}<button class="btn sm ghost" id="sp-stop" type="button" title="Fermer le scanner (la vente en cours non validée est abandonnée)">Fermer</button></div></div>
         <div class="sp-body">${scanBody}</div>
         <div class="sp-foot"><button class="btn sc-cancel" id="scan-cancel" type="button" title="Vider la vente en cours : rien n'est enregistré">✕ Annuler la vente</button><button class="btn primary sc-validate" id="scan-cart" type="button">✔ Valider la vente</button></div></div>`;
       m = panel.firstElementChild;
@@ -2321,14 +2331,67 @@
 
     // caméra
     const camBox = $(".scan-cam", m);
+    const camWrap = $(".scan-wrap", m);
     const camMsg = t => { const w = $("#scan-wait", m); if (w) w.hidden = true; if (camBox) camBox.innerHTML = `<div class="scan-msg">${t}</div>`; };
-    if (!window.isSecureContext || !navigator.mediaDevices) { camMsg("Caméra indisponible ici (connexion non sécurisée). Utilisez le champ Code ou un lecteur code-barres."); return; }
-    try { await loadScript(LIB_SCAN); } catch (e) { camMsg(esc(e.message)); return; }
-    if (!document.body.contains(m)) return;
-    const F_ = window.Html5QrcodeSupportedFormats;
-    // formats utiles seulement : chaque format en plus ralentit l'analyse de chaque image
-    // QR + tous les codes-barres courants des produits (EAN, UPC, Code 128/39/93, ITF)
-    const formats = F_ ? [F_.QR_CODE, F_.EAN_13, F_.EAN_8, F_.UPC_A, F_.UPC_E, F_.CODE_128, F_.CODE_39, F_.CODE_93, F_.ITF].filter(v => v !== undefined) : undefined;
+    let formats; // formats lus (fixés une fois la bibliothèque chargée)
+    let camWanted = panel ? vcamGet() : true, camQ = Promise.resolve(), camSelDone = false;
+    const camToggleSync = busy => { const b = $("#sp-cam", m); if (b) b.outerHTML = camToggleHTML(camWanted, busy); };
+    /* caméra désactivée : plus aucune image lue, le lecteur code-barres et la saisie restent actifs */
+    async function camOff() {
+      fastId++; await stop();
+      if (!document.body.contains(m)) return;
+      camWrap.classList.add("cam-is-off");
+      const w = $("#scan-wait", m); if (w) w.hidden = true;
+      const c = $("#cam-ctrl", m); if (c) { c.hidden = true; c.innerHTML = ""; }
+      camBox.innerHTML = `<div class="cam-off-msg">${CAM_SVG(true)}<strong>Caméra désactivée</strong><span>Le lecteur code-barres et le champ Code restent actifs.</span><button type="button" class="btn sm primary" data-cam-on>Activer la caméra</button></div>`;
+    }
+    async function camStart() {
+      camWrap.classList.remove("cam-is-off");
+      camBox.innerHTML = "";
+      const wt = $("#scan-wait", m); if (wt) wt.hidden = false;
+      if (!window.isSecureContext || !navigator.mediaDevices) { camMsg("Caméra indisponible ici (connexion non sécurisée). Utilisez le champ Code ou un lecteur code-barres."); return; }
+      try { await loadScript(LIB_SCAN); } catch (e) { camMsg(esc(e.message)); return; }
+      if (!document.body.contains(m) || !camWanted) return;
+      const F_ = window.Html5QrcodeSupportedFormats;
+      // formats utiles seulement : chaque format en plus ralentit l'analyse de chaque image
+      // QR + tous les codes-barres courants des produits (EAN, UPC, Code 128/39/93, ITF)
+      formats = F_ ? [F_.QR_CODE, F_.EAN_13, F_.EAN_8, F_.UPC_A, F_.UPC_E, F_.CODE_128, F_.CODE_39, F_.CODE_93, F_.ITF].filter(v => v !== undefined) : undefined;
+      try {
+        const pref = camGet() || null;
+        await start(pref ? { deviceId: { exact: pref } } : { facingMode: "environment" }).catch(() => start({ facingMode: "environment" }));
+        const cams = camSelDone ? [] : await window.Html5Qrcode.getCameras().catch(() => []);
+        if (cams.length > 1 && document.body.contains(m)) {
+          camSelDone = true;
+          const sel = $("#scan-cam-sel", m);
+          sel.innerHTML = cams.map(c => `<option value="${esc(c.id)}" ${c.id === pref ? "selected" : ""}>${esc(c.label || "Caméra")}</option>`).join("");
+          $("#scan-cam-field", m).hidden = false;
+          sel.addEventListener("change", () => {
+            camSet(sel.value);
+            if (!camWanted) return; // caméra désactivée : le choix servira à la prochaine activation
+            camQ = camQ.then(() => start({ deviceId: { exact: sel.value } })).catch(e => camMsg("Caméra non disponible : " + esc(e.message || e)));
+          });
+        }
+      } catch (e) {
+        const msg = String(e && (e.name || e.message) || e);
+        camMsg(/NotAllowed|Permission/i.test(msg) ? "Accès à la caméra refusé. Autorisez la caméra pour ce site dans le navigateur, ou utilisez le champ Code."
+          : /NotFound|no camera|Requested device/i.test(msg) ? "Aucune caméra détectée. Branchez une caméra ou utilisez un lecteur code-barres (champ Code)."
+          : "Caméra indisponible : " + esc(msg));
+      }
+    }
+    /* bouton « Caméra activée / désactivée » (page Ventes) : les démarrages / arrêts s'enchaînent dans l'ordre */
+    const camSwitch = on => {
+      camWanted = on; if (panel) vcamSet(on);
+      camToggleSync(on);
+      camQ = camQ.then(() => on ? camStart() : camOff()).catch(() => {}).then(() => {
+        if (!document.body.contains(m)) return;
+        camToggleSync(false);
+        if (!on) { const i = $("#scan-input", m); if (i) i.focus(); }
+      });
+    };
+    if (panel) m.addEventListener("click", e => {
+      if (e.target.closest("#sp-cam")) return camSwitch(!camWanted);
+      if (e.target.closest("[data-cam-on]")) return camSwitch(true);
+    });
     // précision : QR, EAN et UPC ont une clé de contrôle (lecture sûre dès la 1re fois) ;
     // les autres codes-barres doivent être lus deux fois à l'identique avant d'être acceptés
     const SAFE = /QR_?CODE|EAN.?13|EAN.?8|UPC.?A|UPC.?E/i;
@@ -2443,25 +2506,9 @@
         await new Promise(r => setTimeout(r, mode === "price" ? 120 : 10));
       }
     }
-    try {
-      const pref = camGet() || null;
-      await start(pref ? { deviceId: { exact: pref } } : { facingMode: "environment" }).catch(() => start({ facingMode: "environment" }));
-      const cams = await window.Html5Qrcode.getCameras().catch(() => []);
-      if (cams.length > 1 && document.body.contains(m)) {
-        const sel = $("#scan-cam-sel", m);
-        sel.innerHTML = cams.map(c => `<option value="${esc(c.id)}" ${c.id === pref ? "selected" : ""}>${esc(c.label || "Caméra")}</option>`).join("");
-        $("#scan-cam-field", m).hidden = false;
-        sel.addEventListener("change", async () => {
-          camSet(sel.value);
-          try { await start({ deviceId: { exact: sel.value } }); } catch (e) { camMsg("Caméra non disponible : " + esc(e.message || e)); }
-        });
-      }
-    } catch (e) {
-      const msg = String(e && (e.name || e.message) || e);
-      camMsg(/NotAllowed|Permission/i.test(msg) ? "Accès à la caméra refusé. Autorisez la caméra pour ce site dans le navigateur, ou utilisez le champ Code."
-        : /NotFound|no camera|Requested device/i.test(msg) ? "Aucune caméra détectée. Branchez une caméra ou utilisez un lecteur code-barres (champ Code)."
-        : "Caméra indisponible : " + esc(msg));
-    }
+    // démarrage : caméra allumée, sauf si elle a été désactivée sur la page Ventes
+    camQ = camQ.then(() => camWanted ? camStart() : camOff()).catch(() => {});
+    await camQ;
   }
 
   /* Lecteur code-barres USB/Bluetooth (« douchette ») : il tape le code très vite puis Entrée.
@@ -4210,7 +4257,7 @@
     const dock = $("#scan-dock");
     const DOCK_KEY = "itsoft-ventes-scan";
     const dockIdle = () => {
-      dock.innerHTML = `<div class="scan-panel sp-idle"><div class="sp-head"><h2>${ICON.scan} Scanner</h2></div>
+      dock.innerHTML = `<div class="scan-panel sp-idle"><div class="sp-head"><h2>${ICON.scan} Scanner</h2><div class="sp-tools">${camToggleHTML(false)}</div></div>
         <button type="button" class="scan-hero sp-start" id="sp-start"><span class="scan-hero-ico">${ICON.scan}</span>
           <span class="scan-hero-txt"><strong>Démarrer le scan</strong><small>Les articles scannés s'ajoutent en direct au tableau des ventes</small></span></button>
         <p class="muted" style="font-size:13px;margin:10px 2px 0">La caméra choisie dans Paramètres est utilisée. Un lecteur code-barres USB fonctionne aussi.</p></div>`;
@@ -4225,7 +4272,11 @@
       });
     };
     state.ventesScanStart = () => { if (state.scanPanelHandle && document.body.contains(state.scanPanelHandle.m)) state.scanPanelHandle.focus(); else dockStart(); };
-    dock.addEventListener("click", e => { if (e.target.closest("#sp-start")) dockStart(); });
+    dock.addEventListener("click", e => {
+      if (e.target.closest("#sp-start")) return dockStart();
+      // scanner fermé : « Activer la caméra » ouvre le scanner caméra allumée
+      if (e.target.closest(".sp-idle #sp-cam")) { vcamSet(true); dockStart(); }
+    });
     const draw = () => {
       const list = apply();
       const sales = list.filter(s => !s.repair), reps = list.filter(s => s.repair);
