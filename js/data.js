@@ -744,7 +744,11 @@
     async updateArticle(id, fields) {
       const f = await this.call(`/sites/${this.siteId}/lists/${this.articlesListId}/items/${id}/fields`,
         { method: "PATCH", body: JSON.stringify(fields) });
-      return resolveLookups({ ...f, id: String(id) }, this.columns);
+      // SharePoint ne renvoie pas les champs vidés : on les remet explicitement à vide
+      // (sinon l'ancienne valeur, ex. un code-barres retiré, resterait affichée jusqu'au rechargement)
+      const merged = { ...f };
+      for (const k of Object.keys(fields)) if (!(k in merged)) merged[k] = fields[k] === "" || fields[k] === undefined ? null : fields[k];
+      return resolveLookups({ ...merged, id: String(id) }, this.columns);
     },
     async deleteArticle(id) {
       await this.call(`/sites/${this.siteId}/lists/${this.articlesListId}/items/${id}`, { method: "DELETE" });

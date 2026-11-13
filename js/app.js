@@ -489,8 +489,10 @@
         const i = arr.findIndex(x => String(x.id) === String(id));
         if (i >= 0) { arr.splice(i, 1); n++; touched.add(k); }
       }
-      for (const it of c.upserts || []) {
+      for (let it of c.upserts || []) {
         if (!it) continue;
+        // article reçu de SharePoint : les colonnes absentes sont vides (SharePoint n'envoie pas les champs vides)
+        if (k === "articles") { it = { ...it }; for (const col of state.columns) if (!(col.name in it)) it[col.name] = null; }
         const cur = arr.find(x => String(x.id) === String(it.id));
         if (!cur) { arr.push(it); n++; touched.add(k); }
         else if (Object.keys(it).some(f => JSON.stringify(cur[f]) !== JSON.stringify(it[f]))) { Object.assign(cur, it); n++; touched.add(k); }
@@ -1801,8 +1803,12 @@ self.onmessage = async e => {
     const val = parseCodes([...codesOf(a), code].join(" ")).join(" ");
     if (val.length > CODES_MAX) throw new Error("trop de codes-barres pour cet article : retirez-en un");
     Object.assign(a, await DS.updateArticle(a.id, { [col.name]: val }));
+    a[col.name] = val;
     codeIndex(true);
+    refreshRow(a);
   }
+  /* ligne du tableau des articles mise à jour tout de suite (même si une fenêtre est ouverte par-dessus) */
+  const refreshRow = a => { if (currentView() === "articles" && state.refreshArticle) try { state.refreshArticle(a, true); } catch (_) {} };
 
   function codesDialog(a, ctx = {}) {
     const camOK = window.isSecureContext && navigator.mediaDevices && navigator.mediaDevices.getUserMedia;
@@ -1838,7 +1844,9 @@ self.onmessage = async e => {
       const val = codes.join(" ");
       if (val.length > CODES_MAX) throw new Error("trop de codes-barres pour cet article : retirez-en un");
       Object.assign(a, await DS.updateArticle(a.id, { [col.name]: val || null }));
+      a[col.name] = val || null; // valeur enregistrée, même si SharePoint ne renvoie pas un champ vidé
       codeIndex(true); draw(); toast(msg, "ok");
+      refreshRow(a);
     };
     let saving = false;
     const add = async raw => {
@@ -3504,6 +3512,7 @@ self.onmessage = async e => {
       try {
         const upd = await DS.updateArticle(a.id, { [key]: v });
         Object.assign(a, upd);
+        if (col.type !== "lookup") a[key] = v; // valeur enregistrée (un champ vidé reste vide à l'écran)
         restoreRow(a, col.name);
         refreshFoot();
       } catch (e) {
@@ -4432,6 +4441,8 @@ self.onmessage = async e => {
           if (Object.keys(fields).length) {
             const upd = await DS.updateArticle(article.id, fields);
             Object.assign(article, upd);
+            // valeurs enregistrées (champs vidés compris), même si SharePoint ne les renvoie pas
+            for (const [k, v] of Object.entries(fields)) if (!/LookupId$/.test(k)) article[k] = v;
           }
           toast("Article mis à jour.", "ok");
         } else {
