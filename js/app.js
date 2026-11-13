@@ -1785,7 +1785,7 @@ self.onmessage = async e => {
   const codesCellHTML = a => {
     const cs = codesOf(a);
     return cs.length
-      ? `<span class="code-chips">${cs.slice(0, 2).map(c => `<span class="code-chip">${esc(c)}</span>`).join("")}${cs.length > 2 ? `<span class="code-more">+${cs.length - 2}</span>` : ""}</span>`
+      ? `<span class="code-chips">${cs.slice(0, 2).map(c => `<span class="code-chip">${esc(c)}<button type="button" class="chip-x" data-rmcode="${esc(c)}" title="Retirer ce code-barres" aria-label="Retirer le code-barres ${esc(c)}">✕</button></span>`).join("")}${cs.length > 2 ? `<span class="code-more">+${cs.length - 2}</span>` : ""}</span>`
       : `<span class="code-none">＋ Associer</span>`;
   };
 
@@ -1804,6 +1804,15 @@ self.onmessage = async e => {
     if (val.length > CODES_MAX) throw new Error("trop de codes-barres pour cet article : retirez-en un");
     Object.assign(a, await DS.updateArticle(a.id, { [col.name]: val }));
     a[col.name] = val;
+    codeIndex(true);
+    refreshRow(a);
+  }
+  /* retire un code-barres d'un article (croix du tableau) */
+  async function detachCode(a, code) {
+    const col = codeCol(); if (!col) return;
+    const val = codesOf(a).filter(c => c !== code).join(" ") || null;
+    Object.assign(a, await DS.updateArticle(a.id, { [col.name]: val }));
+    a[col.name] = val; // champ vidé : SharePoint ne le renvoie pas
     codeIndex(true);
     refreshRow(a);
   }
@@ -3268,8 +3277,9 @@ self.onmessage = async e => {
     f.code = ""; // (filtre « Codes-barres » retiré)
     const val = (a, c) => (c.virtual ? artCA(a) : a[c.name]);
     // tri : un clic sur un en-tête le place en premier critère (temporairement) ; sinon le tri réglé dans Paramètres
-    if (f.sort && !findCol(f.sort)) f.sort = null;
-    const sortKeys = () => { const base = sortGet(); return f.sort ? [{ col: f.sort, dir: f.dir }, ...base.filter(k => k.col !== f.sort)] : base; };
+    // tri : uniquement celui réglé dans Paramètres (les en-têtes du tableau ne trient plus)
+    f.sort = null;
+    const sortKeys = () => sortGet();
 
     const apply = () => {
       const q = norm(f.q);
@@ -3343,8 +3353,7 @@ self.onmessage = async e => {
     const footHTML = list => `<span>${int(list.length)} article(s) sur ${int(state.articles.length)}</span>` +
       (hasStock() ? `<span>Quantité totale : <strong>${int(list.reduce((t, a) => t + artStock(a), 0))}</strong></span>` : "") +
       (hasCA() ? `<span>Valeur du stock : <strong>${money(list.reduce((t, a) => t + artCA(a), 0))}</strong></span>` : "") +
-      (f.sort ? `<button type="button" class="link-btn" id="sort-reset" title="Revenir au tri réglé dans Paramètres">↺ Tri par défaut</button>`
-        : `<a class="muted" href="#/parametres" title="Régler l'ordre de tri dans Paramètres">Tri : ${esc(sortGet().map(k => `${(sortableCols().find(c => c.name === k.col) || {}).label || k.col} ${k.dir > 0 ? "↑" : "↓"}`).join(", puis "))}</a>`) +
+      `<a class="muted" href="#/parametres" title="Modifier l'ordre de tri dans Paramètres">Tri : ${esc(sortGet().map(k => `${(sortableCols().find(c => c.name === k.col) || {}).label || k.col} ${k.dir > 0 ? "↑" : "↓"}`).join(", puis "))} (Paramètres)</a>` +
       `<span class="muted hide-sm">Cliquez sur un article pour le vendre · sur une autre cellule pour la modifier</span>`;
 
     /* Affichage progressif : les premières lignes tout de suite, la suite au fil du défilement */
@@ -3380,7 +3389,7 @@ self.onmessage = async e => {
       const list = apply();
       curList = list; shown = Math.min(PAGE, list.length);
       $("#art-table").innerHTML = list.length ? `<div class="table-scroll"><table class="table responsive compact">
-        <thead><tr><th class="sel-col"><input type="checkbox" class="sel-cb" id="sel-all" title="Sélectionner tous les articles affichés" aria-label="Sélectionner tous les articles affichés"></th>${layout.map(c => `<th class="sortable ${isNumCol(c) ? "num" : ""}${priceCls(c)}" data-sort="${esc(c.name)}" draggable="true" title="Cliquer pour trier · glisser pour déplacer la colonne"><span class="grip" aria-hidden="true">⋮⋮</span>${esc(colTitle(c))}${sortMark(c)}</th>`).join("")}<th></th></tr></thead>
+        <thead><tr><th class="sel-col"><input type="checkbox" class="sel-cb" id="sel-all" title="Sélectionner tous les articles affichés" aria-label="Sélectionner tous les articles affichés"></th>${layout.map(c => `<th class="colhead ${isNumCol(c) ? "num" : ""}${priceCls(c)}" data-sort="${esc(c.name)}" draggable="true" title="Glisser pour déplacer la colonne · le tri se règle dans Paramètres"><span class="grip" aria-hidden="true">⋮⋮</span>${esc(colTitle(c))}${sortMark(c)}</th>`).join("")}<th></th></tr></thead>
         <tbody>${freeRows()}${list.slice(0, shown).map(a => `<tr data-id="${esc(a.id)}">${rowInner(a)}</tr>`).join("")}</tbody></table>
         ${shown < list.length ? `<button class="more-row" id="art-more" type="button">Afficher plus d'articles…</button>` : ""}</div>
         <div class="table-foot" id="art-foot">${footHTML(list)}</div>`
@@ -3573,10 +3582,19 @@ self.onmessage = async e => {
     };
     el.onclick = async e => {
       if (e.target.closest("#art-more")) return appendMore();
+      // ✕ sur un code-barres : retiré tout de suite, sans ouvrir de fenêtre
+      const rmc = e.target.closest("[data-rmcode]");
+      if (rmc) {
+        const a = artById(rmc.closest("[data-codes]").dataset.codes), code = rmc.dataset.rmcode;
+        if (!a || rmc.disabled) return;
+        rmc.disabled = true; rmc.closest(".code-chip").classList.add("removing");
+        try { await detachCode(a, code); toast(`Code ${code} retiré de « ${artName(a)} ».`, "ok"); }
+        catch (err) { rmc.disabled = false; rmc.closest(".code-chip").classList.remove("removing"); toast("Retrait impossible : " + err.message, "bad"); }
+        return;
+      }
       const cd = e.target.closest("[data-codes]");
       // « ＋ Associer » (aucun code) : caméra tout de suite ; codes déjà présents : fiche pour les gérer
       if (cd) { const a = artById(cd.dataset.codes); if (a) return codesOf(a).length ? openCodes(a) : scanAssociate(a); }
-      if (e.target.closest("#sort-reset")) { f.sort = null; return drawTable(); }
       const th0 = e.target.closest("[data-thumb]");
       if (th0) { const a = state.articles.find(x => x.id === th0.dataset.thumb); if (a) return showPhoto(a); }
       const fr = e.target.closest("[data-free-add],[data-free-sell]");
@@ -3592,8 +3610,6 @@ self.onmessage = async e => {
       const cell = e.target.closest("td.editable");
       if (cell && !cell.classList.contains("editing")) return startEdit(cell);
       if (e.target.closest("#col-reset")) { store.set(COL_ORDER_KEY, null); try { localStorage.removeItem(COL_ORDER_KEY); } catch (_) {} return viewArticles(el); }
-      const th = e.target.closest("[data-sort]");
-      if (th) { if (f.sort === th.dataset.sort) f.dir = -f.dir; else { f.sort = th.dataset.sort; f.dir = 1; } return drawTable(); }
       if (e.target.closest("#art-new")) return articleForm(null);
       if (e.target.closest("#pv-create")) { const b = e.target.closest("#pv-create"); busy(b, true, "Création…"); return ensurePrixVente(true); }
       if (e.target.closest("#dm-create")) { const b = e.target.closest("#dm-create"); busy(b, true, "Création…"); return ensureDateMaj(true); }
