@@ -1115,6 +1115,12 @@ body.has-dock .view { padding-bottom: calc(var(--dock-h, 0px) + 40px); }
 .codes-td .code-chip.removing { opacity: .45; }
 /* en-têtes du tableau des articles : déplaçables, mais plus de tri au clic (tri réglé dans Paramètres) */
 .table th.colhead { cursor: grab; user-select: none; }
+/* Paramètres : même seuil d'alerte pour toutes les catégories */
+.seuil-all { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 0 16px 4px; padding: 10px 12px; border-radius: 10px; background: var(--primary-soft); border: 1px solid color-mix(in srgb, var(--primary) 22%, transparent); }
+.seuil-all-lab { display: inline-flex; align-items: center; gap: 6px; font-weight: 700; font-size: 14px; }
+.seuil-all-lab svg { width: 16px; height: 16px; }
+.seuil-all .input { width: 90px; text-align: right; }
+.seuil-all-hint { font-size: 12.5px; flex-basis: 100%; }
 /* Paramètres : critères de tri */
 .sort-rows { display: flex; flex-direction: column; gap: 8px; }
 .sort-row { display: grid; grid-template-columns: 90px minmax(0, 1fr) minmax(0, 220px); gap: 8px; align-items: center; }

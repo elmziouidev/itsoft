@@ -5892,6 +5892,12 @@ self.onmessage = async e => {
       </tr>`;
     }).join("");
     return `<div class="card">${head}
+      <div class="seuil-all">
+        <span class="seuil-all-lab">${ICON.tag} Même seuil pour toutes les catégories</span>
+        <input class="input" id="seuil-all-v" type="number" min="0" step="1" inputmode="numeric" placeholder="${int(cfg.seuilAlerteDefaut)}" aria-label="Seuil à appliquer à toutes les catégories">
+        <button class="btn" id="seuil-all-go" type="button">Appliquer à toutes</button>
+        <span class="muted seuil-all-hint">Tous les articles de toutes les catégories · vide = seuil par défaut (${int(cfg.seuilAlerteDefaut)})</span>
+      </div>
       <div class="card-head compact-head" style="border-top:0">
         <div class="search" style="flex:0 1 260px">${ICON.search}<input class="input" id="seuil-q" type="search" placeholder="Filtrer les catégories…"></div>
         <span class="spacer"></span><button class="btn primary" id="seuil-save" disabled>Enregistrer les seuils</button>
@@ -6184,21 +6190,37 @@ self.onmessage = async e => {
         try { await DS.createSeuilColumn(); state.categories = await DS.loadCategories(); toast("Colonne créée.", "ok"); return viewParametres(el); }
         catch (err) { busy(b, false); return toast("Création impossible : " + err.message + " — ajoutez la colonne manuellement.", "bad"); }
       }
+      // même seuil pour toutes les catégories : rempli partout (même les catégories masquées par le filtre), puis enregistré
+      if (e.target.closest("#seuil-all-go")) {
+        const raw = $("#seuil-all-v").value.trim();
+        const v = raw === "" ? "" : Math.max(0, parseInt(raw, 10) || 0);
+        const rows = $$("#seuil-table tbody tr");
+        if (!rows.length) return;
+        const nbArts = state.articles.filter(a => F(a, "categorie")).length;
+        const txt = v === "" ? `le seuil par défaut (${int(cfg.seuilAlerteDefaut)})` : `le seuil <strong>${int(v)}</strong>`;
+        if (!(await confirmBox("Même seuil pour toutes les catégories", `Appliquer ${txt} aux <strong>${int(rows.length)}</strong> catégories (${int(nbArts)} articles) et l'enregistrer tout de suite ?`, "Appliquer et enregistrer", false))) return;
+        rows.forEach(tr => {
+          const inp = tr.querySelector("[data-seuil]");
+          inp.value = v === "" ? "" : String(v);
+          inp.dispatchEvent(new Event("input", { bubbles: true }));
+        });
+        if (!$$("#seuil-table tr.changed").length) return toast("Toutes les catégories ont déjà ce seuil.", "ok");
+        $("#seuil-save").disabled = false;
+        return $("#seuil-save").click();
+      }
       if (e.target.closest("#seuil-save")) {
         const b = e.target.closest("#seuil-save");
         const rows = $$("#seuil-table tr.changed");
         if (!rows.length) return;
         busy(b, true, "Enregistrement…");
-        let errors = 0;
-        for (const tr of rows) {
+        // 4 catégories à la fois (bien plus rapide qu'une par une quand il y en a beaucoup)
+        const { errors } = await runPool(rows, async tr => {
           const inp = tr.querySelector("[data-seuil]");
           const v = inp.value === "" ? null : Math.max(0, parseInt(inp.value, 10) || 0);
-          try {
-            let cat = (state.categories || []).find(x => norm(x.name) === norm(tr.dataset.cat));
-            if (!cat) cat = await DS.createCategorie(tr.dataset.cat); // catégorie absente de la liste : on l'ajoute
-            await DS.setCategorieSeuil(cat.id, v);
-          } catch (err) { errors++; console.warn(err); }
-        }
+          let cat = (state.categories || []).find(x => norm(x.name) === norm(tr.dataset.cat));
+          if (!cat) cat = await DS.createCategorie(tr.dataset.cat); // catégorie absente de la liste : on l'ajoute
+          await DS.setCategorieSeuil(cat.id, v);
+        }, (d, t) => { b.textContent = `Enregistrement… ${d}/${t}`; });
         state.categories = await DS.loadCategories();
         toast(errors ? `${errors} seuil(s) non enregistré(s).` : `${rows.length} seuil(s) enregistré(s).`, errors ? "bad" : "ok");
         return viewParametres(el);
