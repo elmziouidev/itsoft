@@ -1084,6 +1084,24 @@ body.has-dock .view { padding-bottom: calc(var(--dock-h, 0px) + 40px); }
 .table th.col-pv { color: var(--pv-fg); background: var(--pv-bg); }
 .table th.col-achat { color: var(--pa-fg); background: var(--pa-bg); }
 .table td.col-pv .pv-missing { font-weight: 600; font-size: .92em; }
+/* colonne « Mise à jour » mise en évidence (violet) */
+:root { --dm-fg: #6d28d9; --dm-bg: rgba(124, 58, 237, .08); }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --dm-fg: #c4b5fd; --dm-bg: rgba(167, 139, 250, .12); } }
+:root[data-theme="dark"] { --dm-fg: #c4b5fd; --dm-bg: rgba(167, 139, 250, .12); }
+.table td.col-dm { color: var(--dm-fg); font-weight: 700; background: var(--dm-bg); }
+.table th.col-dm { color: var(--dm-fg); background: var(--dm-bg); }
+.table td.col-dm .dm-empty { color: var(--dm-fg); opacity: .75; font-weight: 500; }
+.table td.col-dm .dm-date.dm-old { color: #b45309; }
+/* « Article non classé » et « Service » : toujours en tête du tableau, mais ils défilent avec le reste */
+.table-scroll .free-row td { position: static !important; top: auto !important; }
+/* Paramètres : critères de tri */
+.sort-rows { display: flex; flex-direction: column; gap: 8px; }
+.sort-row { display: grid; grid-template-columns: 90px minmax(0, 1fr) minmax(0, 220px); gap: 8px; align-items: center; }
+.sort-n { font-weight: 700; font-size: 14px; }
+@media (max-width: 560px) { .sort-row { grid-template-columns: 1fr 1fr; } .sort-n { grid-column: 1 / -1; } }
+/* lien « ↺ Tri par défaut » dans le pied du tableau */
+.link-btn { border: 0; background: none; padding: 0; font: inherit; color: var(--primary); cursor: pointer; text-decoration: underline; }
+.table thead th sup { font-size: 9px; margin-left: 1px; }
 
 /* Colonne « Mise à jour » (date saisie à la main) */
 .dm-empty { font-size: 12.5px; font-style: italic; }

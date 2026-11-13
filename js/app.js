@@ -1789,6 +1789,21 @@ self.onmessage = async e => {
 
   /* Codes-barres d'un article : scan à la douchette ou à la caméra, retrait, enchaînement « article suivant ».
      ctx.next(a) → article suivant sans code-barres · ctx.onClose() · ctx.add : code lu par la caméra à ajouter */
+  /* rattache un code-barres à un article, avec les contrôles (étiquette QR, doublon, code déjà pris) */
+  async function attachCode(a, raw) {
+    const code = String(raw || "").trim();
+    if (!code) throw new Error("Aucun code lu.");
+    if (/^ITS[:\-]?\d+$/i.test(code)) throw new Error("C'est une étiquette QR ITSoft : scannez le code-barres imprimé sur la boîte.");
+    if (codesOf(a).some(c => codeKey(c) === codeKey(code))) throw new Error("Ce code est déjà associé à cet article.");
+    const other = codeOwner(code, a);
+    if (other) throw new Error(`Le code ${code} est déjà utilisé par « ${artName(other)} ».`);
+    const col = await ensureCodeCol();
+    const val = parseCodes([...codesOf(a), code].join(" ")).join(" ");
+    if (val.length > CODES_MAX) throw new Error("trop de codes-barres pour cet article : retirez-en un");
+    Object.assign(a, await DS.updateArticle(a.id, { [col.name]: val }));
+    codeIndex(true);
+  }
+
   function codesDialog(a, ctx = {}) {
     const camOK = window.isSecureContext && navigator.mediaDevices && navigator.mediaDevices.getUserMedia;
     const m = openModal({
@@ -1829,12 +1844,8 @@ self.onmessage = async e => {
     const add = async raw => {
       const code = String(raw || "").trim(); if (!code || saving) return;
       const bad = msg => { beep(false); toast(msg, "bad"); inp.select(); };
-      if (/^ITS[:\-]?\d+$/i.test(code)) return bad("C'est une étiquette QR ITSoft : scannez le code-barres imprimé sur la boîte.");
-      if (codesOf(a).some(c => codeKey(c) === codeKey(code))) return bad("Ce code est déjà associé à cet article.");
-      const other = codeOwner(code, a);
-      if (other) return bad(`Le code ${code} est déjà utilisé par « ${artName(other)} ».`);
       saving = true; const b = $("#cd-ok", m); busy(b, true, "…");
-      try { await save(parseCodes([...codesOf(a), code].join(" ")), `Code ${code} associé à « ${artName(a)} ».`); beep(true); inp.value = ""; }
+      try { await attachCode(a, code); draw(); toast(`Code ${code} associé à « ${artName(a)} ».`, "ok"); beep(true); inp.value = ""; }
       catch (e) { bad(e.message); }
       finally { saving = false; if (document.body.contains(b)) busy(b, false); inp.focus(); }
     };
@@ -2289,7 +2300,7 @@ self.onmessage = async e => {
       m = panel.firstElementChild;
     } else m = openModal(opts.pick ? {
       // lecture d'un seul code-barres (fiche « Codes-barres de l'article »)
-      title: "Scanner le code-barres de la boîte", size: "cart scan-modal", body: scanBody,
+      title: opts.pickTitle || "Scanner le code-barres de la boîte", size: "cart scan-modal", body: scanBody,
       foot: `<button class="btn" data-close>Annuler</button><button id="scan-cart" type="button" hidden></button>`
     } : {
       title: "Scanner des articles", size: "cart scan-modal", body: scanBody,
@@ -3198,6 +3209,35 @@ self.onmessage = async e => {
     });
   })();
 
+  /* ============ Tri du tableau des articles : plusieurs critères, réglés dans Paramètres (mémorisés sur l'appareil) ============
+     Par défaut : catégorie croissante, puis prix de vente décroissant. */
+  const SORT_KEY = "itsoft-tri-articles";
+  const sortDefault = () => [{ col: state.map.categorie, dir: 1 }, { col: state.map.prix, dir: -1 }].filter(s => s.col && findCol(s.col));
+  const sortGet = () => {
+    const s = store.get(SORT_KEY, null);
+    const ok = Array.isArray(s) ? s.filter(x => x && x.col && findCol(x.col) && (x.dir === 1 || x.dir === -1)) : null;
+    return ok && ok.length ? ok : sortDefault();
+  };
+  // colonnes proposées pour le tri (toutes celles de la liste des articles, y compris la date d'ajout masquée)
+  const sortableCols = () => state.columns.filter(c => !(c.type === "lookup" && c.lookup && c.lookup.multi) && c.name !== CODE_FIELD && c.name !== state.map.photo)
+    .map(c => ({ name: c.name, label: c.name === "DATEe" ? "Date d'ajout" : colTitle(c) }))
+    .sort((a, b) => a.label.localeCompare(b.label, "fr"));
+  /* comparaison sur plusieurs critères ; les cases vides vont toujours à la fin ; à égalité, l'article ajouté en dernier d'abord */
+  function multiCompare(keys) {
+    const cols = keys.map(k => ({ c: findCol(k.col), dir: k.dir })).filter(k => k.c);
+    return (a, b) => {
+      for (const { c, dir } of cols) {
+        const x = a[c.name], y = b[c.name], ex = x == null || x === "", ey = y == null || y === "";
+        if (ex || ey) { if (ex && ey) continue; return ex ? 1 : -1; }
+        const r = typeof x === "number" && typeof y === "number" ? x - y
+          : !isNaN(+x) && !isNaN(+y) && String(x).trim() !== "" && String(y).trim() !== "" ? +x - +y
+          : String(x).localeCompare(String(y), "fr", { numeric: true, sensitivity: "base" });
+        if (r) return r * dir;
+      }
+      return (+b.id || 0) - (+a.id || 0);
+    };
+  }
+
   function viewArticles(el) {
     const f = state.filters.articles;
     const cats = categories(true); // catégories des articles + celles de la liste des catégories
@@ -3217,36 +3257,26 @@ self.onmessage = async e => {
         layout.sort((x, y) => pos(x) - pos(y));
       }
     }
-    if (!f.code) f.code = "";
-    const nCodes = state.articles.filter(a => codesOf(a).length).length;
+    f.code = ""; // (filtre « Codes-barres » retiré)
     const val = (a, c) => (c.virtual ? artCA(a) : a[c.name]);
-    // tri par défaut : date d'ajout (colonne DATEe) la plus récente en premier — même quand la colonne est masquée
-    const addedCol = findCol("DATEe");
-    if (!f.sort || !(layout.some(c => c.name === f.sort) || (addedCol && f.sort === addedCol.name))) {
-      const dc = addedCol || layout.find(c => c.type === "dateTime" && c.name !== dateMajName());
-      if (dc) { f.sort = dc.name; f.dir = -1; } else { f.sort = layout.length ? layout[0].name : ""; f.dir = 1; }
-    }
+    // tri : un clic sur un en-tête le place en premier critère (temporairement) ; sinon le tri réglé dans Paramètres
+    if (f.sort && !findCol(f.sort)) f.sort = null;
+    const sortKeys = () => { const base = sortGet(); return f.sort ? [{ col: f.sort, dir: f.dir }, ...base.filter(k => k.col !== f.sort)] : base; };
 
     const apply = () => {
       const q = norm(f.q);
-      const sc = layout.find(c => c.name === f.sort) || (addedCol && f.sort === addedCol.name ? addedCol : null);
       return state.articles.filter(a => {
         if (f.cat && F(a, "categorie") !== f.cat) return false;
         if (f.stock === "low" && !(hasStock() && artStock(a) <= artSeuil(a))) return false;
         if (f.stock === "out" && !(hasStock() && artStock(a) <= 0)) return false;
-        if (f.code === "avec" && !codesOf(a).length) return false;
-        if (f.code === "sans" && codesOf(a).length) return false;
         if (q && !searchKey(a).includes(q)) return false;
         return true;
-      }).sort((a, b) => {
-        if (!sc) return 0;
-        const x = val(a, sc), y = val(b, sc);
-        if (x == null || x === "") return 1;
-        if (y == null || y === "") return -1;
-        const r = (typeof x === "number" && typeof y === "number") ? x - y : String(x).localeCompare(String(y), "fr", { numeric: true });
-        // à égalité, l'article ajouté en dernier (identifiant le plus grand) passe en premier
-        return r * f.dir || ((+b.id || 0) - (+a.id || 0));
-      });
+      }).sort(multiCompare(sortKeys()));
+    };
+    // flèches de tri dans les en-têtes (avec le rang du critère : ▲¹ ▼²)
+    const sortMark = c => {
+      const ks = sortKeys(), i = ks.findIndex(k => k.col === c.name);
+      return i < 0 ? "" : ` ${ks[i].dir > 0 ? "▲" : "▼"}${ks.length > 1 ? `<sup>${i + 1}</sup>` : ""}`;
     };
 
     el.innerHTML = `
@@ -3255,10 +3285,6 @@ self.onmessage = async e => {
           <div class="search">${ICON.search}<input class="input" id="art-q" type="search" placeholder="Rechercher…" value="${esc(f.q)}"></div>
           ${cats.length || catCanAdd ? `<select class="input" id="art-cat" style="width:auto;flex:0 1 190px"><option value="">Toutes catégories</option>${catCanAdd ? `<option value="__new__">＋ Nouvelle catégorie…</option>` : ""}${cats.map(c => `<option ${f.cat === c ? "selected" : ""}>${esc(c)}</option>`).join("")}</select>` : ""}
           ${hasStock() ? `<select class="input" id="art-stock" style="width:auto;flex:0 1 160px"><option value="">Tout le stock</option><option value="low" ${f.stock === "low" ? "selected" : ""}>Stock faible</option><option value="out" ${f.stock === "out" ? "selected" : ""}>En rupture</option></select>` : ""}
-          <select class="input" id="art-code" style="width:auto;flex:0 1 200px" title="Articles avec ou sans code-barres associé (le QR code, lui, existe pour tous)">
-            <option value="">Codes-barres : tous</option>
-            <option value="avec" ${f.code === "avec" ? "selected" : ""}>Avec code-barres (${int(nCodes)})</option>
-            <option value="sans" ${f.code === "sans" ? "selected" : ""}>Sans code-barres (${int(state.articles.length - nCodes)})</option></select>
           ${state.map.photo && cfg.afficherPhotos ? `<a class="btn" href="#/photos" title="Rechercher des photos par catégorie">${ICON.search}<span class="hide-sm">Photos</span></a>` : ""}
           <button class="btn" id="art-labels" title="Générer les QR codes des articles cochés (ou de ceux affichés)">${ICON.tag}<span class="hide-sm">QR codes</span></button>
           <button class="btn" id="art-export" title="Exporter en CSV">${ICON.download}<span class="hide-sm">Exporter</span></button>
@@ -3266,7 +3292,6 @@ self.onmessage = async e => {
         </div>
         ${pvNotice()}${dmNotice()}
         <div class="sel-bar" id="sel-bar" hidden></div>
-        <div class="code-bar" id="code-bar" hidden></div>
         <div id="art-table"></div>
       </div>`;
 
@@ -3284,7 +3309,7 @@ self.onmessage = async e => {
     const selTd = a => `<td class="sel-col" data-label="Sélection"><input type="checkbox" class="sel-cb" data-sel="${esc(a.id)}" ${sel.has(a.id) ? "checked" : ""} aria-label="Sélectionner ${esc(artName(a))}"></td>`;
 
     // prix d'achat et prix de vente mis en évidence (couleur + fond léger)
-    const priceCls = c => c.name === state.map.prix ? " col-pv" : c.name === state.map.achat ? " col-achat" : "";
+    const priceCls = c => c.name === state.map.prix ? " col-pv" : c.name === state.map.achat ? " col-achat" : c.name === dateMajName() ? " col-dm" : "";
     const tdHTML = (a, c) => {
       if (c.virtual) return `<td class="num ca" data-label="${esc(colTitle(c))}">${money(artCA(a))}</td>`;
       if (c === codesC) return `<td class="codes-td" data-codes="${esc(a.id)}" data-label="Codes-barres" title="Cliquer pour scanner, ajouter ou retirer des codes-barres">${codesCellHTML(a)}</td>`;
@@ -3310,6 +3335,8 @@ self.onmessage = async e => {
     const footHTML = list => `<span>${int(list.length)} article(s) sur ${int(state.articles.length)}</span>` +
       (hasStock() ? `<span>Quantité totale : <strong>${int(list.reduce((t, a) => t + artStock(a), 0))}</strong></span>` : "") +
       (hasCA() ? `<span>Valeur du stock : <strong>${money(list.reduce((t, a) => t + artCA(a), 0))}</strong></span>` : "") +
+      (f.sort ? `<button type="button" class="link-btn" id="sort-reset" title="Revenir au tri réglé dans Paramètres">↺ Tri par défaut</button>`
+        : `<a class="muted" href="#/parametres" title="Régler l'ordre de tri dans Paramètres">Tri : ${esc(sortGet().map(k => `${(sortableCols().find(c => c.name === k.col) || {}).label || k.col} ${k.dir > 0 ? "↑" : "↓"}`).join(", puis "))}</a>`) +
       `<span class="muted hide-sm">Cliquez sur un article pour le vendre · sur une autre cellule pour la modifier</span>`;
 
     /* Affichage progressif : les premières lignes tout de suite, la suite au fil du défilement */
@@ -3345,27 +3372,26 @@ self.onmessage = async e => {
       const list = apply();
       curList = list; shown = Math.min(PAGE, list.length);
       $("#art-table").innerHTML = list.length ? `<div class="table-scroll"><table class="table responsive compact">
-        <thead><tr><th class="sel-col"><input type="checkbox" class="sel-cb" id="sel-all" title="Sélectionner tous les articles affichés" aria-label="Sélectionner tous les articles affichés"></th>${layout.map(c => `<th class="sortable ${isNumCol(c) ? "num" : ""}${priceCls(c)}" data-sort="${esc(c.name)}" draggable="true" title="Cliquer pour trier · glisser pour déplacer la colonne"><span class="grip" aria-hidden="true">⋮⋮</span>${esc(colTitle(c))}${f.sort === c.name ? (f.dir > 0 ? " ▲" : " ▼") : ""}</th>`).join("")}<th></th></tr></thead>
+        <thead><tr><th class="sel-col"><input type="checkbox" class="sel-cb" id="sel-all" title="Sélectionner tous les articles affichés" aria-label="Sélectionner tous les articles affichés"></th>${layout.map(c => `<th class="sortable ${isNumCol(c) ? "num" : ""}${priceCls(c)}" data-sort="${esc(c.name)}" draggable="true" title="Cliquer pour trier · glisser pour déplacer la colonne"><span class="grip" aria-hidden="true">⋮⋮</span>${esc(colTitle(c))}${sortMark(c)}</th>`).join("")}<th></th></tr></thead>
         <tbody>${freeRows()}${list.slice(0, shown).map(a => `<tr data-id="${esc(a.id)}">${rowInner(a)}</tr>`).join("")}</tbody></table>
         ${shown < list.length ? `<button class="more-row" id="art-more" type="button">Afficher plus d'articles…</button>` : ""}</div>
         <div class="table-foot" id="art-foot">${footHTML(list)}</div>`
         : `<div class="empty">Aucun article ne correspond aux critères.</div>`;
       setupMore();
-      pinFree();
       selBar();
-      codeBar(list);
     };
-    /* compteurs du filtre et bandeau « associer en série » (filtre « Sans code-barres ») */
-    const codeBar = list => {
-      const n = state.articles.filter(a => codesOf(a).length).length, s = $("#art-code");
-      if (s) { s.options[1].textContent = `Avec code-barres (${int(n)})`; s.options[2].textContent = `Sans code-barres (${int(state.articles.length - n)})`; }
-      const b = $("#code-bar"); if (!b) return;
-      b.hidden = f.code !== "sans";
-      b.innerHTML = f.code !== "sans" ? "" : list.length
-        ? `<span>${ICON.scan}<strong>${int(list.length)}</strong> article(s) sans code-barres. Scannez leur boîte l'un après l'autre (douchette ou caméra).</span>
-           <button class="btn primary" id="code-series" type="button">▶ Associer en série</button>`
-        : `<span>✔ Tous les articles affichés ont un code-barres.</span>`;
-    };
+    /* « ＋ Associer » : la caméra s'ouvre tout de suite ; le code lu est rattaché à l'article */
+    const scanAssociate = a => scanDialog({
+      pick: async code => {
+        try {
+          await attachCode(a, code);
+          beep(true);
+          toast(`Code ${code} associé à « ${artName(a)} ».`, "ok");
+        } catch (e) { beep(false); toast(e.message, "bad"); }
+        if (currentView() === "articles" && document.body.contains($("#art-table"))) { state.refreshArticle ? state.refreshArticle(a, true) : drawTable(); }
+      },
+      pickTitle: `Code-barres de « ${artName(a)} »`
+    });
     // ouverture de la fiche des codes ; « suivant » = prochain article affiché sans code-barres
     const openCodes = a => codesDialog(a, {
       next: cur => { // dans l'ordre du tableau, après l'article en cours (puis retour au début)
@@ -3373,12 +3399,6 @@ self.onmessage = async e => {
         return all.slice(i + 1).find(x => x !== cur) || all.find(x => x !== cur) || null;
       },
       onClose: () => { if (currentView() === "articles" && document.body.contains($("#art-table"))) drawTable(); }
-    });
-    /* position des lignes figées : juste sous l'en-tête, l'une sous l'autre */
-    const pinFree = () => requestAnimationFrame(() => {
-      const th = $("#art-table thead"); if (!th) return;
-      let top = th.offsetHeight;
-      $$("#art-table tr.free-row").forEach(tr => { tr.style.setProperty("--fr-top", top + "px"); top += tr.offsetHeight; });
     });
     const refreshFoot = () => { const ft = $("#art-foot"); if (ft) ft.innerHTML = footHTML(apply()); };
     const rowEl = id => $(`#art-table tr[data-id="${CSS.escape(String(id))}"]`);
@@ -3541,13 +3561,13 @@ self.onmessage = async e => {
         f.cat = e.target.value; drawTable();
       }
       if (e.target.id === "art-stock") { f.stock = e.target.value; drawTable(); }
-      if (e.target.id === "art-code") { f.code = e.target.value; drawTable(); }
     };
     el.onclick = async e => {
       if (e.target.closest("#art-more")) return appendMore();
       const cd = e.target.closest("[data-codes]");
-      if (cd) { const a = artById(cd.dataset.codes); if (a) return openCodes(a); }
-      if (e.target.closest("#code-series")) { const l = apply().filter(x => !codesOf(x).length); if (l.length) return openCodes(l[0]); }
+      // « ＋ Associer » (aucun code) : caméra tout de suite ; codes déjà présents : fiche pour les gérer
+      if (cd) { const a = artById(cd.dataset.codes); if (a) return codesOf(a).length ? openCodes(a) : scanAssociate(a); }
+      if (e.target.closest("#sort-reset")) { f.sort = null; return drawTable(); }
       const th0 = e.target.closest("[data-thumb]");
       if (th0) { const a = state.articles.find(x => x.id === th0.dataset.thumb); if (a) return showPhoto(a); }
       const fr = e.target.closest("[data-free-add],[data-free-sell]");
@@ -5943,6 +5963,49 @@ self.onmessage = async e => {
     });
   }
 
+  /* ============ Paramètres : ordre de tri du tableau des articles (jusqu'à 3 critères) ============ */
+  const sortSectionHTML = () => `
+        <div class="card" id="sort-card">
+          <div class="card-head"><h2>Tri du tableau des articles</h2></div>
+          <div class="card-pad">
+            <p class="muted" style="margin:0 0 12px;font-size:14px">Ordre d'affichage de la page Articles : 1er critère, puis le 2e pour départager, puis le 3e. Mémorisé sur cet appareil. « Article non classé » et « Service » restent toujours en tête.</p>
+            <div class="sort-rows" id="sort-rows"></div>
+            <div class="row" style="gap:8px;margin-top:10px;flex-wrap:wrap"><button class="btn sm" type="button" id="sort-def">Rétablir : catégorie ↑ puis prix de vente ↓</button></div>
+          </div>
+        </div>`;
+  function sortSectionInit() {
+    const card = $("#sort-card"); if (!card) return;
+    const cols = sortableCols();
+    const draw = () => {
+      const ks = sortGet();
+      $("#sort-rows", card).innerHTML = [0, 1, 2].map(i => {
+        const k = ks[i] || { col: "", dir: 1 };
+        return `<div class="sort-row" data-i="${i}"><span class="sort-n">${i + 1}${i ? "<sup>e</sup>" : "<sup>er</sup>"} critère</span>
+          <select class="input" data-scol>${i ? `<option value="">— aucun —</option>` : ""}${cols.map(c => `<option value="${esc(c.name)}" ${c.name === k.col ? "selected" : ""}>${esc(c.label)}</option>`).join("")}</select>
+          <select class="input" data-sdir ${k.col ? "" : "disabled"}><option value="1" ${k.dir > 0 ? "selected" : ""}>Croissant (A→Z, 0→9)</option><option value="-1" ${k.dir < 0 ? "selected" : ""}>Décroissant (Z→A, 9→0)</option></select></div>`;
+      }).join("");
+    };
+    const save = () => {
+      const ks = [], seen = new Set();
+      $$(".sort-row", card).forEach(r => {
+        const col = $("[data-scol]", r).value, dir = +$("[data-sdir]", r).value || 1;
+        if (col && !seen.has(col)) { seen.add(col); ks.push({ col, dir }); }
+      });
+      store.set(SORT_KEY, ks);
+      state.filters.articles.sort = null; // le tri réglé ici remplace un tri cliqué dans le tableau
+      draw();
+      toast("Tri des articles : " + sortGet().map(k => `${(cols.find(c => c.name === k.col) || {}).label || k.col} ${k.dir > 0 ? "↑" : "↓"}`).join(", puis ") + ".", "ok");
+    };
+    draw();
+    card.addEventListener("change", e => { if (e.target.closest("[data-scol],[data-sdir]")) save(); });
+    card.addEventListener("click", e => {
+      if (!e.target.closest("#sort-def")) return;
+      try { localStorage.removeItem(SORT_KEY); } catch (_) {}
+      state.filters.articles.sort = null; draw();
+      toast("Tri des articles : catégorie croissante, puis prix de vente décroissant.", "ok");
+    });
+  }
+
   async function camRefresh(askPermission) {
     const box = $("#cam-list"); if (!box) return;
     if (!window.isSecureContext || !navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) {
@@ -6055,6 +6118,7 @@ self.onmessage = async e => {
           </div>
         </div>
         ${camSectionHTML()}
+        ${sortSectionHTML()}
         ${labelInfoSectionHTML()}
         <div class="card">
           <div class="card-head"><h2>Affichage</h2></div>
@@ -6066,6 +6130,7 @@ self.onmessage = async e => {
       </div>`;
     camSectionInit();
     labelInfoSectionInit();
+    sortSectionInit();
     const seuilFilter = () => {
       const q = norm(($("#seuil-q") || {}).value || "");
       $$("#seuil-table tbody tr").forEach(tr => { tr.hidden = q && !norm(tr.dataset.cat).includes(q); });
