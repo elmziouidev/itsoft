@@ -1387,7 +1387,10 @@
     if (c.name === state.map.designation) return `<span class="name-cell">${thumbHTML(a)}<span class="name-text">${v == null || v === "" ? empty : esc(v)}</span></span>`;
     if (c.name === state.map.prix) return v == null || v === "" || !(+v > 0) ? '<span class="muted pv-missing" title="Prix de vente à saisir">à saisir</span>' : money(v);
     if (c.name === state.map.achat) return v == null || v === "" ? empty : money(v);
-    if (c.name === state.map.stock) { const st = stockStatus(a); return `<span class="badge ${st.cls}" title="${esc(st.label)}">${int(v)}</span>`; }
+    if (c.name === state.map.stock) { // pastille d'état : « 0 · Rupture », « 1 · Faible », sinon le chiffre seul
+      const st = stockStatus(a), etat = st.cls === "bad" ? " · Rupture" : st.cls === "warn" ? " · Faible" : "";
+      return `<span class="stock-pill ${st.cls || "ok"}" title="${esc(st.label)} (seuil d'alerte : ${int(artSeuil(a))})">${int(v)}${etat}</span>`;
+    }
     if (c.name === dateMajName()) { // date de mise à jour saisie à la main
       if (v == null || v === "") return '<span class="muted dm-empty" title="Cliquer pour saisir la date de mise à jour">à dater</span>';
       const j = Math.floor((Date.now() - new Date(v).getTime()) / 864e5);
@@ -3327,7 +3330,7 @@ self.onmessage = async e => {
     const selTd = a => `<td class="sel-col" data-label="Sélection"><input type="checkbox" class="sel-cb" data-sel="${esc(a.id)}" ${sel.has(a.id) ? "checked" : ""} aria-label="Sélectionner ${esc(artName(a))}"></td>`;
 
     // prix d'achat et prix de vente mis en évidence (couleur + fond léger)
-    const priceCls = c => c.name === state.map.prix ? " col-pv" : c.name === state.map.achat ? " col-achat" : c.name === dateMajName() ? " col-dm" : "";
+    const priceCls = c => c.name === state.map.prix ? " col-pv" : c.name === state.map.achat ? " col-achat" : c.name === dateMajName() ? " col-dm" : c.name === state.map.stock ? " col-stock" : "";
     const tdHTML = (a, c) => {
       if (c.virtual) return `<td class="num ca" data-label="${esc(colTitle(c))}">${money(artCA(a))}</td>`;
       if (c === codesC) return `<td class="codes-td" data-codes="${esc(a.id)}" data-label="Codes-barres" title="Cliquer pour scanner, ajouter ou retirer des codes-barres">${codesCellHTML(a)}</td>`;

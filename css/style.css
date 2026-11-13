@@ -1093,6 +1093,19 @@ body.has-dock .view { padding-bottom: calc(var(--dock-h, 0px) + 40px); }
 .table th.col-dm { color: var(--dm-fg); background-color: var(--surface-2); background-image: linear-gradient(var(--dm-bg), var(--dm-bg)); }
 .table td.col-dm .dm-empty { color: var(--dm-fg); opacity: .75; font-weight: 500; }
 .table td.col-dm .dm-date.dm-old { color: #b45309; }
+/* colonne « Quantité en stock » : teinte légère + pastille d'état (Rupture / Faible / normal) */
+:root { --st-fg: #0f766e; --st-bg: rgba(13, 148, 136, .07);
+  --sp-ok-bg: #dcfce7; --sp-ok-fg: #166534; --sp-warn-bg: #fef3c7; --sp-warn-fg: #92400e; --sp-bad-bg: #fee2e2; --sp-bad-fg: #b91c1c; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --st-fg: #5eead4; --st-bg: rgba(45, 212, 191, .10);
+  --sp-ok-bg: rgba(34, 197, 94, .2); --sp-ok-fg: #86efac; --sp-warn-bg: rgba(245, 158, 11, .22); --sp-warn-fg: #fcd34d; --sp-bad-bg: rgba(239, 68, 68, .24); --sp-bad-fg: #fca5a5; } }
+:root[data-theme="dark"] { --st-fg: #5eead4; --st-bg: rgba(45, 212, 191, .10);
+  --sp-ok-bg: rgba(34, 197, 94, .2); --sp-ok-fg: #86efac; --sp-warn-bg: rgba(245, 158, 11, .22); --sp-warn-fg: #fcd34d; --sp-bad-bg: rgba(239, 68, 68, .24); --sp-bad-fg: #fca5a5; }
+.table td.col-stock { background: var(--st-bg); }
+.table th.col-stock { color: var(--st-fg); background-color: var(--surface-2); background-image: linear-gradient(var(--st-bg), var(--st-bg)); }
+.stock-pill { display: inline-block; padding: 3px 11px; border-radius: 999px; font-size: 13px; font-weight: 800; white-space: nowrap; line-height: 1.4; }
+.stock-pill.ok { background: var(--sp-ok-bg); color: var(--sp-ok-fg); }
+.stock-pill.warn { background: var(--sp-warn-bg); color: var(--sp-warn-fg); }
+.stock-pill.bad { background: var(--sp-bad-bg); color: var(--sp-bad-fg); }
 /* « Article non classé » et « Service » : toujours en tête du tableau, mais ils défilent avec le reste */
 .table-scroll .free-row td { position: static !important; top: auto !important; }
 /* croix de retrait d'un code-barres dans le tableau des articles */
