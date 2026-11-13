@@ -3309,7 +3309,7 @@ self.onmessage = async e => {
           ${state.map.photo && cfg.afficherPhotos ? `<a class="btn" href="#/photos" title="Rechercher des photos par catégorie">${ICON.search}<span class="hide-sm">Photos</span></a>` : ""}
           <button class="btn" id="art-labels" title="Générer les QR codes des articles cochés (ou de ceux affichés)">${ICON.tag}<span class="hide-sm">QR codes</span></button>
           <button class="btn" id="art-export" title="Exporter en CSV">${ICON.download}<span class="hide-sm">Exporter</span></button>
-          <button class="btn primary" id="art-new">${ICON.plus} Nouvel article</button>
+          <button class="btn primary" id="art-new" title="Nouvel article">${ICON.plus}<span class="lbl"> Nouvel article</span></button>
         </div>
         ${pvNotice()}${dmNotice()}
         <div class="sel-bar" id="sel-bar" hidden></div>
@@ -3336,7 +3336,10 @@ self.onmessage = async e => {
       if (c === codesC) return `<td class="codes-td" data-codes="${esc(a.id)}" data-label="Codes-barres" title="Cliquer pour scanner, ajouter ou retirer des codes-barres">${codesCellHTML(a)}</td>`;
       // le nom de l'article ouvre la vente ; les autres cellules se modifient sur place
       if (c.name === state.map.designation) return `<td class="sellable primary-cell" data-sell="${esc(a.id)}" data-label="${esc(colTitle(c))}" title="Cliquer pour vendre cet article">${cellHTML(a, c)}</td>`;
-      return `<td class="editable ${isNumCol(c) ? "num" : ""}${priceCls(c)}" data-col="${esc(c.name)}" data-label="${esc(colTitle(c))}" title="Cliquer pour modifier">${cellHTML(a, c)}</td>`;
+      // repères pour l'affichage compact sur téléphone (petite étiquette data-short, rang de la cellule)
+      const kind = priceCls(c) || (c.name === state.map.categorie ? " col-cat" : c.name === state.map.reference ? " col-ref" : " col-misc");
+      const short = { " col-stock": "Stock", " col-achat": "Achat", " col-pv": "Vente", " col-dm": "MAJ", " col-ref": "N°" }[kind] || "";
+      return `<td class="editable ${isNumCol(c) ? "num" : ""}${kind}" data-col="${esc(c.name)}" data-label="${esc(colTitle(c))}"${short ? ` data-short="${short}"` : ""} title="Cliquer pour modifier">${cellHTML(a, c)}</td>`;
     };
     const rowInner = a => selTd(a) + layout.map(c => tdHTML(a, c)).join("") +
       `<td class="actions"><button class="btn sm icon ghost sell-btn ${cartQty(a.id) ? "in-cart" : ""}" data-addcart="${esc(a.id)}" title="${cartQty(a.id) ? "Retirer du panier" : "Ajouter au panier"}" aria-label="${cartQty(a.id) ? "Retirer du panier" : "Ajouter au panier"}">${ICON.cartPlus}${cartQty(a.id) ? `<span class="cart-badge">${cartQty(a.id)}</span>` : ""}</button><button class="btn sm icon ghost rcv-btn ${pcartQty(a.id) ? "in-cart" : ""}" data-rcv="${esc(a.id)}" title="${pcartQty(a.id) ? "Retirer du bon de réception" : "Ajouter au bon de réception (entrée en stock)"}" aria-label="${pcartQty(a.id) ? "Retirer du bon de réception" : "Ajouter au bon de réception"}">📦${pcartQty(a.id) ? `<span class="cart-badge buy">${pcartQty(a.id)}</span>` : ""}</button><button class="btn sm icon ghost" data-edit="${esc(a.id)}" title="Modifier (formulaire complet)" aria-label="Modifier dans un formulaire">${ICON.edit}</button><button class="btn sm icon ghost danger" data-del="${esc(a.id)}" title="Supprimer" aria-label="Supprimer">${ICON.trash}</button></td>`;
@@ -3346,7 +3349,7 @@ self.onmessage = async e => {
       return `<tr class="free-row" data-free="${k}"><td class="sel-col"></td>${layout.map(c => {
         const lab = esc(colTitle(c));
         if (c.name === state.map.designation) return `<td class="sellable primary-cell" data-free-sell="${k}" data-label="${lab}" title="Vendre : prix et nature saisis dans le panier"><span class="name-cell"><span class="thumb svc-ico ${k}">${ICON[K.ico]}</span><span class="name-text"><strong>${K.label}</strong></span></span></td>`;
-        if (c.name === state.map.prix) return `<td class="num" data-label="${lab}"><span class="muted">Prix libre</span></td>`;
+        if (c.name === state.map.prix) return `<td class="num fr-pv" data-label="${lab}"><span class="muted">Prix libre</span></td>`;
         if (c.name === state.map.achat) return `<td class="num" data-label="${lab}"><span class="muted">—</span></td>`;
         if (c.name === state.map.stock) return `<td class="num" data-label="${lab}"><span class="muted">—</span></td>`;
         if (c.name === state.map.categorie) return `<td data-label="${lab}"><span class="muted">${k === "divers" ? "Divers" : "Prestation"}</span></td>`;

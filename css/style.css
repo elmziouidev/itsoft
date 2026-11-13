@@ -1204,3 +1204,63 @@ td.editing .dm-today { margin-left: 6px; padding: 3px 8px; font-size: 12px; vert
 .af-more > summary { cursor: pointer; font-weight: 600; font-size: 14px; padding: 2px 0; }
 .af-more[open] > summary { margin-bottom: 10px; }
 .af-more > .form-grid { margin: 0; }
+
+/* ============ Articles sur téléphone : affichage très compact ============
+   ligne 1 : case · nom · boutons — ligne 2 : stock, achat, vente, mise à jour — ligne 3 : catégorie, caractéristiques, codes */
+@media (max-width: 640px) {
+  #art-table .table.responsive tr { display: flex; flex-direction: row; flex-wrap: wrap; align-items: center; gap: 3px 4px; padding: 6px 10px; }
+  #art-table .table.responsive td { display: inline-flex; flex-direction: row; align-items: center; width: auto; padding: 0; gap: 3px; font-size: 12.5px; text-align: left; justify-content: flex-start; line-height: 1.35; grid-column: auto; white-space: nowrap; }
+  #art-table .table.responsive td::before { content: none; }
+  #art-table .table.responsive td[data-short]::before { content: attr(data-short); font-size: 9.5px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .02em; }
+  /* ligne 1 */
+  #art-table .table.responsive td.sel-col { order: 0; padding: 0; }
+  #art-table .table.responsive td.sel-col::before { content: none; }
+  #art-table .table.responsive td.sel-col input { width: 16px; height: 16px; margin: 0; }
+  #art-table .table.responsive td.primary-cell { order: 1; flex: 1 1 0; min-width: 0; font-size: 14px; }
+  #art-table .table.responsive td.primary-cell .name-cell { min-width: 0; gap: 6px; }
+  #art-table .table.responsive td.primary-cell .name-text { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #art-table .table.responsive td.primary-cell .thumb { width: 26px; height: 26px; flex-shrink: 0; }
+  #art-table .table.responsive td.actions { order: 2; padding: 0; margin-left: auto; gap: 0; border-top: 0; }
+  #art-table .table.responsive td.actions .btn.sm.icon { padding: 4px; min-height: 0; height: 28px; width: 28px; }
+  #art-table .table.responsive td.primary-cell { padding-bottom: 0; }
+  #art-table .table.responsive td.col-misc { white-space: normal; }
+  /* fin de la ligne 1 : saut de ligne forcé après les boutons (le nom garde toute sa place) */
+  #art-table .table.responsive tr:not(.free-row)::after { content: ""; order: 3; flex-basis: 100%; height: 0; }
+  /* ligne 2 : chiffres */
+  #art-table .table.responsive td.col-stock { order: 4; background: none; }
+  #art-table .table.responsive td.col-achat { order: 5; background: none; }
+  #art-table .table.responsive td.col-achat { font-size: 12px; }
+  #art-table .table.responsive td.col-pv { order: 6; background: none; font-size: 12.5px; }
+  #art-table .table.responsive td.col-dm { order: 7; background: none; font-size: 11.5px; }
+  #art-table .table.responsive td.col-stock .stock-pill { padding: 0 6px; font-size: 11.5px; }
+  #art-table .table.responsive td.col-achat, #art-table .table.responsive td.col-pv, #art-table .table.responsive td.col-dm { padding: 1px 5px; border-radius: 6px; gap: 2px; }
+  #art-table .table.responsive td.col-achat { background: var(--pa-bg); }
+  #art-table .table.responsive td.col-pv { background: var(--pv-bg); }
+  #art-table .table.responsive td.col-dm { background: var(--dm-bg); }
+  /* ligne 3 : informations secondaires, en petit */
+  #art-table .table.responsive td.col-cat { order: 8; font-size: 11.5px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .02em; }
+  #art-table .table.responsive td.col-misc, #art-table .table.responsive td.col-ref { order: 9; font-size: 11.5px; color: var(--muted); }
+  #art-table .table.responsive td.codes-td { order: 10; font-size: 11.5px; }
+  #art-table .table.responsive td.codes-td .code-chip { font-size: 11px; padding: 0 2px 0 6px; }
+  #art-table .table.responsive td.codes-td .code-none { font-size: 11.5px; }
+  /* cases vides (« — ») : masquées, aucune place perdue */
+  #art-table .table.responsive td.col-misc:has(> .muted:only-child), #art-table .table.responsive td.col-ref:has(> .muted:only-child),
+  #art-table .table.responsive td.col-cat:has(> .muted:only-child), #art-table .table.responsive td.col-achat:has(> .muted:only-child) { display: none; }
+  /* « Article non classé » et « Service » : une seule ligne */
+  #art-table .table.responsive tr.free-row { padding: 5px 10px; flex-wrap: nowrap; }
+  #art-table .table.responsive tr.free-row td:not(.primary-cell):not(.actions):not(.fr-pv) { display: none; }
+  #art-table .table.responsive tr.free-row td.fr-pv { order: 2; font-size: 12px; }
+  #art-table .table.responsive tr.free-row td.actions { order: 3; }
+  /* haut de page plus serré */
+  .view:has(#art-table) .card-head.compact-head { gap: 6px; padding: 8px 10px; }
+  /* ligne 1 : recherche + 3 boutons icônes ; ligne 2 : les deux filtres */
+  .view:has(#art-table) .card-head.compact-head .search { flex: 1 1 150px !important; min-width: 0; order: 0; }
+  .view:has(#art-table) .card-head.compact-head .search .input { height: 36px; }
+  .view:has(#art-table) .card-head.compact-head select.input { order: 2; flex: 1 1 calc(50% - 3px) !important; width: auto !important; min-width: 0; height: 34px; font-size: 13px; padding-left: 8px; }
+  .view:has(#art-table) .card-head.compact-head .btn { order: 1; height: 36px; width: 36px; padding: 0; justify-content: center; }
+  .view:has(#art-table) .card-head.compact-head #art-new .lbl { display: none; }
+  .view:has(#art-table) .pv-notice { display: block; padding: 5px 10px; font-size: 12px; line-height: 1.35; margin: 0 10px 6px; }
+  .view:has(#art-table) .pv-notice > * { display: inline; margin: 0; }
+  .view:has(#art-table) .pv-notice .btn { display: inline-flex; margin-left: 6px; }
+  #art-table .table-foot { padding: 6px 10px; font-size: 12px; gap: 4px 10px; }
+}
