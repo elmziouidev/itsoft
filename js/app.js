@@ -140,11 +140,73 @@
   }
   function photoUrl(a) {
     const v = state.map.photo ? String(a[state.map.photo] || "").trim() : "";
-    return /^https?:\/\//i.test(v) ? v : "";
+    return /^(https?:\/\/|data:image\/)/i.test(v) ? v : "";
   }
+  /* Photo prise dans l'application : fichier SharePoint (bibliothèque du site) ou, en mode démo, image intégrée */
+  const spPhoto = u => !!u && !!cfg.siteHost && /^https:/i.test(u) && u.toLowerCase().includes(String(cfg.siteHost).toLowerCase());
+  const ownPhoto = u => /^data:image\//i.test(u || "") || spPhoto(u);
+  const miniOf = u => spPhoto(u) ? u.replace(/\.jpe?g(\?|$)/i, "_mini.jpg$1") : u;
+  // balise <img> : les fichiers SharePoint demandent une connexion → adresse de téléchargement obtenue par Graph (SpImg)
+  const photoImg = (u, mini, extra = "") => spPhoto(u)
+    ? `<img data-sp="${esc(mini ? miniOf(u) : u)}" data-sp-main="${esc(u)}" alt="" decoding="async" style="opacity:0" onload="this.style.opacity=1" onerror="this.remove()" ${extra}>`
+    : `<img src="${esc(u)}" alt="" decoding="async" referrerpolicy="no-referrer" style="opacity:0" onload="this.style.opacity=1" onerror="this.remove()" ${extra}>`;
+  const SpImg = (() => {
+    const cache = new Map(); // adresse enregistrée (avec ?v=) → { d: adresse de téléchargement, t }
+    let queue = [], timer = 0, io = null, scanQ = 0;
+    const enc = u => "u!" + btoa(unescape(encodeURIComponent(u.split("?")[0]))).replace(/=+$/, "").replace(/\//g, "_").replace(/\+/g, "-");
+    async function flush() {
+      timer = 0;
+      const q = queue; queue = [];
+      const by = new Map();
+      q.forEach(x => { if (!by.has(x.u)) by.set(x.u, []); by.get(x.u).push(x); });
+      const keys = [...by.keys()];
+      let rs = [];
+      try { rs = await DS.batch(keys.map(u => ({ method: "GET", url: `/shares/${enc(u)}/driveItem` })), true); } catch (_) {}
+      keys.forEach((u, i) => {
+        const r = rs[i], d = (r && r.status === 200 && r.body && r.body["@microsoft.graph.downloadUrl"]) || "";
+        if (d) cache.set(u, { d, t: Date.now() });
+        by.get(u).forEach(x => x.res(d));
+      });
+    }
+    function get(u) {
+      const c = cache.get(u);
+      if (c && Date.now() - c.t < 40 * 60e3) return Promise.resolve(c.d); // adresses valables environ 1 h
+      if (!DS || !DS.batch || DS.mode !== "sharepoint") return Promise.resolve("");
+      return new Promise(res => { queue.push({ u, res }); if (!timer) timer = setTimeout(flush, 30); });
+    }
+    async function load(img) {
+      const u = img.dataset.sp, main = img.dataset.spMain || u;
+      let d = await get(u);
+      if (!d && main !== u) d = await get(main); // miniature absente : photo complète
+      if (d) img.src = d; else img.remove();
+    }
+    function scan() {
+      scanQ = 0;
+      document.querySelectorAll("img[data-sp]:not([data-spq])").forEach(img => {
+        img.dataset.spq = "1";
+        if (io) io.observe(img); else load(img);
+      });
+    }
+    function start() {
+      if ("IntersectionObserver" in window) io = new IntersectionObserver(es => es.forEach(e => { if (e.isIntersecting) { io.unobserve(e.target); load(e.target); } }), { rootMargin: "400px" });
+      new MutationObserver(() => { if (!scanQ) scanQ = requestAnimationFrame(scan); }).observe(document.body, { childList: true, subtree: true });
+      scan();
+    }
+    if (document.body) start(); else document.addEventListener("DOMContentLoaded", start);
+    return { forget: u => cache.delete(u) };
+  })();
+  /* hauteur de la barre de titre (--topbar-h) : la barre de recherche des Articles se fige juste dessous */
+  (() => {
+    let seen = null;
+    const setH = t => { const h = Math.round(t.getBoundingClientRect().height); if (h) document.documentElement.style.setProperty("--topbar-h", h + "px"); };
+    const ro = "ResizeObserver" in window ? new ResizeObserver(es => es.forEach(e => setH(e.target))) : null;
+    const watch = () => { const t = document.querySelector(".topbar"); if (t) setH(t); if (t && t !== seen && ro) { if (seen) ro.unobserve(seen); seen = t; ro.observe(t); } };
+    const start = () => { watch(); new MutationObserver(watch).observe(document.body, { childList: true }); window.addEventListener("resize", watch); window.addEventListener("hashchange", () => setTimeout(watch, 0)); };
+    if (document.body) start(); else document.addEventListener("DOMContentLoaded", start);
+  })();
   function thumbHTML(a, big) {
-    // icône représentative uniquement ; la photo n'est utilisée que si cfg.afficherPhotos est activé
-    const kind = deviceKind(a), url = cfg.afficherPhotos ? photoUrl(a) : "";
+    // icône représentative ; photo affichée si elle a été prise dans l'application (ou si cfg.afficherPhotos est activé)
+    const raw = photoUrl(a), kind = deviceKind(a), url = cfg.afficherPhotos || ownPhoto(raw) ? raw : "";
     const b = brandOf(a);
     if (b.unknown) { // pas de marque reconnue : couleur selon le type d'article, sans lettre
       const KH = { screen: 220, mobile: 220, phone: 200, tablet: 175, cable: 30, charger: 45, battery: 95, audio: 285, speaker: 265, memory: 150, network: 190, mouse: 330, keyboard: 330, gamepad: 0, watch: 250, radio: 20, tv: 205, mic: 310 };
@@ -154,15 +216,112 @@
     const tip = [kindLabel, b.label && !norm(kindLabel).includes(norm(b.label)) ? b.label : ""].filter(Boolean).join(" · ") + (url ? " — cliquer pour agrandir" : "");
     return `<span class="thumb ${big ? "big" : ""} ${b.unknown ? "neutral" : ""} ${url ? "" : "no-photo"}" style="--h:${b.hue}" ${url ? `data-thumb="${esc(a.id)}"` : ""} title="${esc(tip)}">
       ${DEVICE_SVG[kind]}
-      ${url ? `<img src="${esc(url)}" alt="" decoding="async" referrerpolicy="no-referrer" style="opacity:0" onload="this.style.opacity=1" onerror="this.remove()">` : ""}</span>`;
+      ${url ? photoImg(url, !big) : ""}</span>`;
   }
   function showPhoto(a) {
     const url = photoUrl(a);
     const body = url
-      ? `<div style="text-align:center"><img src="${esc(url)}" alt="${esc(artName(a))}" referrerpolicy="no-referrer" style="max-width:100%;max-height:60vh;object-fit:contain;background:#fff;border-radius:8px"></div>
-         <p class="muted" style="font-size:12px;margin:12px 0 0;word-break:break-all">Source : <a href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(url)}</a></p>`
-      : `<div style="display:flex;gap:16px;align-items:center">${thumbHTML(a, true)}<p class="muted" style="margin:0">Aucune photo pour cet article.${state.map.photo ? ` Renseignez la colonne « ${esc(colLabel(state.map.photo))} » avec l'adresse d'une image.` : " Ajoutez une colonne « Photo » (texte) à la liste pour enregistrer l'adresse d'une image."}</p></div>`;
-    openModal({ title: artName(a), body, size: "sm" });
+      ? `<div class="ph-view">${photoImg(url, false, `alt="${esc(artName(a))}"`)}</div>
+         ${ownPhoto(url) ? "" : `<p class="muted" style="font-size:12px;margin:12px 0 0;word-break:break-all">Source : <a href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(url)}</a></p>`}`
+      : `<div style="display:flex;gap:16px;align-items:center">${thumbHTML(a, true)}<p class="muted" style="margin:0">Aucune photo pour cet article.</p></div>`;
+    const m = openModal({ title: artName(a), body, size: "sm",
+      foot: `${url ? `<button class="btn ghost danger" type="button" data-ph="del">${ICON.trash} Supprimer</button>` : ""}<span class="spacer"></span>
+        <button class="btn" type="button" data-ph="file" title="Choisir une image enregistrée">🖼️ Image</button>
+        <button class="btn primary" type="button" data-ph="cam">📷 ${url ? "Reprendre" : "Prendre une photo"}</button>` });
+    m.addEventListener("click", async e => {
+      const b = e.target.closest("[data-ph]");
+      if (!b) return;
+      if (b.dataset.ph === "del") {
+        // la confirmation remplace cette fenêtre
+        if (await confirmBox("Supprimer la photo", `Retirer la photo de « <strong>${esc(artName(a))}</strong> » ?`, "Supprimer")) removeArticlePhoto(a);
+        return;
+      }
+      const file = await pickImage(b.dataset.ph === "cam");
+      if (file) { closeModal(); setArticlePhoto(a, file); }
+    });
+  }
+  /* Prise de photo : appareil photo du téléphone (ou choix d'une image sur ordinateur) */
+  function pickImage(camera) {
+    return new Promise(res => {
+      const i = document.createElement("input");
+      i.type = "file"; i.accept = "image/*";
+      if (camera) i.setAttribute("capture", "environment");
+      i.onchange = () => res((i.files && i.files[0]) || null);
+      i.oncancel = () => res(null);
+      i.click();
+    });
+  }
+  async function shrinkImage(file, max, square, q) {
+    let bmp;
+    try { bmp = await createImageBitmap(file, { imageOrientation: "from-image" }); }
+    catch (_) { bmp = await new Promise((ok, ko) => { const im = new Image(); im.onload = () => ok(im); im.onerror = ko; im.src = URL.createObjectURL(file); }); }
+    const W = bmp.width, H = bmp.height;
+    let sx = 0, sy = 0, sw = W, sh = H;
+    if (square) { const s = Math.min(W, H); sx = (W - s) / 2; sy = (H - s) / 2; sw = sh = s; }
+    const k = Math.min(1, max / Math.max(sw, sh)), cw = Math.max(1, Math.round(sw * k)), ch = Math.max(1, Math.round(sh * k));
+    const cv = document.createElement("canvas"); cv.width = cw; cv.height = ch;
+    const g = cv.getContext("2d"); g.fillStyle = "#fff"; g.fillRect(0, 0, cw, ch); g.imageSmoothingQuality = "high";
+    g.drawImage(bmp, sx, sy, sw, sh, 0, 0, cw, ch);
+    if (bmp.close) bmp.close();
+    return new Promise(r => cv.toBlob(r, "image/jpeg", q));
+  }
+  const blobToDataURL = b => new Promise(r => { const fr = new FileReader(); fr.onload = () => r(fr.result); fr.readAsDataURL(b); });
+  /* Colonne « Photo » (texte) de Tbl_article : créée à la première photo si absente */
+  async function ensurePhotoCol() {
+    if (state.map.photo) return state.map.photo;
+    const name = (cfg.champs && cfg.champs.photo) || "Photo";
+    try {
+      const c = await DS.addArticleColumn(name, { displayName: (cfg.libellesColonnes && cfg.libellesColonnes[name]) || "Photo" });
+      if (!findCol(c.name)) state.columns.push(c);
+    } catch (e) {
+      if (!/exist|already|déjà/i.test(e.message || "")) throw e;
+      if (!findCol(name)) state.columns.push({ name, displayName: name, type: "text" });
+    }
+    computeMapping();
+    return state.map.photo;
+  }
+  const photoBusy = new Set();
+  async function setArticlePhoto(a, file) {
+    if (photoBusy.has(a.id)) return;
+    photoBusy.add(a.id);
+    toast(`Enregistrement de la photo de « ${artName(a)} »…`);
+    try {
+      const col = await ensurePhotoCol();
+      if (!col) throw new Error("colonne Photo introuvable");
+      let value;
+      if (DS.uploadPhoto) {
+        const [big, mini] = await Promise.all([shrinkImage(file, 1280, false, .82), shrinkImage(file, 200, true, .8)]);
+        const base = `article-${a.id}`;
+        const [it] = await Promise.all([DS.uploadPhoto(base + ".jpg", big), DS.uploadPhoto(base + "_mini.jpg", mini)]);
+        value = String(it.webUrl || "").split("?")[0] + "?v=" + Date.now(); // ?v= : les autres appareils rechargent la nouvelle photo
+      } else { // mode démo : image réduite gardée dans le navigateur
+        value = await blobToDataURL(await shrinkImage(file, 480, false, .72));
+      }
+      const saved = await DS.updateArticle(a.id, { [col]: value });
+      Object.assign(a, saved || {}); a[col] = value;
+      refreshRow(a);
+      toast("Photo enregistrée.", "ok");
+    } catch (err) {
+      toast("Photo non enregistrée : " + (err.message || err), "bad");
+    } finally { photoBusy.delete(a.id); }
+  }
+  async function removeArticlePhoto(a) {
+    const col = state.map.photo;
+    if (!col) return;
+    const old = photoUrl(a);
+    try {
+      const saved = await DS.updateArticle(a.id, { [col]: "" });
+      Object.assign(a, saved || {}); a[col] = null;
+      if (spPhoto(old) && DS.deletePhoto) { DS.deletePhoto(`article-${a.id}.jpg`); DS.deletePhoto(`article-${a.id}_mini.jpg`); SpImg.forget(old); }
+      refreshRow(a);
+      toast("Photo supprimée.", "ok");
+    } catch (err) { toast("Suppression impossible : " + err.message, "bad"); }
+  }
+  /* Bouton 📷 : sans photo → appareil photo tout de suite ; avec photo → aperçu (reprendre, supprimer) */
+  async function photoAction(a) {
+    if (photoUrl(a)) return showPhoto(a);
+    const file = await pickImage(true);
+    if (file) setArticlePhoto(a, file);
   }
 
   /* Retrouve une colonne par nom interne OU nom affiché */
@@ -3330,10 +3489,17 @@ self.onmessage = async e => {
     const selTd = a => `<td class="sel-col" data-label="Sélection"><input type="checkbox" class="sel-cb" data-sel="${esc(a.id)}" ${sel.has(a.id) ? "checked" : ""} aria-label="Sélectionner ${esc(artName(a))}"></td>`;
 
     // prix d'achat et prix de vente mis en évidence (couleur + fond léger)
+    const photoBtn = (a, chip) => {
+      const has = !!photoUrl(a), t = has ? "Voir, reprendre ou supprimer la photo" : "Prendre une photo de l'article";
+      return chip
+        ? `<button type="button" class="photo-chip ${has ? "has" : ""}" data-photo="${esc(a.id)}" title="${t}">📷${has ? "<span>✓</span>" : ""}</button>`
+        : `<button type="button" class="btn sm icon ghost photo-act ${has ? "has" : ""}" data-photo="${esc(a.id)}" title="${t}" aria-label="${t}">📷</button>`;
+    };
     const priceCls = c => c.name === state.map.prix ? " col-pv" : c.name === state.map.achat ? " col-achat" : c.name === dateMajName() ? " col-dm" : c.name === state.map.stock ? " col-stock" : "";
     const tdHTML = (a, c) => {
       if (c.virtual) return `<td class="num ca" data-label="${esc(colTitle(c))}">${money(artCA(a))}</td>`;
-      if (c === codesC) return `<td class="codes-td" data-codes="${esc(a.id)}" data-label="Codes-barres" title="Cliquer pour scanner, ajouter ou retirer des codes-barres">${codesCellHTML(a)}</td>`;
+      // (sur téléphone, le bouton 📷 Photo s'affiche à côté de « Associer » ; sur ordinateur, il est dans les actions)
+      if (c === codesC) return `<td class="codes-td" data-codes="${esc(a.id)}" data-label="Codes-barres" title="Cliquer pour scanner, ajouter ou retirer des codes-barres">${codesCellHTML(a)}${photoBtn(a, true)}</td>`;
       // le nom de l'article ouvre la vente ; les autres cellules se modifient sur place
       if (c.name === state.map.designation) return `<td class="sellable primary-cell" data-sell="${esc(a.id)}" data-label="${esc(colTitle(c))}" title="Cliquer pour vendre cet article">${cellHTML(a, c)}</td>`;
       // repères pour l'affichage compact sur téléphone (petite étiquette data-short, rang de la cellule)
@@ -3342,7 +3508,7 @@ self.onmessage = async e => {
       return `<td class="editable ${isNumCol(c) ? "num" : ""}${kind}" data-col="${esc(c.name)}" data-label="${esc(colTitle(c))}"${short ? ` data-short="${short}"` : ""} title="Cliquer pour modifier">${cellHTML(a, c)}</td>`;
     };
     const rowInner = a => selTd(a) + layout.map(c => tdHTML(a, c)).join("") +
-      `<td class="actions"><button class="btn sm icon ghost sell-btn ${cartQty(a.id) ? "in-cart" : ""}" data-addcart="${esc(a.id)}" title="${cartQty(a.id) ? "Retirer du panier" : "Ajouter au panier"}" aria-label="${cartQty(a.id) ? "Retirer du panier" : "Ajouter au panier"}">${ICON.cartPlus}${cartQty(a.id) ? `<span class="cart-badge">${cartQty(a.id)}</span>` : ""}</button><button class="btn sm icon ghost rcv-btn ${pcartQty(a.id) ? "in-cart" : ""}" data-rcv="${esc(a.id)}" title="${pcartQty(a.id) ? "Retirer du bon de réception" : "Ajouter au bon de réception (entrée en stock)"}" aria-label="${pcartQty(a.id) ? "Retirer du bon de réception" : "Ajouter au bon de réception"}">📦${pcartQty(a.id) ? `<span class="cart-badge buy">${pcartQty(a.id)}</span>` : ""}</button><button class="btn sm icon ghost" data-edit="${esc(a.id)}" title="Modifier (formulaire complet)" aria-label="Modifier dans un formulaire">${ICON.edit}</button><button class="btn sm icon ghost danger" data-del="${esc(a.id)}" title="Supprimer" aria-label="Supprimer">${ICON.trash}</button></td>`;
+      `<td class="actions"><button class="btn sm icon ghost sell-btn ${cartQty(a.id) ? "in-cart" : ""}" data-addcart="${esc(a.id)}" title="${cartQty(a.id) ? "Retirer du panier" : "Ajouter au panier"}" aria-label="${cartQty(a.id) ? "Retirer du panier" : "Ajouter au panier"}">${ICON.cartPlus}${cartQty(a.id) ? `<span class="cart-badge">${cartQty(a.id)}</span>` : ""}</button><button class="btn sm icon ghost rcv-btn ${pcartQty(a.id) ? "in-cart" : ""}" data-rcv="${esc(a.id)}" title="${pcartQty(a.id) ? "Retirer du bon de réception" : "Ajouter au bon de réception (entrée en stock)"}" aria-label="${pcartQty(a.id) ? "Retirer du bon de réception" : "Ajouter au bon de réception"}">📦${pcartQty(a.id) ? `<span class="cart-badge buy">${pcartQty(a.id)}</span>` : ""}</button>${photoBtn(a)}<button class="btn sm icon ghost" data-edit="${esc(a.id)}" title="Modifier (formulaire complet)" aria-label="Modifier dans un formulaire">${ICON.edit}</button><button class="btn sm icon ghost danger" data-del="${esc(a.id)}" title="Supprimer" aria-label="Supprimer">${ICON.trash}</button></td>`;
     /* Lignes fixes « Article non classé » et « Service » : prix et nature saisis à la vente */
     const freeRows = () => (f.cat || f.stock || f.code) ? "" : ["divers", "service"].filter(k => !norm(f.q) || norm(FREE[k].label).includes(norm(f.q))).map(k => {
       const K = FREE[k];
@@ -3588,6 +3754,8 @@ self.onmessage = async e => {
     };
     el.onclick = async e => {
       if (e.target.closest("#art-more")) return appendMore();
+      const ph = e.target.closest("[data-photo]");
+      if (ph) { const a = artById(ph.dataset.photo); if (a) return photoAction(a); }
       // ✕ sur un code-barres : retiré tout de suite, sans ouvrir de fenêtre
       const rmc = e.target.closest("[data-rmcode]");
       if (rmc) {

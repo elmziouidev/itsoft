@@ -741,6 +741,15 @@
       this.columns.push(n);
       return n;
     },
+    /* Photos des articles : fichiers JPEG dans la bibliothèque « Documents » du site (dossier ITSoft-Photos,
+       créé automatiquement). Même nom pour un même article : une nouvelle photo remplace l'ancienne. */
+    async uploadPhoto(name, blob) {
+      return this.call(`/sites/${this.siteId}/drive/root:/ITSoft-Photos/${encodeURIComponent(name)}:/content`,
+        { method: "PUT", body: blob, headers: { "Content-Type": "image/jpeg" } });
+    },
+    async deletePhoto(name) {
+      try { await this.call(`/sites/${this.siteId}/drive/root:/ITSoft-Photos/${encodeURIComponent(name)}`, { method: "DELETE" }); } catch (_) {}
+    },
     async updateArticle(id, fields) {
       const f = await this.call(`/sites/${this.siteId}/lists/${this.articlesListId}/items/${id}/fields`,
         { method: "PATCH", body: JSON.stringify(fields) });
