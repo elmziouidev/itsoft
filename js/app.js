@@ -1362,6 +1362,9 @@
       : ["reference", "designation", "categorie", "fournisseur", "marque", "prix", "stock"].map(k => findCol(state.map[k])).filter(Boolean);
     // colonne « Mise à jour » toujours visible, même si config.js ne la cite pas
     const dm = dateMajCol(); if (dm && !cols.includes(dm)) cols = cols.concat(dm);
+    // colonnes masquées (par défaut DATEe, la date d'ajout : elle sert seulement au tri)
+    const hidden = new Set((cfg.colonnesMasquees || ["DATEe"]).map(n => (findCol(n) || {}).name).filter(Boolean));
+    cols = cols.filter(c => !hidden.has(c.name));
     // ordre choisi par l'utilisateur (glisser-déposer des en-têtes), mémorisé dans ce navigateur
     const saved = store.get(COL_ORDER_KEY, null);
     if (Array.isArray(saved) && saved.length) {
@@ -3217,15 +3220,16 @@ self.onmessage = async e => {
     if (!f.code) f.code = "";
     const nCodes = state.articles.filter(a => codesOf(a).length).length;
     const val = (a, c) => (c.virtual ? artCA(a) : a[c.name]);
-    // tri par défaut : date d'ajout (colonne DATEe) la plus récente en premier
-    if (!f.sort || !layout.some(c => c.name === f.sort)) {
-      const dc = layout.find(c => c.name === (findCol("DATEe") || {}).name) || layout.find(c => c.type === "dateTime");
+    // tri par défaut : date d'ajout (colonne DATEe) la plus récente en premier — même quand la colonne est masquée
+    const addedCol = findCol("DATEe");
+    if (!f.sort || !(layout.some(c => c.name === f.sort) || (addedCol && f.sort === addedCol.name))) {
+      const dc = addedCol || layout.find(c => c.type === "dateTime" && c.name !== dateMajName());
       if (dc) { f.sort = dc.name; f.dir = -1; } else { f.sort = layout.length ? layout[0].name : ""; f.dir = 1; }
     }
 
     const apply = () => {
       const q = norm(f.q);
-      const sc = layout.find(c => c.name === f.sort);
+      const sc = layout.find(c => c.name === f.sort) || (addedCol && f.sort === addedCol.name ? addedCol : null);
       return state.articles.filter(a => {
         if (f.cat && F(a, "categorie") !== f.cat) return false;
         if (f.stock === "low" && !(hasStock() && artStock(a) <= artSeuil(a))) return false;
@@ -3279,12 +3283,14 @@ self.onmessage = async e => {
     };
     const selTd = a => `<td class="sel-col" data-label="Sélection"><input type="checkbox" class="sel-cb" data-sel="${esc(a.id)}" ${sel.has(a.id) ? "checked" : ""} aria-label="Sélectionner ${esc(artName(a))}"></td>`;
 
+    // prix d'achat et prix de vente mis en évidence (couleur + fond léger)
+    const priceCls = c => c.name === state.map.prix ? " col-pv" : c.name === state.map.achat ? " col-achat" : "";
     const tdHTML = (a, c) => {
       if (c.virtual) return `<td class="num ca" data-label="${esc(colTitle(c))}">${money(artCA(a))}</td>`;
       if (c === codesC) return `<td class="codes-td" data-codes="${esc(a.id)}" data-label="Codes-barres" title="Cliquer pour scanner, ajouter ou retirer des codes-barres">${codesCellHTML(a)}</td>`;
       // le nom de l'article ouvre la vente ; les autres cellules se modifient sur place
       if (c.name === state.map.designation) return `<td class="sellable primary-cell" data-sell="${esc(a.id)}" data-label="${esc(colTitle(c))}" title="Cliquer pour vendre cet article">${cellHTML(a, c)}</td>`;
-      return `<td class="editable ${isNumCol(c) ? "num" : ""}" data-col="${esc(c.name)}" data-label="${esc(colTitle(c))}" title="Cliquer pour modifier">${cellHTML(a, c)}</td>`;
+      return `<td class="editable ${isNumCol(c) ? "num" : ""}${priceCls(c)}" data-col="${esc(c.name)}" data-label="${esc(colTitle(c))}" title="Cliquer pour modifier">${cellHTML(a, c)}</td>`;
     };
     const rowInner = a => selTd(a) + layout.map(c => tdHTML(a, c)).join("") +
       `<td class="actions"><button class="btn sm icon ghost sell-btn ${cartQty(a.id) ? "in-cart" : ""}" data-addcart="${esc(a.id)}" title="${cartQty(a.id) ? "Retirer du panier" : "Ajouter au panier"}" aria-label="${cartQty(a.id) ? "Retirer du panier" : "Ajouter au panier"}">${ICON.cartPlus}${cartQty(a.id) ? `<span class="cart-badge">${cartQty(a.id)}</span>` : ""}</button><button class="btn sm icon ghost rcv-btn ${pcartQty(a.id) ? "in-cart" : ""}" data-rcv="${esc(a.id)}" title="${pcartQty(a.id) ? "Retirer du bon de réception" : "Ajouter au bon de réception (entrée en stock)"}" aria-label="${pcartQty(a.id) ? "Retirer du bon de réception" : "Ajouter au bon de réception"}">📦${pcartQty(a.id) ? `<span class="cart-badge buy">${pcartQty(a.id)}</span>` : ""}</button><button class="btn sm icon ghost" data-edit="${esc(a.id)}" title="Modifier (formulaire complet)" aria-label="Modifier dans un formulaire">${ICON.edit}</button><button class="btn sm icon ghost danger" data-del="${esc(a.id)}" title="Supprimer" aria-label="Supprimer">${ICON.trash}</button></td>`;
@@ -3339,7 +3345,7 @@ self.onmessage = async e => {
       const list = apply();
       curList = list; shown = Math.min(PAGE, list.length);
       $("#art-table").innerHTML = list.length ? `<div class="table-scroll"><table class="table responsive compact">
-        <thead><tr><th class="sel-col"><input type="checkbox" class="sel-cb" id="sel-all" title="Sélectionner tous les articles affichés" aria-label="Sélectionner tous les articles affichés"></th>${layout.map(c => `<th class="sortable ${isNumCol(c) ? "num" : ""}" data-sort="${esc(c.name)}" draggable="true" title="Cliquer pour trier · glisser pour déplacer la colonne"><span class="grip" aria-hidden="true">⋮⋮</span>${esc(colTitle(c))}${f.sort === c.name ? (f.dir > 0 ? " ▲" : " ▼") : ""}</th>`).join("")}<th></th></tr></thead>
+        <thead><tr><th class="sel-col"><input type="checkbox" class="sel-cb" id="sel-all" title="Sélectionner tous les articles affichés" aria-label="Sélectionner tous les articles affichés"></th>${layout.map(c => `<th class="sortable ${isNumCol(c) ? "num" : ""}${priceCls(c)}" data-sort="${esc(c.name)}" draggable="true" title="Cliquer pour trier · glisser pour déplacer la colonne"><span class="grip" aria-hidden="true">⋮⋮</span>${esc(colTitle(c))}${f.sort === c.name ? (f.dir > 0 ? " ▲" : " ▼") : ""}</th>`).join("")}<th></th></tr></thead>
         <tbody>${freeRows()}${list.slice(0, shown).map(a => `<tr data-id="${esc(a.id)}">${rowInner(a)}</tr>`).join("")}</tbody></table>
         ${shown < list.length ? `<button class="more-row" id="art-more" type="button">Afficher plus d'articles…</button>` : ""}</div>
         <div class="table-foot" id="art-foot">${footHTML(list)}</div>`

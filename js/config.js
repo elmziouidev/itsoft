@@ -40,7 +40,10 @@ window.APP_CONFIG = {
 
   // Colonnes affichées (dans cet ordre) dans le menu « Articles »
   // (pas de colonne « fournisseur » : un article peut venir de plusieurs fournisseurs, voir le menu Achats)
-  colonnesArticles: ["Id_article", "Modele", "Quantite", "Prix", "PrixVente", "Caractéristiques", "DATEe", "DateMAJ", "Nom_article"],
+  // (DATEe, la date d'ajout, n'est plus affichée : elle sert toujours au tri par défaut, plus récents en premier)
+  colonnesArticles: ["Id_article", "Modele", "Quantite", "Prix", "PrixVente", "Caractéristiques", "DateMAJ", "Nom_article"],
+  // colonnes jamais affichées dans le tableau des articles (même si elles sont citées ci-dessus)
+  colonnesMasquees: ["DATEe"],
 
   // Titres affichés dans l'application (les noms des colonnes SharePoint ne changent pas)
   libellesColonnes: {

@@ -1075,6 +1075,16 @@ body.has-dock .view { padding-bottom: calc(var(--dock-h, 0px) + 40px); }
 .cd-add .input { flex: 1; min-width: 0; font-family: ui-monospace, Consolas, monospace; }
 @media (max-width: 480px) { .cd-add { flex-wrap: wrap; } .cd-add .input { flex-basis: 100%; } .cd-add .btn { flex: 1; } }
 
+/* Articles : prix d'achat (bleu) et prix de vente (vert, gras) mis en évidence */
+:root { --pv-fg: #0f7a3d; --pv-bg: rgba(22, 163, 74, .09); --pa-fg: #1d4ed8; --pa-bg: rgba(37, 99, 235, .07); }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --pv-fg: #4ade80; --pv-bg: rgba(74, 222, 128, .11); --pa-fg: #9db8ff; --pa-bg: rgba(96, 140, 255, .11); } }
+:root[data-theme="dark"] { --pv-fg: #4ade80; --pv-bg: rgba(74, 222, 128, .11); --pa-fg: #9db8ff; --pa-bg: rgba(96, 140, 255, .11); }
+.table td.col-pv { color: var(--pv-fg); font-weight: 800; font-size: 1.04em; background: var(--pv-bg); }
+.table td.col-achat { color: var(--pa-fg); font-weight: 700; background: var(--pa-bg); }
+.table th.col-pv { color: var(--pv-fg); background: var(--pv-bg); }
+.table th.col-achat { color: var(--pa-fg); background: var(--pa-bg); }
+.table td.col-pv .pv-missing { font-weight: 600; font-size: .92em; }
+
 /* Colonne « Mise à jour » (date saisie à la main) */
 .dm-empty { font-size: 12.5px; font-style: italic; }
 .dm-date.dm-old { color: #b45309; font-weight: 600; }
