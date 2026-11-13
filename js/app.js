@@ -455,6 +455,7 @@
     state.siteName = res.siteName;
     computeMapping();
     ensurePrixVente();
+    ensureDateMaj();
     // retirer du panier les articles disparus
     state.cart = state.cart.filter(l => l.svc || state.articles.some(a => a.id === l.id));
     state.loaded = true;
@@ -595,6 +596,35 @@
       if (currentView() === "articles") render();
     } finally { pvBusy = false; }
   }
+  /* Colonne « Mise à jour » (cfg.champs.dateMaj, ex. DateMAJ) : date de dernière mise à jour de l'article,
+     saisie À LA MAIN uniquement (aucune modification ne la change automatiquement). Créée une seule fois. */
+  const dateMajName = () => (cfg.champs && cfg.champs.dateMaj) || "";
+  const dateMajCol = () => dateMajName() ? findCol(dateMajName()) : null;
+  let dmBusy = false;
+  async function ensureDateMaj(manual) {
+    const name = dateMajName();
+    if (!name || dateMajCol() || dmBusy || (!manual && state.dmErr)) return;
+    dmBusy = true;
+    const displayName = (cfg.libellesColonnes && cfg.libellesColonnes[name]) || "Mise à jour";
+    try {
+      const c = await DS.addArticleColumn(name, { date: true, displayName });
+      if (!findCol(c.name)) state.columns.push(c);
+      state.dmErr = null;
+      toast(`Colonne « ${displayName} » ajoutée à ${cfg.articlesList} : cliquez sur la cellule d'un article pour saisir la date.`, "ok");
+      if (currentView() === "articles") render();
+    } catch (e) {
+      if (/exist|already|déjà/i.test(e.message || "")) { // déjà créée (autre appareil)
+        state.columns.push({ name, displayName, type: "dateTime" });
+        if (currentView() === "articles") render();
+        return;
+      }
+      state.dmErr = e.message || String(e);
+      if (manual) toast("Création de la colonne impossible : " + state.dmErr, "bad");
+      if (currentView() === "articles") render();
+    } finally { dmBusy = false; }
+  }
+  const dmNotice = () => dateMajName() && !dateMajCol() && state.dmErr
+    ? `<div class="pv-notice bad">La colonne <strong>Mise à jour</strong> (${esc(dateMajName())}) n'a pas pu être créée dans ${esc(cfg.articlesList)} : ${esc(state.dmErr)} <button class="btn sm primary" type="button" id="dm-create">Réessayer</button></div>` : "";
   /* prix de vente manquant : signalé au lieu de vendre à 0 */
   const noSalePrice = a => !!a && !(artPrice(a) > 0);
   function pvNotice() {
@@ -1330,6 +1360,8 @@
     const wanted = (cfg.colonnesArticles || []).map(findCol).filter(Boolean);
     let cols = wanted.length ? wanted.filter((c, i) => wanted.indexOf(c) === i)
       : ["reference", "designation", "categorie", "fournisseur", "marque", "prix", "stock"].map(k => findCol(state.map[k])).filter(Boolean);
+    // colonne « Mise à jour » toujours visible, même si config.js ne la cite pas
+    const dm = dateMajCol(); if (dm && !cols.includes(dm)) cols = cols.concat(dm);
     // ordre choisi par l'utilisateur (glisser-déposer des en-têtes), mémorisé dans ce navigateur
     const saved = store.get(COL_ORDER_KEY, null);
     if (Array.isArray(saved) && saved.length) {
@@ -1351,6 +1383,11 @@
     if (c.name === state.map.prix) return v == null || v === "" || !(+v > 0) ? '<span class="muted pv-missing" title="Prix de vente à saisir">à saisir</span>' : money(v);
     if (c.name === state.map.achat) return v == null || v === "" ? empty : money(v);
     if (c.name === state.map.stock) { const st = stockStatus(a); return `<span class="badge ${st.cls}" title="${esc(st.label)}">${int(v)}</span>`; }
+    if (c.name === dateMajName()) { // date de mise à jour saisie à la main
+      if (v == null || v === "") return '<span class="muted dm-empty" title="Cliquer pour saisir la date de mise à jour">à dater</span>';
+      const j = Math.floor((Date.now() - new Date(v).getTime()) / 864e5);
+      return `<span class="dm-date${j > 90 ? " dm-old" : ""}" title="Mis à jour ${j <= 0 ? "aujourd'hui" : j === 1 ? "hier" : `il y a ${j} jours`}">${fmtDate(v)}</span>`;
+    }
     if (v == null || v === "") return empty;
     switch (c.type) {
       case "number": case "currency": return nfNum.format(+v);
@@ -3223,7 +3260,7 @@ self.onmessage = async e => {
           <button class="btn" id="art-export" title="Exporter en CSV">${ICON.download}<span class="hide-sm">Exporter</span></button>
           <button class="btn primary" id="art-new">${ICON.plus} Nouvel article</button>
         </div>
-        ${pvNotice()}
+        ${pvNotice()}${dmNotice()}
         <div class="sel-bar" id="sel-bar" hidden></div>
         <div class="code-bar" id="code-bar" hidden></div>
         <div id="art-table"></div>
@@ -3362,7 +3399,10 @@ self.onmessage = async e => {
         case "dateTime": {
           let dv = "";
           if (cur) { const d = new Date(cur); dv = new Date(d.getTime() - d.getTimezoneOffset() * 6e4).toISOString().slice(0, 10); }
-          html = `<input class="cell-input" type="date" value="${dv}">`; break;
+          html = `<input class="cell-input" type="date" value="${dv}">`;
+          // « Mise à jour » : raccourci pour mettre la date du jour (toujours un geste manuel)
+          if (col.name === dateMajName()) html += `<button type="button" class="btn sm dm-today" title="Mettre la date d'aujourd'hui">Aujourd'hui</button>`;
+          break;
         }
         case "lookup":
           html = `<select class="cell-input"><option value=""></option>${(col.options || []).map(o => `<option value="${esc(o.id)}" ${o.id === cur ? "selected" : ""}>${esc(o.label)}</option>`).join("")}${cur && !(col.options || []).some(o => o.id === cur) ? `<option value="${esc(cur)}" selected>${esc(cur)}</option>` : ""}</select>`; break;
@@ -3377,6 +3417,12 @@ self.onmessage = async e => {
       td.innerHTML = html;
       const inp = td.firstElementChild;
       editing = { td, col, a, inp, done: false };
+      const today = td.querySelector(".dm-today");
+      if (today) today.addEventListener("mousedown", ev => { // mousedown : le champ ne perd pas la main avant le clic
+        ev.preventDefault();
+        inp.value = dayKey(new Date());
+        commitEdit();
+      });
       inp.focus();
       if (inp.tagName === "INPUT" && inp.type !== "date") inp.select();
       inp.addEventListener("keydown", ev => {
@@ -3515,6 +3561,7 @@ self.onmessage = async e => {
       if (th) { if (f.sort === th.dataset.sort) f.dir = -f.dir; else { f.sort = th.dataset.sort; f.dir = 1; } return drawTable(); }
       if (e.target.closest("#art-new")) return articleForm(null);
       if (e.target.closest("#pv-create")) { const b = e.target.closest("#pv-create"); busy(b, true, "Création…"); return ensurePrixVente(true); }
+      if (e.target.closest("#dm-create")) { const b = e.target.closest("#dm-create"); busy(b, true, "Création…"); return ensureDateMaj(true); }
       if (e.target.closest("#art-labels")) return labelsDialog(sel.size ? [...sel].map(artById).filter(Boolean) : apply());
       if (e.target.closest("#sel-qr")) return labelsDialog([...sel].map(artById).filter(Boolean));
       if (e.target.closest("#sel-clear")) { sel.clear(); $$("#art-table [data-sel]").forEach(cb => { cb.checked = false; cb.closest("tr").classList.remove("row-sel"); }); return selBar(); }

@@ -733,7 +733,8 @@
     },
     /* Ajoute une colonne à la liste des articles : texte (ex. CodeBarre) ou nombre (opts.number, ex. PrixVente) */
     async addArticleColumn(name, opts = {}) {
-      const def = { name, displayName: opts.displayName || name, ...(opts.number ? { number: { decimalPlaces: "two" } } : { text: {} }) };
+      const def = { name, displayName: opts.displayName || name,
+        ...(opts.number ? { number: { decimalPlaces: "two" } } : opts.date ? { dateTime: { format: "dateOnly" } } : { text: {} }) };
       const c = await this.call(`/sites/${this.siteId}/lists/${this.articlesListId}/columns`,
         { method: "POST", body: JSON.stringify(def) }, ["Sites.Manage.All"]);
       const n = normalizeColumn(c);
@@ -931,7 +932,7 @@
       this.db.articles.push(a); this.persist(); return this.resolve(a);
     },
     async addArticleColumn(name, opts = {}) {
-      const c = { name, displayName: opts.displayName || name, type: opts.number ? "number" : "text" };
+      const c = { name, displayName: opts.displayName || name, type: opts.number ? "number" : opts.date ? "dateTime" : "text" };
       if (!this.db.columns.some(x => x.name === name)) { this.db.columns.push(c); this.persist(); }
       return { ...c };
     },

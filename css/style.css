@@ -1075,6 +1075,13 @@ body.has-dock .view { padding-bottom: calc(var(--dock-h, 0px) + 40px); }
 .cd-add .input { flex: 1; min-width: 0; font-family: ui-monospace, Consolas, monospace; }
 @media (max-width: 480px) { .cd-add { flex-wrap: wrap; } .cd-add .input { flex-basis: 100%; } .cd-add .btn { flex: 1; } }
 
+/* Colonne « Mise à jour » (date saisie à la main) */
+.dm-empty { font-size: 12.5px; font-style: italic; }
+.dm-date.dm-old { color: #b45309; font-weight: 600; }
+td.editing:has(> .dm-today) { min-width: 245px; white-space: nowrap; }
+td.editing:has(> .dm-today) > .cell-input { width: calc(100% - 98px); display: inline-block; vertical-align: middle; }
+td.editing .dm-today { margin-left: 6px; padding: 3px 8px; font-size: 12px; vertical-align: middle; width: 88px; justify-content: center; }
+
 /* Lecture de la boîte par l'IA (fiche article) */
 .ia-box { border: 1px solid color-mix(in srgb, #0891b2 32%, var(--border)); background: color-mix(in srgb, #0891b2 6%, var(--surface)); border-radius: 12px; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
 .ia-row { display: flex; gap: 8px; align-items: stretch; }

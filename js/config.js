@@ -34,12 +34,13 @@ window.APP_CONFIG = {
     achat: "Prix",           // prix d'achat (ancienne colonne « Prix »)
     stock: "Quantite",
     seuil: "",
+    dateMaj: "DateMAJ",      // date de dernière mise à jour, saisie À LA MAIN (colonne créée par l'application si absente)
     photo: "Photo"           // colonne « Une ligne de texte » contenant l'adresse (https://…) de la photo
   },
 
   // Colonnes affichées (dans cet ordre) dans le menu « Articles »
   // (pas de colonne « fournisseur » : un article peut venir de plusieurs fournisseurs, voir le menu Achats)
-  colonnesArticles: ["Id_article", "Modele", "Quantite", "Prix", "PrixVente", "Caractéristiques", "DATEe", "Nom_article"],
+  colonnesArticles: ["Id_article", "Modele", "Quantite", "Prix", "PrixVente", "Caractéristiques", "DATEe", "DateMAJ", "Nom_article"],
 
   // Titres affichés dans l'application (les noms des colonnes SharePoint ne changent pas)
   libellesColonnes: {
@@ -48,6 +49,7 @@ window.APP_CONFIG = {
     Prix: "Prix d'achat",
     PrixVente: "Prix de vente",
     CodeBarre: "Codes-barres",
+    DateMAJ: "Mise à jour",
     fournisseur: "Fournisseur"
   },
 
