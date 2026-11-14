@@ -3641,6 +3641,7 @@ self.onmessage = async e => {
       let caps = {}, set = {};
       try { caps = (tr && tr.getCapabilities && tr.getCapabilities()) || {}; set = (tr && tr.getSettings && tr.getSettings()) || {}; } catch (_) {}
       let html = `<button type="button" class="cam-btn small-btn ${small ? "on" : ""}" data-small aria-pressed="${small}" title="Petits codes-barres : zoom ou définition maximale, lecture concentrée au centre">🔍 Petit code</button>`;
+      html += `<button type="button" class="cam-btn" data-snap title="Image de test : enregistre l'image brute de la caméra (pleine définition) pour régler la lecture">📸</button>`;
       if (caps.torch) html += `<button type="button" class="cam-btn" data-torch aria-pressed="false" title="Allumer / éteindre la lampe">💡 Lampe</button>`;
       if (caps.zoom && caps.zoom.max > caps.zoom.min) {
         const st = caps.zoom.step || 0.1, cur = set.zoom || caps.zoom.min;
@@ -3649,6 +3650,19 @@ self.onmessage = async e => {
       box.innerHTML = html; box.hidden = false;
       box.onclick = async e => {
         if (e.target.closest("[data-small]")) return toggleSmall(!small);
+        if (e.target.closest("[data-snap]")) { // image brute de la caméra, en pleine définition (fichier PNG, sans perte)
+          const vv = $(".scan-cam video", m); if (!vv || !vv.videoWidth) return toast("Caméra pas encore prête.", "bad");
+          const cv = document.createElement("canvas"); cv.width = vv.videoWidth; cv.height = vv.videoHeight; cv.getContext("2d").drawImage(vv, 0, 0);
+          const st = (tr && tr.getSettings && tr.getSettings()) || {};
+          cv.toBlob(bl => {
+            if (!bl) return toast("Image non enregistrée.", "bad");
+            const a = document.createElement("a"), u = URL.createObjectURL(bl);
+            a.href = u; a.download = `itsoft-camera-${cv.width}x${cv.height}-${Math.round(st.frameRate || 0)}ips.png`; document.body.appendChild(a); a.click(); a.remove();
+            setTimeout(() => URL.revokeObjectURL(u), 5000);
+            toast(`Image de test enregistrée (${cv.width}×${cv.height}, ${Math.round(st.frameRate || 0)} images/s) dans Téléchargements.`, "ok");
+          }, "image/png");
+          return;
+        }
         const b = e.target.closest("[data-torch]"); if (!b) return;
         const on = b.getAttribute("aria-pressed") !== "true";
         try { await tr.applyConstraints({ advanced: [{ torch: on }] }); b.setAttribute("aria-pressed", String(on)); b.classList.toggle("on", on); }
@@ -3675,7 +3689,7 @@ self.onmessage = async e => {
         const s = (now - stT) / 1000, fps = Math.round(stN / s), nfps = Math.round(stNat / s);
         if (sp) {
           sp.hidden = false;
-          sp.textContent = locIsHot() ? "🎯 Code-barres repéré · ne bougez plus" : `⚡ ${Math.max(fps, nfps)} img/s · ${v.videoHeight}p · QR + codes-barres`;
+          sp.textContent = locIsHot() ? `🎯 Code-barres repéré · ne bougez plus · ${v.videoHeight}p` : `⚡ ${Math.max(fps, nfps)} img/s · ${v.videoHeight}p · QR + codes-barres`;
           sp.title = `Caméra ${v.videoWidth}×${v.videoHeight} · décodeurs ZXing : ${pool ? pool.length : 0}${pool && pool[0].worker ? " (en parallèle)" : ""} · ${fps} img/s${stN ? ` · ${Math.round(stMs / stN)} ms par image` : ""}${nat ? ` · détecteur intégré : ${nfps} img/s` : ""} · centre renforcé (cumul des images)${small ? " · MODE PETIT CODE" : ""}`;
         }
         if (small) placeGuide();
