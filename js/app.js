@@ -1769,8 +1769,9 @@ function locateBars(G, W, H) {
   return out.sort((a, b) => b.sc - a.sc).slice(0, 2);
 }
 /* profil des barres : moyenne de toutes les lignes de la zone, recalées selon l'inclinaison (au dixième de pixel) */
-function barProfile(G, W, H, b) {
-  const x0 = Math.max(0, Math.round(b.x - b.w * .15)), x1 = Math.min(W - 1, Math.round(b.x + b.w * 1.15)), L = x1 - x0;
+function barProfile(G, W, H, b, xr) { // xr : fenêtre horizontale imposée { x0, L } (cumul des images)
+  const x0 = xr ? Math.max(0, xr.x0) : Math.max(0, Math.round(b.x - b.w * .15)), x1 = xr ? Math.min(W - 1, xr.x0 + xr.L) : Math.min(W - 1, Math.round(b.x + b.w * 1.15)), L = x1 - x0;
+  if (xr && L !== xr.L) return null; // fenêtre sortie de l'image
   const y0 = Math.max(0, Math.round(b.y + b.h * .08)), y1 = Math.min(H - 1, Math.round(b.y + b.h * .6)), R = y1 - y0;
   if (L < 30 || R < 4) return null;
   // inclinaison : décalage de chaque groupe de 3 lignes par rapport au groupe du milieu (au dixième de pixel),
@@ -1807,14 +1808,22 @@ function barProfile(G, W, H, b) {
 }
 /* image de synthèse : profil agrandi ×U, puis défloutage (Richardson-Lucy) pour plusieurs flous possibles,
    variantes empilées : une seule lecture ZXing les essaie toutes */
-const LOC_SIGS = [0.6, 0.9, 1.2, 1.5, 1.9], LOC_ITER = 100;
-function barSynth(P, U, sigs, noRaw) {
+// niveaux de flou essayés (en pixels de la caméra) : image seule / plusieurs images cumulées (le pixel y est modélisé à part)
+const SIG_1 = [0.6, 0.9, 1.2, 1.5, 1.9], SIG_SR = [0.4, 0.7, 1.0, 1.3, 1.7], LOC_ITER = 100;
+const upsample = (P, U) => {
   const L = P.length, Lu = L * U, up = new Float32Array(Lu);
   for (let i = 0; i < Lu; i++) { const xs = (i + .5) / U - .5, xi = Math.max(0, Math.min(L - 2, Math.floor(xs))), f = Math.max(0, Math.min(1, xs - xi)); up[i] = P[xi] * (1 - f) + P[xi + 1] * f; }
+  return up;
+};
+function barSynth(P, U, sigs, noRaw, isUp) { // isUp : profil déjà en haute définition (cumul de plusieurs images)
+  const up = isUp ? P : upsample(P, U), Lu = up.length;
   const conv = (a, k, R, o) => { const n = a.length; for (let i = 0; i < n; i++) { let s = 0; for (let j = -R; j <= R; j++) { const q = i + j; s += a[q < 0 ? 0 : q >= n ? n - 1 : q] * k[j + R]; } o[i] = s; } return o; };
+  // flou = optique (gaussienne) + surface du pixel du capteur (largeur U en haute définition)
+  // (image seule : l'agrandissement par interpolation tient déjà compte du pixel → gaussienne seule)
+  const BX = isUp ? U : 1;
   const deblur = sig => {
-    const R = Math.ceil(sig * 3), k = new Float32Array(2 * R + 1); let ks = 0;
-    for (let j = -R; j <= R; j++) ks += k[j + R] = Math.exp(-j * j / (2 * sig * sig));
+    const R = Math.ceil(sig * 3 + BX / 2), k = new Float32Array(2 * R + 1); let ks = 0;
+    for (let j = -R; j <= R; j++) { let v = 0; for (let q = 0; q < BX; q++) { const jj = j - (q - (BX - 1) / 2); v += Math.exp(-jj * jj / (2 * sig * sig)); } ks += k[j + R] = v; }
     for (let j = 0; j < k.length; j++) k[j] /= ks;
     const d = new Float32Array(Lu); for (let i = 0; i < Lu; i++) d[i] = up[i] + 1;
     const e = Float32Array.from(d), t1 = new Float32Array(Lu), t2 = new Float32Array(Lu);
@@ -1833,26 +1842,78 @@ function barSynth(P, U, sigs, noRaw) {
 }
 /* le flou d'une même caméra varie peu : le réglage qui a permis la dernière lecture est essayé en premier (rapide),
    les autres seulement en cas d'échec */
-let locBestSig = -1;
-async function tryVariants(P, sigs, opts, noRaw) {
-  if (!sigs.length && noRaw) return [];
-  const s = barSynth(P, 3, sigs, noRaw);
+const locBest = [-1, -1]; // indice du niveau de flou de la dernière lecture réussie : [image seule, images cumulées]
+async function tryVariants(P, idx, opts, noRaw, isUp) { // idx : indices des niveaux de flou à essayer
+  if (!idx.length && noRaw) return [];
+  const T = isUp ? SIG_SR : SIG_1, s = barSynth(P, 3, idx.map(i => T[i]), noRaw, isUp);
   const ok = (await Z.readBarcodes(s.im, opts)).filter(r => r.isValid);
   if (ok.length) {
     const y = ok[0].position && ok[0].position.topLeft ? ok[0].position.topLeft.y : 0;
-    const sg = s.list[Math.max(0, Math.min(s.list.length - 1, Math.floor((y - s.gap / 2) / s.band)))];
-    if (sg) locBestSig = LOC_SIGS.indexOf(sg);
+    const v = Math.max(0, Math.min(s.list.length - 1, Math.floor((y - s.gap / 2) / s.band))) - (noRaw ? 0 : 1);
+    if (v >= 0) locBest[isUp ? 1 : 0] = idx[v];
   }
   return ok;
 }
+/* Super-résolution : la main bouge toujours un peu, chaque image voit donc les barres décalées d'une fraction
+   de pixel. Les profils des dernières images sont recalés au 1/3 de pixel puis rangés sur une grille 3 fois
+   plus fine : on retrouve des détails plus fins que les pixels de la caméra. */
+const SR_U = 3, SR_MAX = 6, SR_MS = 900;
+let sr = null; // { x0, L, cx, cy, w, ref, items: [{ P, s }], t }
+function srAlign(up, ref) { // décalage (en pas de 1/3 px) qui superpose le mieux up sur ref
+  const n = ref.length, M = 12 * SR_U; let best = 0, bs = -2;
+  for (let d = -M; d <= M; d++) {
+    let sab = 0, sa = 0, sb = 0, saa = 0, sbb = 0, k = 0;
+    for (let i = Math.max(M, d + M); i < Math.min(n - M, n + d - M); i += 2) { const a = ref[i], b = up[i - d]; sab += a * b; sa += a; sb += b; saa += a * a; sbb += b * b; k++; }
+    if (k < 20) continue;
+    const cov = sab - sa * sb / k, v = Math.sqrt((saa - sa * sa / k) * (sbb - sb * sb / k)), r = v > 1e-3 ? cov / v : 0;
+    if (r > bs) { bs = r; best = d; }
+  }
+  return { d: best, r: bs };
+}
+function srCombine() { // échantillons de toutes les images rangés sur la grille fine, trous comblés
+  const L = sr.L, n = L * SR_U, sum = new Float32Array(n), cnt = new Float32Array(n);
+  for (const it of sr.items) for (let x = 0; x < L; x++) { const j = Math.floor((x + .5) * SR_U + it.s); if (j >= 0 && j < n) { sum[j] += it.P[x]; cnt[j]++; } }
+  const out = new Float32Array(n); let last = -1;
+  for (let j = 0; j < n; j++) if (cnt[j]) {
+    out[j] = sum[j] / cnt[j];
+    if (last >= 0 && j - last > 1) for (let q = last + 1; q < j; q++) out[q] = out[last] + (out[j] - out[last]) * (q - last) / (j - last);
+    else if (last < 0) for (let q = 0; q < j; q++) out[q] = out[j];
+    last = j;
+  }
+  for (let q = last + 1; q < n; q++) out[q] = last >= 0 ? out[last] : 255;
+  return out;
+}
+function srAdd(G, W, H, b) {
+  const now = Date.now(), cx = b.x + b.w / 2, cy = b.y + b.h / 2;
+  // nouvelle série : trop ancienne, code déplacé, ou taille différente (rapproché / éloigné)
+  if (!sr || now - sr.t > SR_MS || Math.abs(cx - sr.cx) > sr.w * .25 || Math.abs(cy - sr.cy) > b.h * .6 || Math.abs(b.w - sr.w) > sr.w * .3) {
+    const L = Math.round(b.w * 1.3), x0 = Math.round(cx - L / 2);
+    const P = barProfile(G, W, H, b, { x0, L }); if (!P) { sr = null; return null; }
+    sr = { x0, L, cx, cy, w: b.w, ref: upsample(P, SR_U), items: [{ P, s: 0 }], t: now };
+    return null;
+  }
+  const P = barProfile(G, W, H, b, { x0: sr.x0, L: sr.L }); if (!P) return null;
+  const a = srAlign(upsample(P, SR_U), sr.ref);
+  if (a.r < .6) { sr = null; return null; } // l'image ne ressemble plus : on repart de zéro à la prochaine
+  sr.items.push({ P, s: a.d }); if (sr.items.length > SR_MAX) sr.items.shift();
+  sr.t = now;
+  return srCombine();
+}
 async function readLocated(img, opts) {
   const W = img.width, H = img.height, G = grayOf(img), bs = locateBars(G, W, H);
-  for (const b of bs) {
-    const P = barProfile(G, W, H, b); if (!P) continue;
-    const first = locBestSig >= 0 ? [LOC_SIGS[locBestSig]] : [0.9, 1.2];
-    let out = await tryVariants(P, first, opts, false);
-    if (!out.length) out = await tryVariants(P, LOC_SIGS.filter(x => !first.includes(x)), opts, true);
-    if (out.length) return { res: out, found: true };
+  for (let i = 0; i < bs.length; i++) {
+    const b = bs[i], P = barProfile(G, W, H, b); if (!P) continue;
+    const f1 = locBest[0] >= 0 ? [locBest[0]] : [1, 2], fS = locBest[1] >= 0 ? [locBest[1]] : [1, 2];
+    const rest = f => [0, 1, 2, 3, 4].filter(x => !f.includes(x));
+    // 1) l'image seule, réglage habituel (le plus rapide)
+    let out = await tryVariants(P, f1, opts, false);
+    // 2) plusieurs images cumulées (super-résolution) — le code principal seulement
+    const S = i === 0 ? srAdd(G, W, H, b) : null;
+    if (!out.length && S) out = await tryVariants(S, fS, opts, false, true);
+    // 3) autres réglages de flou
+    if (!out.length) out = await tryVariants(P, rest(f1), opts, true);
+    if (!out.length && S) out = await tryVariants(S, rest(fS), opts, true, true);
+    if (out.length) { if (i === 0) sr = null; return { res: out, found: true }; }
   }
   return { res: [], found: bs.length > 0 };
 }
