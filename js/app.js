@@ -1875,25 +1875,49 @@ function erf0(x) { const s = x < 0 ? -1 : 1; x = Math.abs(x); const t = 1 / (1 +
 // table précalculée (pas de 0,002) : 5 à 10 fois plus rapide que le calcul direct
 const ERF_T = new Float32Array(4002); for (let i = 0; i < 4002; i++) ERF_T[i] = erf0(-4 + i * .002);
 function erf(x) { if (x <= -4) return -1; if (x >= 4) return 1; const f = (x + 4) * 500, i = f | 0, r = f - i; return ERF_T[i] + (ERF_T[i + 1] - ERF_T[i]) * r; }
+/* bord gauche du module k : x0 + m·k, plus une perspective w (code pas tout à fait face à la caméra : les barres
+   s'élargissent d'un bout à l'autre ; w = 0,04 → 4 % plus étroites à gauche, 4 % plus larges à droite) */
+const edgeAt = (k, x0, m, w) => x0 + m * k + w * m * k * (k - 95) / 95;
+function kOf(c, x0, m, w) {
+  let k = Math.floor((c - x0) / m);
+  if (w) for (let it = 0; it < 8; it++) { if (edgeAt(k, x0, m, w) > c) k--; else if (edgeAt(k + 1, x0, m, w) <= c) k++; else break; }
+  return k;
+}
 /* noirceur attendue au point c (pixel de 1 px de large, flou sg) pour des modules bits (95), début x0, largeur m */
-function darkAt(c, bits, x0, m, sg) {
-  const kc = Math.floor((c - x0) / m), R = Math.ceil(3 * sg / m) + 1, q = 1 / (sg * Math.SQRT2);
+function darkAt(c, bits, x0, m, sg, w = 0) {
+  const kc = kOf(c, x0, m, w), R = Math.ceil(3 * sg / m) + 1, q = 1 / (sg * Math.SQRT2);
   let d = 0;
   for (let k = kc - R; k <= kc + R; k++) {
     if (k < 0 || k > 94) continue; const b = bits[k]; if (!b) continue;
-    const a = x0 + k * m - c; d += b * .5 * (erf((a + m) * q) - erf(a * q));
+    d += b * .5 * (erf((edgeAt(k + 1, x0, m, w) - c) * q) - erf((edgeAt(k, x0, m, w) - c) * q));
   }
   return d;
 }
 /* influence de chaque module sur chaque échantillon, calculée une fois par hypothèse (le choix des chiffres
    devient une simple somme de produits) */
-function basisFor(pos, n, x0, m, sg) {
+function basisFor(pos, n, x0, m, sg, w = 0) {
   const K = Math.ceil(3 * sg / m) + 2, S = 2 * K + 1, q = 1 / (sg * Math.SQRT2), k0 = new Int32Array(n), v = new Float32Array(n * S);
   for (let i = 0; i < n; i++) {
-    const c = pos[i], kc = Math.floor((c - x0) / m); k0[i] = kc - K;
-    for (let j = 0; j < S; j++) { const k = kc - K + j; if (k < 0 || k > 94) continue; const a = x0 + k * m - c; v[i * S + j] = .5 * (erf((a + m) * q) - erf(a * q)); }
+    const c = pos[i], kc = kOf(c, x0, m, w); k0[i] = kc - K;
+    for (let j = 0; j < S; j++) { const k = kc - K + j; if (k < 0 || k > 94) continue; v[i * S + j] = .5 * (erf((edgeAt(k + 1, x0, m, w) - c) * q) - erf((edgeAt(k, x0, m, w) - c) * q)); }
   }
   return { k0, v, S };
+}
+/* largeur estimée d'une barre élémentaire (module), en pixels de la caméra : sert à guider (« rapprochez le code ») */
+function barModule(P) {
+  const n = P.length; if (n < 40) return 0;
+  const srt = Array.from(P).sort((a, b) => a - b), lo = srt[Math.floor(n * .04)], hi = srt[Math.floor(n * .96)];
+  if (hi - lo < 12) return 0;
+  const th = hi - (hi - lo) * .3, dk = []; for (let i = 0; i < n; i++) if (P[i] < th) dk.push(i);
+  if (dk.length < 10) return 0;
+  let ci = 0; for (let k = 0; k < dk.length; k++) if (Math.abs(dk[k] - n / 2) < Math.abs(dk[ci] - n / 2)) ci = k;
+  let iL = dk[ci], iR = dk[ci];
+  for (let pass = 0; pass < 3; pass++) {
+    const gmax = Math.max(5, .045 * n, .065 * (iR - iL));
+    let k = dk.indexOf(iL); while (k > 0 && dk[k] - dk[k - 1] <= gmax) k--; iL = dk[k];
+    k = dk.indexOf(iR); while (k < dk.length - 1 && dk[k + 1] - dk[k] <= gmax) k++; iR = dk[k];
+  }
+  return iR - iL >= 20 ? (iR - iL) / 95 : 0;
 }
 function eanCheck(s) { let t = 0; for (let i = 0; i < 12; i++) t += +s[i] * (i % 2 ? 3 : 1); return (10 - t % 10) % 10 === +s[12]; }
 function modelDecode(P, U) {
@@ -1920,29 +1944,53 @@ function modelDecode(P, U) {
   // 1) position, largeur de module et flou : ajustés sur les 3 gardes (motifs connus) + marges blanches
   const inG = [];
   for (let i = 0; i < n; i++) { const k = (pos[i] - xL) / m0; if ((k > -5 && k < 4) || (k > 43 && k < 52) || (k > 90 && k < 100)) inG.push(i); }
-  const fitSSE = (idx, bits, x0, m, sg) => { // régression v = a + b·noirceur → erreur résiduelle
+  const fitSSE = (idx, bits, x0, m, sg, w = 0) => { // régression v = a + b·noirceur → erreur résiduelle
     let sd = 0, sv = 0, sdd = 0, sdv = 0, svv = 0; const N = idx.length;
-    for (const i of idx) { const d = darkAt(pos[i], bits, x0, m, sg), v = P[i]; sd += d; sv += v; sdd += d * d; sdv += d * v; svv += v * v; }
+    for (const i of idx) { const d = darkAt(pos[i], bits, x0, m, sg, w), v = P[i]; sd += d; sv += v; sdd += d * d; sdv += d * v; svv += v * v; }
     const den = N * sdd - sd * sd; if (den <= 1e-9) return { e: Infinity };
     const b = (N * sdv - sd * sv) / den, a = (sv - b * sd) / N;
     return { e: Math.max(0, svv - 2 * a * sv - 2 * b * sdv + a * a * N + 2 * a * b * sd + b * b * sdd) / N, a, b };
   };
   // recherche grossière puis affinée autour des 8 meilleures pistes (3 fois moins de calculs)
   const coarse = [], seen = new Set(), hyp = [];
-  const tryH = (list, x0, m, sg) => { const f = fitSSE(inG, base, x0, m, sg); if (f.b < 0 && isFinite(f.e)) list.push({ x0, m, sg, e: f.e, a: f.a, b: f.b }); }; // b < 0 : plus de noir = plus sombre
-  for (const sg of [.45, .7, 1, 1.35]) for (let dm = -.07; dm <= .0701; dm += .01) for (let dx = -2.5; dx <= 2.501; dx += .5) tryH(coarse, xL + dx, m0 * (1 + dm), sg);
+  const tryH = (list, x0, m, sg, w) => { const f = fitSSE(inG, base, x0, m, sg, w); if (f.b < 0 && isFinite(f.e)) list.push({ x0, m, sg, w, e: f.e, a: f.a, b: f.b }); }; // b < 0 : plus de noir = plus sombre
+  // flous essayés jusqu'à 2,3 px : une webcam tenue près du code (mise au point fixe) floute fortement ;
+  // perspective : code vu un peu en biais (barres plus larges d'un côté)
+  for (const sg of MODEL_SIGS) for (let dm = -.07; dm <= .0701; dm += .01) for (let dx = -2.5; dx <= 2.501; dx += .5) tryH(coarse, xL + dx, m0 * (1 + dm), sg, 0);
   coarse.sort((p, q) => p.e - q.e);
   for (const c of coarse.slice(0, 8)) for (let i = -2; i <= 2; i++) for (let j = -2; j <= 2; j++) {
-    const x0 = c.x0 + j * .125, m = c.m * (1 + i * .0025), key = x0.toFixed(3) + "/" + m.toFixed(4) + "/" + c.sg;
-    if (seen.has(key)) continue; seen.add(key); tryH(hyp, x0, m, c.sg);
+    const x0 = c.x0 + j * .125, m = c.m * (1 + i * .0025), key = x0.toFixed(3) + "/" + m.toFixed(4) + "/" + c.sg + "/" + c.w;
+    if (seen.has(key)) continue; seen.add(key); tryH(hyp, x0, m, c.sg, c.w);
   }
   hyp.sort((p, q) => p.e - q.e);
   // 2) chiffres : pour les meilleures hypothèses, chaque chiffre est la forme la plus ressemblante (2 passes)
   let best = null;
-  for (const h of hyp.slice(0, 15).concat(coarse.slice(0, 15))) { // pistes affinées + pistes variées
+  // réajustement sur tout le code (une fois les chiffres lus une première fois) : position, largeur des barres,
+  // perspective et flou → corrige le décalage qui s'accumule vers la droite quand la largeur est un peu fausse
+  const refine = (h0, bits) => {
+    const idx = []; for (let i = 0; i < n; i += U > 1 ? 2 : 1) if (pos[i] >= h0.x0 - 4 * h0.m && pos[i] <= h0.x0 + 99 * h0.m) idx.push(i);
+    let c = { x0: h0.x0, m: h0.m, w: h0.w || 0, sg: h0.sg }, f = fitSSE(idx, bits, c.x0, c.m, c.sg, c.w);
+    const tryC = t => { const g = fitSSE(idx, bits, t.x0, t.m, t.sg, t.w); if (g.b < 0 && g.e < f.e) { c = t; f = g; return true; } return false; };
+    for (const [sx, sm, sw, ss] of [[.4, .006, .03, .25], [.2, .003, .015, .12], [.1, .0015, .008, .06]]) {
+      for (let rep = 0; rep < 2; rep++) {
+        for (const d of [-1, 1]) while (tryC({ ...c, x0: c.x0 + d * sx }));
+        for (const d of [-1, 1]) while (tryC({ ...c, m: c.m * (1 + d * sm) }));
+        for (const d of [-1, 1]) while (Math.abs(c.w + d * sw) <= .12 && tryC({ ...c, w: c.w + d * sw }));
+        for (const d of [-1, 1]) while (c.sg + d * ss >= .3 && c.sg + d * ss <= 3 && tryC({ ...c, sg: c.sg + d * ss }));
+      }
+    }
+    return { ...c, e: f.e, a: f.a, b: f.b };
+  };
+  let hi2 = 0;
+  for (let h of hyp.slice(0, 15).concat(coarse.slice(0, 15))) { // pistes affinées + pistes variées
     const bits = base.slice(), digs = new Array(12).fill(-1), kinds = new Array(12).fill(""), marg = new Array(12).fill(0);
-    const win = s => { const r = []; for (let i = 0; i < n; i++) { const k = (pos[i] - h.x0) / h.m; if (k >= s - .3 && k < s + 7.3) r.push(i); } return r; };
-    const B = basisFor(pos, n, h.x0, h.m, h.sg), BS = B.S;
+    h = { ...h, w: h.w || 0 };
+    let win, B, BS;
+    const setup = () => {
+      win = s => { const r = [], a = edgeAt(s - .3, h.x0, h.m, h.w), b = edgeAt(s + 7.3, h.x0, h.m, h.w); for (let i = 0; i < n; i++) if (pos[i] >= a && pos[i] < b) r.push(i); return r; };
+      B = basisFor(pos, n, h.x0, h.m, h.sg, h.w); BS = B.S;
+    };
+    setup();
     const err = (idx) => {
       let e = 0;
       for (const i of idx) {
@@ -1952,7 +2000,9 @@ function modelDecode(P, U) {
       }
       return e;
     };
-    for (let pass = 0; pass < 2; pass++) for (let j = 0; j < 12; j++) {
+    for (let pass = 0; pass < 3; pass++) for (let j = 0; j < 12; j++) {
+      // après la 1re lecture : réajustement sur tout le code (8 premières pistes), puis relecture des chiffres
+      if (pass === 1 && j === 0 && hi2 < 8) { h = refine(h, bits); setup(); }
       const s = j < 6 ? 3 + 7 * j : 50 + 7 * (j - 6), idx = win(s);
       const cands = j < 6 ? [...EAN_Lb.map((p, d) => [p, d, "L"]), ...EAN_G.map((p, d) => [p, d, "G"])] : EAN_R.map((p, d) => [p, d, "R"]);
       let b1 = Infinity, b2 = Infinity, bc = null;
@@ -1960,6 +2010,7 @@ function modelDecode(P, U) {
       for (let i = 0; i < 7; i++) bits[s + i] = bc[0][i];
       digs[j] = bc[1]; kinds[j] = bc[2]; marg[j] = (b2 - b1) / Math.max(1e-6, idx.length);
     }
+    hi2++;
     const par = kinds.slice(0, 6).join(""), d0 = EAN_PAR.indexOf(par);
     if (d0 < 0) continue;
     const text = d0 + digs.join("");
@@ -1971,7 +2022,7 @@ function modelDecode(P, U) {
   }
   return best && best.conf > MODEL_CONF ? { text: best.text, format: "EAN-13", isValid: true, conf: best.conf } : null;
 }
-const MODEL_CONF = 0.5, MODEL_ON = true;
+const MODEL_CONF = 0.5, MODEL_ON = true, MODEL_SIGS = [.45, .7, 1, 1.35, 1.8, 2.3];
 /* Super-résolution : la main bouge toujours un peu, chaque image voit donc les barres décalées d'une fraction
    de pixel. Les profils des dernières images sont recalés au 1/3 de pixel puis rangés sur une grille 3 fois
    plus fine : on retrouve des détails plus fins que les pixels de la caméra. */
@@ -2070,10 +2121,11 @@ function findCands(img) {
   return out;
 }
 async function readLocated(img, opts) {
-  const cands = findCands(img);
+  const cands = findCands(img); let mod = 0;
   for (let i = 0; i < cands.length && i < 2; i++) {
     const { b, G, W, H } = cands[i];
     const P = barProfile(G, W, H, b); if (!P) continue;
+    if (i === 0) mod = barModule(P);
     const f1 = locBest[0] >= 0 ? [locBest[0]] : [1, 2], fS = locBest[1] >= 0 ? [locBest[1]] : [1, 2];
     const rest = f => [0, 1, 2, 3, 4].filter(x => !f.includes(x));
     // 1) décodeur par modèle (EAN-13 / UPC-A, les codes des produits) sur l'image seule : le plus sûr et le plus
@@ -2092,9 +2144,9 @@ async function readLocated(img, opts) {
       out = await tryVariants(P, rest(f1), opts, true);
       if (!out.length && S) out = await tryVariants(S, rest(fS), opts, true, true);
     }
-    if (out.length) { if (i === 0) sr = null; return { res: out, found: true }; }
+    if (out.length) { if (i === 0) sr = null; return { res: out, found: true, mod }; }
   }
-  return { res: [], found: cands.length > 0 };
+  return { res: [], found: cands.length > 0, mod };
 }
 self.onmessage = async e => {
   const d = e.data;
@@ -2126,7 +2178,7 @@ self.onmessage = async e => {
     const { center, avg, gen, locate, ...opts } = d.opts;
     if (locate) {
       const L = await readLocated(img, opts);
-      self.postMessage({ type: "result", locate: true, ms: performance.now() - t0, stripes: L.found && !L.res.length, res: L.res.map(r => ({ text: r.text, format: r.format, valid: r.isValid, loc: true, conf: r.conf || 0 })) });
+      self.postMessage({ type: "result", locate: true, mod: L.mod || 0, ms: performance.now() - t0, stripes: L.found && !L.res.length, res: L.res.map(r => ({ text: r.text, format: r.format, valid: r.isValid, loc: true, conf: r.conf || 0 })) });
       return;
     }
     if (center) img = centerSmooth(img, center, avg, gen);
@@ -3641,7 +3693,7 @@ self.onmessage = async e => {
       let caps = {}, set = {};
       try { caps = (tr && tr.getCapabilities && tr.getCapabilities()) || {}; set = (tr && tr.getSettings && tr.getSettings()) || {}; } catch (_) {}
       let html = `<button type="button" class="cam-btn small-btn ${small ? "on" : ""}" data-small aria-pressed="${small}" title="Petits codes-barres : zoom ou définition maximale, lecture concentrée au centre">🔍 Petit code</button>`;
-      html += `<button type="button" class="cam-btn" data-snap title="Image de test : enregistre l'image brute de la caméra (pleine définition) pour régler la lecture">📸</button>`;
+      html += `<button type="button" class="cam-btn" data-snap title="Images de test : après 3 secondes (le temps de placer l'article), enregistre 4 images brutes de la caméra en pleine définition, pour régler la lecture">📸</button>`;
       if (caps.torch) html += `<button type="button" class="cam-btn" data-torch aria-pressed="false" title="Allumer / éteindre la lampe">💡 Lampe</button>`;
       if (caps.zoom && caps.zoom.max > caps.zoom.min) {
         const st = caps.zoom.step || 0.1, cur = set.zoom || caps.zoom.min;
@@ -3650,17 +3702,29 @@ self.onmessage = async e => {
       box.innerHTML = html; box.hidden = false;
       box.onclick = async e => {
         if (e.target.closest("[data-small]")) return toggleSmall(!small);
-        if (e.target.closest("[data-snap]")) { // image brute de la caméra, en pleine définition (fichier PNG, sans perte)
+        if (e.target.closest("[data-snap]")) {
+          // images brutes de la caméra, en pleine définition (PNG, sans perte) : compte à rebours de 3 s
+          // (le temps de placer l'article), puis 4 images successives empilées dans un seul fichier
+          const btn = e.target.closest("[data-snap]");
           const vv = $(".scan-cam video", m); if (!vv || !vv.videoWidth) return toast("Caméra pas encore prête.", "bad");
-          const cv = document.createElement("canvas"); cv.width = vv.videoWidth; cv.height = vv.videoHeight; cv.getContext("2d").drawImage(vv, 0, 0);
-          const st = (tr && tr.getSettings && tr.getSettings()) || {};
-          cv.toBlob(bl => {
-            if (!bl) return toast("Image non enregistrée.", "bad");
-            const a = document.createElement("a"), u = URL.createObjectURL(bl);
-            a.href = u; a.download = `itsoft-camera-${cv.width}x${cv.height}-${Math.round(st.frameRate || 0)}ips.png`; document.body.appendChild(a); a.click(); a.remove();
-            setTimeout(() => URL.revokeObjectURL(u), 5000);
-            toast(`Image de test enregistrée (${cv.width}×${cv.height}, ${Math.round(st.frameRate || 0)} images/s) dans Téléchargements.`, "ok");
-          }, "image/png");
+          if (btn.disabled) return; btn.disabled = true;
+          const wait = ms => new Promise(r => setTimeout(r, ms));
+          (async () => {
+            for (let s = 3; s > 0; s--) { btn.textContent = `📸 ${s}…`; await wait(1000); }
+            btn.textContent = "📸 ●";
+            const W = vv.videoWidth, H = vv.videoHeight, N = 4, cv = document.createElement("canvas"); cv.width = W; cv.height = H * N;
+            const cx2 = cv.getContext("2d");
+            for (let i = 0; i < N; i++) { cx2.drawImage(vv, 0, H * i, W, H); await wait(130); }
+            const st = (tr && tr.getSettings && tr.getSettings()) || {};
+            cv.toBlob(bl => {
+              btn.textContent = "📸"; btn.disabled = false;
+              if (!bl) return toast("Image non enregistrée.", "bad");
+              const a = document.createElement("a"), u = URL.createObjectURL(bl);
+              a.href = u; a.download = `itsoft-camera-${W}x${H}-${Math.round(st.frameRate || 0)}ips-x${N}.png`; document.body.appendChild(a); a.click(); a.remove();
+              setTimeout(() => URL.revokeObjectURL(u), 5000);
+              toast(`Images de test enregistrées (${N} × ${W}×${H}) dans Téléchargements.`, "ok");
+            }, "image/png");
+          })();
           return;
         }
         const b = e.target.closest("[data-torch]"); if (!b) return;
@@ -3689,7 +3753,7 @@ self.onmessage = async e => {
         const s = (now - stT) / 1000, fps = Math.round(stN / s), nfps = Math.round(stNat / s);
         if (sp) {
           sp.hidden = false;
-          sp.textContent = locIsHot() ? `🎯 Code-barres repéré · ne bougez plus · ${v.videoHeight}p` : `⚡ ${Math.max(fps, nfps)} img/s · ${v.videoHeight}p · QR + codes-barres`;
+          sp.textContent = locIsHot() ? hotText() : `⚡ ${Math.max(fps, nfps)} img/s · ${v.videoHeight}p · QR + codes-barres`;
           sp.title = `Caméra ${v.videoWidth}×${v.videoHeight} · décodeurs ZXing : ${pool ? pool.length : 0}${pool && pool[0].worker ? " (en parallèle)" : ""} · ${fps} img/s${stN ? ` · ${Math.round(stMs / stN)} ms par image` : ""}${nat ? ` · détecteur intégré : ${nfps} img/s` : ""} · centre renforcé (cumul des images)${small ? " · MODE PETIT CODE" : ""}`;
         }
         if (small) placeGuide();
@@ -3712,13 +3776,22 @@ self.onmessage = async e => {
       // code-barres repéré mais pas encore lu : la lecture difficile (défloutage) passe en priorité pendant 1,5 s
       let locHot = 0;
       const locIsHot = () => Date.now() - locHot < 1500;
+      // guidage : largeur d'une barre élémentaire mesurée sur les dernières images (en pixels de la caméra).
+      // Sous ~1,4 px, les barres fines disparaissent dans le flou de la caméra : il faut rapprocher le code.
+      const modTs = [];
+      const hotText = () => {
+        const ms = modTs.map(x => x.m).sort((a, b) => a - b), med = ms.length >= 2 ? ms[ms.length >> 1] : 0;
+        if (med && med < 1.4) return `🔍 Code trop petit pour la caméra · rapprochez-le (${(med).toFixed(1)} px/barre)`;
+        return `🎯 Code-barres repéré · ne bougez plus · ${v.videoHeight}p`;
+      };
       const onResult = out => {
         if (!alive()) return;
         zxActive = true; frameNo++; stN++; stMs += out.ms || 0;
         let unread = !!out.stripes, read = false; // rayures de code-barres vues au centre, sans lecture
+        if (out.locate && out.mod) { modTs.push({ t: Date.now(), m: out.mod }); while (modTs.length > 8 || (modTs.length && Date.now() - modTs[0].t > 2000)) modTs.shift(); }
         if (out.stripes) { // barres vues (repérage ou centre) sans lecture : lecture renforcée en priorité
-          if (!locIsHot() && sp) { sp.hidden = false; sp.textContent = "🎯 Code-barres repéré · ne bougez plus"; }
           locHot = Date.now();
+          if (sp) { sp.hidden = false; sp.textContent = hotText(); }
         }
         for (const r of out.res || []) {
           // code lu après défloutage : accepté tout de suite s'il correspond à un article connu (code avec clé de contrôle
