@@ -2985,16 +2985,22 @@ self.onmessage = async e => {
       m.dataset.toCart = "1"; closeModal(); sellDialog(null);
     });
     if (auto) {
-      $("#scan-cart", m).innerHTML = "✔ Valider la vente"; $("#scan-cart", m).classList.add("sc-validate");
-      $("#scan-log", m).innerHTML = `<div class="muted" style="padding:8px 2px">Visez l'étiquette : les articles s'ajoutent à la <strong>vente en cours</strong>. Rien n'est enregistré avant le clic sur <strong>Valider la vente</strong> (client ${esc(cfg.clientParDefaut || "comptoir")}, paiement ${esc((cfg.modesPaiement || ["Espèces"])[0])}).</div>`;
+      // une vente = un article : plus de « Valider » ni d'« Annuler la vente » (rien n'est en attente) ;
+      // une erreur se corrige avec « Annuler cette vente » sous « Dernière vente »
+      $("#scan-cart", m).hidden = true;
+      const cc = $("#scan-cancel", m); if (cc) cc.hidden = true;
+      const ft = $(".sp-foot", m); if (ft) ft.hidden = true;
+      $("#scan-log", m).innerHTML = `<div class="muted" style="padding:8px 2px">Visez l'étiquette ou le code-barres : <strong>chaque scan enregistre une vente</strong> d'un article (quantité 1, client ${esc(cfg.clientParDefaut || "comptoir")}, paiement ${esc((cfg.modesPaiement || ["Espèces"])[0])}). Scannez de nouveau pour en vendre un autre. Article non classé : depuis la page Articles (quantité à saisir).</div>`;
     }
 
     const r2 = n => Math.round(n * 100) / 100;
     /* « Valider la vente » : contrôle (stock + prix) puis enregistrement, chacun en UNE requête groupée.
        En cas de coupure, la vente est gardée sur l'appareil et renvoyée automatiquement. */
-    let validating = false, lastSale = null;
-    async function validateSale() {
+    let validating = false, lastSale = null, saleOk = false;
+    // quiet : vente d'un seul article enregistrée dès le scan (pas de message ni de bip ici : le scan les affiche)
+    async function validateSale(quiet) {
       if (validating) return;
+      saleOk = false;
       if (!sess.lines.length) return toast("Aucun article scanné pour l'instant.", "bad");
       validating = true;
       const btn = $("#scan-cart", m); busy(btn, true, "Enregistrement…");
@@ -3035,30 +3041,32 @@ self.onmessage = async e => {
         });
         const nb = sess.lines.reduce((t, L) => t + L.qty, 0), tot = sess.lines.reduce((t, L) => t + L.qty * L.price, 0);
         const entry = { num, date: d.toISOString(), lines, need: [...need], done: { l: [], s: [] }, nb, tot };
-        if (!fresh) return saleDone(entry, savePending(entry));
+        if (!fresh) return saleDone(entry, savePending(entry), quiet);
         // 3. enregistrement en une seule requête groupée
         const stock = hasStock() ? [...need].map(([id, q]) => ({ id, fields: { [state.map.stock]: artStock(artById(id)) - q } })) : [];
         try {
           const r = await DS.commitSale(lines, stock, entry.done);
           applySaleResult(r);
-          saleDone(entry, false);
+          saleDone(entry, false, quiet);
         } catch (e) {
           if (e.partial) applySaleResult(e.partial);
           if (e.done) entry.done = e.done;
           if (!isNetErr(e)) throw e;
-          saleDone(entry, savePending(entry)); // coupure pendant l'envoi : le reste sera renvoyé, sans doublon
+          saleDone(entry, savePending(entry), quiet); // coupure pendant l'envoi : le reste sera renvoyé, sans doublon
         }
       } catch (e) {
         toast("Vente non enregistrée : " + e.message, "bad");
       } finally { validating = false; if (document.body.contains(btn)) busy(btn, false); }
     }
     /* fin de la validation : liste vidée, « Dernière vente » affichée (annulable), tableau mis à jour */
-    function saleDone(entry, pending) {
-      beep(true);
-      if (!pending) toast(`Vente ${entry.num} enregistrée : ${int(entry.nb)} article(s), ${money(entry.tot)}.`, "ok");
+    function saleDone(entry, pending, quiet) {
+      saleOk = true;
+      if (!quiet) { beep(true); if (!pending) toast(`Vente ${entry.num} enregistrée : ${int(entry.nb)} article(s), ${money(entry.tot)}.`, "ok"); }
       if (currentView() === "articles" && state.refreshArticle) sess.lines.forEach(L => { if (L.a) state.refreshArticle(L.a, true); });
       lastSale = { num: entry.num, nb: entry.nb, tot: entry.tot, pending: !!pending };
-      resetSession(); renderLastSale();
+      if (quiet) { sess.lines = []; sess.hist = []; showTotal(); } // vente au scan : le journal des scans est gardé
+      else resetSession();
+      renderLastSale();
       if (opts.onChange) opts.onChange(pending ? null : entry.num); // la vente apparaît dans le tableau (en vert 5 s)
       if (!panel) { m.dataset.validated = "1"; m.dataset.toCart = "1"; if (currentView() !== "articles" && currentView() !== "ventes") render(); }
     }
@@ -3118,20 +3126,20 @@ self.onmessage = async e => {
         if (ok && price != null) { const l = state.cart.find(x => x.id === String(a.id)); if (l) { l.price = price; cartSave(); renderCartBar(); } }
         return Promise.resolve({ ok, qty: cartQty(a.id), why: ok ? "" : "stock" });
       }
-      // vente en cours : ajout instantané (rien n'est enregistré avant « Valider la vente »)
+      // vente au scan : chaque article scanné est une VENTE à lui seul (1 article, quantité 1), enregistrée tout de
+      // suite. Scanné de nouveau → une nouvelle vente. Les scans rapides sont enregistrés l'un après l'autre.
       const p = price != null ? price : artPrice(a);
-      // un article déjà dans la vente n'est JAMAIS ajouté une 2e fois par un scan : on saisit sa quantité
-      if (a) { const L1 = sess.lines.find(x => x.a === a); if (L1) return Promise.resolve({ ok: false, why: "deja", L: L1, qty: L1.qty }); }
-      if (a && hasStock()) {
-        const inSale = sess.lines.filter(x => x.a === a).reduce((t, x) => t + x.qty, 0);
-        if (artStock(a) - inSale < 1) return Promise.resolve({ ok: false, why: "stock" });
-      }
-      let L = a ? sess.lines.find(x => x.a === a && x.price === p) : null;
-      if (L) L.qty++;
-      else { L = { a, qty: 1, price: p, autoPrice: !!a && Math.abs(p - artPrice(a)) < 0.005 }; sess.lines.push(L); }
-      sess.hist.push(L);
-      return Promise.resolve({ ok: true, qty: L.qty });
+      const job = sellQ.then(async () => {
+        if (a && hasStock() && artStock(a) < 1) return { ok: false, why: "stock" };
+        sess.lines = [{ a, qty: 1, price: p, autoPrice: !!a && Math.abs(p - artPrice(a)) < 0.005 }]; sess.hist = [];
+        await validateSale(true);
+        if (!saleOk) { sess.lines = []; showTotal(); return { ok: false, why: "nonvalide" }; }
+        return { ok: true, qty: 1, num: lastSale && lastSale.num };
+      });
+      sellQ = job.catch(() => {});
+      return job;
     };
+    let sellQ = Promise.resolve(); // file des ventes au scan (une à la fois)
     const itemDone = (a, price, r) => {
       const name = a ? artName(a) : FREE.divers.label;
       if (r.why === "deja") {
@@ -3147,12 +3155,14 @@ self.onmessage = async e => {
         return;
       }
       beep(r.ok);
-      const where = auto ? "Ajouté à la vente en cours" : "Ajouté au panier";
-      if (r.ok) {
-        flash(true, name, price, `${where} · quantité ${int(r.qty)}`);
+      if (r.ok && auto) { // vente enregistrée dès le scan
+        flash(true, name, price, `Vente enregistrée${r.num ? " · " + r.num : ""}`);
+        log(`<span class="ok-dot"></span><span class="ellipsis">${esc(name)}</span><strong class="num">${money(price)}</strong><span class="muted">vendu${r.num ? " · " + esc(r.num) : ""}</span>`, "ok");
+      } else if (r.ok) {
+        flash(true, name, price, `Ajouté au panier · quantité ${int(r.qty)}`);
         log(`<span class="ok-dot"></span><span class="ellipsis">${esc(name)}</span><strong class="num">${money(price)}</strong><span class="muted">× ${int(r.qty)}</span>`, "ok");
       } else {
-        const why = r.why === "stock" ? "Stock insuffisant : non ajouté" : "Non enregistré";
+        const why = r.why === "stock" ? (auto ? "Stock épuisé : vente non enregistrée" : "Stock insuffisant : non ajouté") : r.why === "nonvalide" ? "Vente non enregistrée" : "Non enregistré";
         flash(false, name, 0, why);
         log(`<span class="bad-dot"></span><span class="ellipsis">${esc(name)}</span><span class="muted">${why.toLowerCase()}</span>`, "bad");
       }
