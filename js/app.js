@@ -1602,9 +1602,11 @@
   //    moyennées (inclinaison corrigée), puis les barres sont « défloutées » avant la lecture.
   //    Mesuré sur des barres de 1,6 px floues : 8 lectures sur 8, contre 0 sur 8 pour la lecture approfondie.
   const ZX_LOCATE = { formats: ZX_FORMATS.filter(f => f !== "QRCode"), tryHarder: true, tryRotate: false, tryInvert: false, tryDownscale: false, maxNumberOfSymbols: 3, returnErrors: true, locate: true };
-  const ZX_CYCLE = [ZX_FAST, ZX_FLASH, ZX_DEEP, ZX_CENTER, ZX_LOCATE];
-  // mode « Petit code » : lecture concentrée sur le centre (cadre affiché) et code repéré + défloutage
-  const ZX_CYCLE_SMALL = [ZX_CENTER, ZX_LOCATE, ZX_CENTER, ZX_FAST, ZX_LOCATE, ZX_CENTER];
+  // ordinateur (pas de détecteur intégré) : une image sur deux passe par le repérage + décodeur par modèle,
+  // le seul qui lit les tout petits codes d'une webcam ; la lecture approfondie (lente) une fois sur huit
+  const ZX_CYCLE = [ZX_FAST, ZX_LOCATE, ZX_FLASH, ZX_LOCATE, ZX_CENTER, ZX_LOCATE, ZX_DEEP, ZX_LOCATE];
+  // mode « Petit code » : repérage + décodeur par modèle en priorité
+  const ZX_CYCLE_SMALL = [ZX_LOCATE, ZX_CENTER, ZX_LOCATE, ZX_FAST, ZX_LOCATE, ZX_FLASH];
   const ZX_WORKER_SRC = `
 let Z = null, cv = null, cx = null, buf = null;
 const grays = {}; // images en niveaux de gris réutilisées, par taille (image entière / centre seul)
@@ -1627,7 +1629,7 @@ async function fromVideoFrame(f, crop) {
   const lay = await f.copyTo(buf, { rect: r });
   const gk = W + "x" + H;
   const gray = grays[gk] || (grays[gk] = new ImageData(W, H));
-  gray.cropped = !!crop;
+  gray.cropped = !!crop; gray.isGray = yuv; // déjà en niveaux de gris : pas de recalcul (plus rapide)
   const o = lay[0].offset, s = lay[0].stride;
   if (yuv) {
     const u32 = new Uint32Array(gray.data.buffer);
@@ -1726,6 +1728,7 @@ let lgG = null, lgS = null;
 function grayOf(img) { // niveaux de gris (luminance) de toute l'image
   const n = img.width * img.height, d = img.data;
   if (!lgG || lgG.length !== n) lgG = new Uint8Array(n);
+  if (img.isGray) { for (let i = 0, p = 0; i < n; i++, p += 4) lgG[i] = d[p]; return lgG; }
   for (let i = 0, p = 0; i < n; i++, p += 4) lgG[i] = (d[p] * 77 + d[p + 1] * 150 + d[p + 2] * 29) >> 8;
   return lgG;
 }
@@ -1764,8 +1767,11 @@ function locateBars(G, W, H) {
       if (px < x0) x0 = px; if (px > x1) x1 = px; if (py < y0) y0 = py; if (py > y1) y1 = py;
       for (let dy = -1; dy <= 1; dy++) for (let dx = -2; dx <= 2; dx++) { if (!dx && !dy) continue; const qx = px + dx, qy = py + dy; if (qx < 0 || qy < 0 || qx >= cw || qy >= ch) continue; const q = qy * cw + qx; if (on[q] && !seen[q]) { seen[q] = 1; st.push(q); } }
     }
-    // code-barres : plus large que haut (les stores, plis et rayures verticales sont écartés)
-    if (cnt >= 4 && x1 - x0 + 1 >= 3 && x1 - x0 + 1 >= (y1 - y0 + 1) * 1.1) out.push({ sc, x: x0 * C * s, y: y0 * C * s, w: (x1 - x0 + 1) * C * s, h: (y1 - y0 + 1) * C * s });
+    // code-barres : plus large que haut (les plis et rayures verticales sont écartés) et de taille raisonnable
+    // (les stores, rideaux, claviers… couvrent une grande partie de l'image ; un grand code-barres, lui,
+    // est lu par les autres lectures)
+    const bw = x1 - x0 + 1, bh = y1 - y0 + 1;
+    if (cnt >= 4 && bw >= 3 && bw >= bh * 1.1 && bw <= cw * .55 && bh <= ch * .45 && bh <= bw * .9 + 2) out.push({ sc, x: x0 * C * s, y: y0 * C * s, w: (x1 - x0 + 1) * C * s, h: (y1 - y0 + 1) * C * s });
   }
   return out.sort((a, b) => b.sc - a.sc).slice(0, 2);
 }
@@ -1810,7 +1816,7 @@ function barProfile(G, W, H, b, xr) { // xr : fenêtre horizontale imposée { x0
 /* image de synthèse : profil agrandi ×U, puis défloutage (Richardson-Lucy) pour plusieurs flous possibles,
    variantes empilées : une seule lecture ZXing les essaie toutes */
 // niveaux de flou essayés (en pixels de la caméra) : image seule / plusieurs images cumulées (le pixel y est modélisé à part)
-const SIG_1 = [0.6, 0.9, 1.2, 1.5, 1.9], SIG_SR = [0.4, 0.7, 1.0, 1.3, 1.7], LOC_ITER = 100;
+const SIG_1 = [0.6, 0.9, 1.2, 1.5, 1.9], SIG_SR = [0.4, 0.7, 1.0, 1.3, 1.7], LOC_ITER = 60;
 const upsample = (P, U) => {
   const L = P.length, Lu = L * U, up = new Float32Array(Lu);
   for (let i = 0; i < Lu; i++) { const xs = (i + .5) / U - .5, xi = Math.max(0, Math.min(L - 2, Math.floor(xs))), f = Math.max(0, Math.min(1, xs - xi)); up[i] = P[xi] * (1 - f) + P[xi + 1] * f; }
@@ -1865,7 +1871,10 @@ const EAN_G = EAN_R.map(p => p.slice().reverse());
 const EAN_Lb = EAN_L.map(p => p.split("").map(Number));
 const EAN_PAR = ["LLLLLL", "LLGLGG", "LLGGLG", "LLGGGL", "LGLLGG", "LGGLLG", "LGGGLG", "LGLGLG", "LGLGGL", "LGGLGL"];
 const GUARD = [[0, [1, 0, 1]], [45, [0, 1, 0, 1, 0]], [92, [1, 0, 1]]];
-function erf(x) { const s = x < 0 ? -1 : 1; x = Math.abs(x); const t = 1 / (1 + .3275911 * x); return s * (1 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - .284496736) * t + .254829592) * t * Math.exp(-x * x)); }
+function erf0(x) { const s = x < 0 ? -1 : 1; x = Math.abs(x); const t = 1 / (1 + .3275911 * x); return s * (1 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - .284496736) * t + .254829592) * t * Math.exp(-x * x)); }
+// table précalculée (pas de 0,002) : 5 à 10 fois plus rapide que le calcul direct
+const ERF_T = new Float32Array(4002); for (let i = 0; i < 4002; i++) ERF_T[i] = erf0(-4 + i * .002);
+function erf(x) { if (x <= -4) return -1; if (x >= 4) return 1; const f = (x + 4) * 500, i = f | 0, r = f - i; return ERF_T[i] + (ERF_T[i + 1] - ERF_T[i]) * r; }
 /* noirceur attendue au point c (pixel de 1 px de large, flou sg) pour des modules bits (95), début x0, largeur m */
 function darkAt(c, bits, x0, m, sg) {
   const kc = Math.floor((c - x0) / m), R = Math.ceil(3 * sg / m) + 1, q = 1 / (sg * Math.SQRT2);
@@ -1875,6 +1884,16 @@ function darkAt(c, bits, x0, m, sg) {
     const a = x0 + k * m - c; d += b * .5 * (erf((a + m) * q) - erf(a * q));
   }
   return d;
+}
+/* influence de chaque module sur chaque échantillon, calculée une fois par hypothèse (le choix des chiffres
+   devient une simple somme de produits) */
+function basisFor(pos, n, x0, m, sg) {
+  const K = Math.ceil(3 * sg / m) + 2, S = 2 * K + 1, q = 1 / (sg * Math.SQRT2), k0 = new Int32Array(n), v = new Float32Array(n * S);
+  for (let i = 0; i < n; i++) {
+    const c = pos[i], kc = Math.floor((c - x0) / m); k0[i] = kc - K;
+    for (let j = 0; j < S; j++) { const k = kc - K + j; if (k < 0 || k > 94) continue; const a = x0 + k * m - c; v[i * S + j] = .5 * (erf((a + m) * q) - erf(a * q)); }
+  }
+  return { k0, v, S };
 }
 function eanCheck(s) { let t = 0; for (let i = 0; i < 12; i++) t += +s[i] * (i % 2 ? 3 : 1); return (10 - t % 10) % 10 === +s[12]; }
 function modelDecode(P, U) {
@@ -1923,7 +1942,16 @@ function modelDecode(P, U) {
   for (const h of hyp.slice(0, 15).concat(coarse.slice(0, 15))) { // pistes affinées + pistes variées
     const bits = base.slice(), digs = new Array(12).fill(-1), kinds = new Array(12).fill(""), marg = new Array(12).fill(0);
     const win = s => { const r = []; for (let i = 0; i < n; i++) { const k = (pos[i] - h.x0) / h.m; if (k >= s - .3 && k < s + 7.3) r.push(i); } return r; };
-    const err = (idx) => { let e = 0; for (const i of idx) { const r = P[i] - (h.a + h.b * darkAt(pos[i], bits, h.x0, h.m, h.sg)); e += r * r; } return e; };
+    const B = basisFor(pos, n, h.x0, h.m, h.sg), BS = B.S;
+    const err = (idx) => {
+      let e = 0;
+      for (const i of idx) {
+        let d = 0; const k0 = B.k0[i], o = i * BS;
+        for (let j = 0; j < BS; j++) { const k = k0 + j; if (k >= 0 && k <= 94) d += bits[k] * B.v[o + j]; }
+        const r = P[i] - (h.a + h.b * d); e += r * r;
+      }
+      return e;
+    };
     for (let pass = 0; pass < 2; pass++) for (let j = 0; j < 12; j++) {
       const s = j < 6 ? 3 + 7 * j : 50 + 7 * (j - 6), idx = win(s);
       const cands = j < 6 ? [...EAN_Lb.map((p, d) => [p, d, "L"]), ...EAN_G.map((p, d) => [p, d, "G"])] : EAN_R.map((p, d) => [p, d, "R"]);
@@ -1975,10 +2003,10 @@ function srCombine() { // échantillons de toutes les images rangés sur la gril
 function srAdd(G, W, H, b) {
   const now = Date.now(), cx = b.x + b.w / 2, cy = b.y + b.h / 2;
   // nouvelle série : trop ancienne, code déplacé, ou taille différente (rapproché / éloigné)
-  if (!sr || now - sr.t > SR_MS || Math.abs(cx - sr.cx) > sr.w * .25 || Math.abs(cy - sr.cy) > b.h * .6 || Math.abs(b.w - sr.w) > sr.w * .3) {
+  if (!sr || b.o !== sr.o || now - sr.t > SR_MS || Math.abs(cx - sr.cx) > sr.w * .25 || Math.abs(cy - sr.cy) > b.h * .6 || Math.abs(b.w - sr.w) > sr.w * .3) {
     const L = Math.round(b.w * 1.3), x0 = Math.round(cx - L / 2);
     const P = barProfile(G, W, H, b, { x0, L }); if (!P) { sr = null; return null; }
-    sr = { x0, L, cx, cy, w: b.w, ref: upsample(P, SR_U), items: [{ P, s: 0 }], t: now };
+    sr = { x0, L, cx, cy, w: b.w, o: b.o, ref: upsample(P, SR_U), items: [{ P, s: 0 }], t: now };
     return null;
   }
   const P = barProfile(G, W, H, b, { x0: sr.x0, L: sr.L }); if (!P) return null;
@@ -1988,25 +2016,45 @@ function srAdd(G, W, H, b) {
   sr.t = now;
   return srCombine();
 }
+/* image tournée d'un quart de tour (codes tenus verticalement) */
+let lgT = null, vToggle = 0, restTurn = 0;
+function transpose(G, W, H) {
+  if (!lgT || lgT.length !== W * H) lgT = new Uint8Array(W * H);
+  for (let y = 0; y < H; y++) { const r = y * W; for (let x = 0; x < W; x++) lgT[x * H + y] = G[r + x]; }
+  return lgT;
+}
+// décodeur par modèle dans les deux sens (code à l'envers)
+const modelBoth = (P, U) => { const md = modelDecode(P, U); if (md) return md; const R = P.slice().reverse(); return modelDecode(R, U); };
 async function readLocated(img, opts) {
-  const W = img.width, H = img.height, G = grayOf(img), bs = locateBars(G, W, H);
-  for (let i = 0; i < bs.length; i++) {
-    const b = bs[i], P = barProfile(G, W, H, b); if (!P) continue;
+  const W0 = img.width, H0 = img.height, G0 = grayOf(img);
+  // codes horizontaux ; codes verticaux aussi cherchés (à chaque image si rien d'horizontal, sinon une fois sur deux)
+  const bs = locateBars(G0, W0, H0).map(b => ({ ...b, o: 0 }));
+  if (!bs.length || (vToggle++ & 1)) {
+    const GT = transpose(G0, W0, H0);
+    for (const b of locateBars(GT, H0, W0)) bs.push({ ...b, o: 1 });
+  }
+  bs.sort((p, q) => q.sc - p.sc);
+  for (let i = 0; i < bs.length && i < 2; i++) {
+    const b = bs[i], G = b.o ? lgT : G0, W = b.o ? H0 : W0, H = b.o ? W0 : H0;
+    const P = barProfile(G, W, H, b); if (!P) continue;
     const f1 = locBest[0] >= 0 ? [locBest[0]] : [1, 2], fS = locBest[1] >= 0 ? [locBest[1]] : [1, 2];
     const rest = f => [0, 1, 2, 3, 4].filter(x => !f.includes(x));
     // 1) décodeur par modèle (EAN-13 / UPC-A, les codes des produits) sur l'image seule : le plus sûr et le plus
     //    efficace sur les tout petits codes (~50 ms)
     let out = [];
-    if (MODEL_ON) { const md = modelDecode(P, 1); if (md) out = [md]; }
+    if (MODEL_ON) { const md = modelBoth(P, 1); if (md) out = [md]; }
     // 2) ZXing sur l'image seule défloutée, réglage habituel (autres types de codes-barres)
     if (!out.length) out = await tryVariants(P, f1, opts, false);
     const S = i === 0 ? srAdd(G, W, H, b) : null;
     // 3) plusieurs images cumulées (super-résolution) — le code principal seulement
     if (!out.length && S) out = await tryVariants(S, fS, opts, false, true);
-    if (!out.length && S && MODEL_ON) { const md = modelDecode(S, SR_U); if (md) out = [md]; }
-    // 4) autres réglages de flou (autres types de codes-barres : Code 128, Code 39…)
-    if (!out.length) out = await tryVariants(P, rest(f1), opts, true);
-    if (!out.length && S) out = await tryVariants(S, rest(fS), opts, true, true);
+    if (!out.length && S && MODEL_ON) { const md = modelBoth(S, SR_U); if (md) out = [md]; }
+    // 4) autres réglages de flou (autres types de codes-barres : Code 128, Code 39…) : une image sur trois
+    //    seulement (coûteux ; le décodeur par modèle couvre déjà les codes des produits)
+    if (!out.length && restTurn++ % 3 === 0) {
+      out = await tryVariants(P, rest(f1), opts, true);
+      if (!out.length && S) out = await tryVariants(S, rest(fS), opts, true, true);
+    }
     if (out.length) { if (i === 0) sr = null; return { res: out, found: true }; }
   }
   return { res: [], found: bs.length > 0 };
@@ -3454,11 +3502,14 @@ self.onmessage = async e => {
       const engP = Promise.all([zxPool().catch(() => null), nativeDetector()]);
       // mode petit code sur une caméra sans zoom : définition maximale (4K si possible)
       const hi = small && small4k;
-      const streamP = navigator.mediaDevices.getUserMedia({
+      // image Full HD si la caméra le permet (plus de pixels par barre : petits codes-barres), mise au point continue.
+      // Au moins 20 images/s : sur PC, une webcam en définition maximale tombe souvent à 5–15 images/s (image
+      // bougée, lecture lente) → le navigateur choisit alors la plus grande définition qui garde la cadence.
+      const want = fr => navigator.mediaDevices.getUserMedia({
         audio: false,
-        // image Full HD si la caméra le permet (plus de pixels par barre : petits codes-barres), 30 images/s, mise au point continue
-        video: { ...source, width: { ideal: hi ? 3840 : 1920 }, height: { ideal: hi ? 2160 : 1080 }, frameRate: { ideal: 30 }, advanced: [{ focusMode: "continuous" }] }
+        video: { ...source, width: { ideal: hi ? 3840 : 1920 }, height: { ideal: hi ? 2160 : 1080 }, frameRate: fr, advanced: [{ focusMode: "continuous" }] }
       });
+      const streamP = want({ ideal: 30, min: 20 }).catch(e => /Overconstrained|Constraint/i.test((e && (e.name + " " + e.message)) || "") ? want({ ideal: 30 }) : Promise.reject(e));
       const [[pool, nat], s] = await Promise.all([engP, streamP]);
       if (!document.body.contains(m) || !camWanted) { s.getTracks().forEach(t => t.stop()); return; }
       if (!pool && !nat) { s.getTracks().forEach(t => t.stop()); return startLegacy(source); } // décodeurs rapides indisponibles
@@ -3575,7 +3626,7 @@ self.onmessage = async e => {
         const s = (now - stT) / 1000, fps = Math.round(stN / s), nfps = Math.round(stNat / s);
         if (sp) {
           sp.hidden = false;
-          sp.textContent = locIsHot() ? "🎯 Code-barres repéré · ne bougez plus" : `⚡ ${Math.max(fps, nfps)} img/s · QR + codes-barres`;
+          sp.textContent = locIsHot() ? "🎯 Code-barres repéré · ne bougez plus" : `⚡ ${Math.max(fps, nfps)} img/s · ${v.videoHeight}p · QR + codes-barres`;
           sp.title = `Caméra ${v.videoWidth}×${v.videoHeight} · décodeurs ZXing : ${pool ? pool.length : 0}${pool && pool[0].worker ? " (en parallèle)" : ""} · ${fps} img/s${stN ? ` · ${Math.round(stMs / stN)} ms par image` : ""}${nat ? ` · détecteur intégré : ${nfps} img/s` : ""} · centre renforcé (cumul des images)${small ? " · MODE PETIT CODE" : ""}`;
         }
         if (small) placeGuide();
@@ -3602,7 +3653,7 @@ self.onmessage = async e => {
         if (!alive()) return;
         zxActive = true; frameNo++; stN++; stMs += out.ms || 0;
         let unread = !!out.stripes, read = false; // rayures de code-barres vues au centre, sans lecture
-        if (out.locate && out.stripes) {
+        if (out.stripes) { // barres vues (repérage ou centre) sans lecture : lecture renforcée en priorité
           if (!locIsHot() && sp) { sp.hidden = false; sp.textContent = "🎯 Code-barres repéré · ne bougez plus"; }
           locHot = Date.now();
         }
