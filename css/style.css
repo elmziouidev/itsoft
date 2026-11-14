@@ -1263,8 +1263,11 @@ td.editing .dm-today { margin-left: 6px; padding: 3px 8px; font-size: 12px; vert
   #art-table .table.responsive td.codes-td .code-chip { font-size: 11px; padding: 0 2px 0 6px; }
   /* « Associer » et « Photo » : vrais boutons, bien visibles */
   #art-table .table.responsive td.codes-td { gap: 4px; }
-  #art-table .table.responsive td.codes-td .code-none { font-size: 13px; font-weight: 700; color: var(--primary-ink); background: var(--primary);
-    padding: 5px 16px; border-radius: 999px; line-height: 1.2; box-shadow: 0 2px 6px -2px color-mix(in srgb, var(--primary) 70%, transparent); }
+  /* « Associer » : dégradé orange → corail, à l'extrême droite de la fiche (le 📷 passe juste avant lui) */
+  #art-table .table.responsive td.codes-td { margin-left: auto; }
+  #art-table .table.responsive td.codes-td .photo-chip { order: -1; }
+  #art-table .table.responsive td.codes-td .code-none { font-size: 13px; font-weight: 700; color: #fff; background: linear-gradient(135deg, #f59e0b, #ef4444);
+    padding: 5px 16px; border-radius: 999px; line-height: 1.2; box-shadow: 0 2px 6px -2px rgba(239, 68, 68, .55); }
   #art-table .table.responsive td.codes-td .photo-chip { display: inline-flex; font-size: 11.5px; padding: 1px 7px; }  #art-table .table.responsive tr:has(td.codes-td) td.actions .photo-act { display: none; }
   /* cases vides (« — ») : masquées, aucune place perdue */
   #art-table .table.responsive td.col-misc:has(> .muted:only-child), #art-table .table.responsive td.col-ref:has(> .muted:only-child),
