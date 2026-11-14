@@ -2893,6 +2893,32 @@ self.onmessage = async e => {
   }
   window.addEventListener("online", () => syncPending());
   setInterval(() => { if (pendGet().length) syncPending(); }, 20000);
+  /* Supprime plusieurs ventes d'un coup (cases cochées de la page Ventes) : toutes les lignes supprimées et les
+     articles remis en stock, en une seule requête groupée. Renvoie le nombre de ventes supprimées. */
+  async function cancelSalesBulk(nums) {
+    const key = v => v.Title || "#" + v.id, pq = pendGet();
+    const sending = nums.filter(n => { const p = pq.find(x => x.num === n); return p && (p.done.l.length || p.done.s.length); });
+    if (sending.length) throw new Error(`${sending.length} vente(s) en cours d'envoi vers SharePoint : réessayez dans un instant`);
+    // ventes jamais envoyées (coupure réseau) : simple retrait de la file d'attente
+    const queued = nums.filter(n => pq.some(x => x.num === n));
+    for (const n of queued) await undoValidatedSale(n);
+    const set = new Set(nums.filter(n => !queued.includes(n)));
+    const lines = state.ventes.filter(v => set.has(key(v)));
+    if (lines.length) {
+      const need = new Map();
+      lines.forEach(v => { const id = String(v.ArticleId || ""); if (id && id !== "0" && artById(id)) need.set(id, (need.get(id) || 0) + (+v.Quantite || 0)); });
+      const ids = [...need.keys()];
+      const fresh = ids.length && hasStock() ? await DS.getArticles(ids) : []; // stock réel du moment
+      const stock = hasStock() ? ids.map((id, i) => ({ id, fields: { [state.map.stock]: (+fresh[i][state.map.stock] || 0) + need.get(id) } })) : [];
+      try {
+        const arts = await DS.cancelSaleBatch(lines.map(v => v.id), stock);
+        (arts || []).forEach(x => { const a = artById(x.id); if (a) Object.assign(a, x); });
+      } catch (e) { Sync.now(300); throw e; } // échec partiel : la synchronisation remet l'écran d'aplomb
+      const gone = new Set(lines.map(v => v.id));
+      state.ventes = state.ventes.filter(v => !gone.has(v.id));
+    }
+    return queued.length + set.size;
+  }
   /* Annule une vente validée : lignes supprimées et articles remis en stock (requête groupée) */
   async function undoValidatedSale(num) {
     const q = pendGet(), p = q.find(x => x.num === num);
@@ -6475,6 +6501,7 @@ self.onmessage = async e => {
             <button class="btn" id="v-export">${ICON.download}<span class="hide-sm">Exporter</span></button>
           </div>
           <div id="v-sum" class="sum-bar"></div>
+          <div class="sel-bar" id="v-selbar" hidden></div>
           <div id="v-table"></div>
         </div>
       </div>
@@ -6504,8 +6531,20 @@ self.onmessage = async e => {
       // scanner fermé : « Activer la caméra » ouvre le scanner caméra allumée
       if (e.target.closest(".sp-idle #sp-cam")) { vcamSet(true); dockStart(); }
     });
+    /* sélection de plusieurs ventes (cases à cocher) pour les supprimer en une fois */
+    const vsel = state.ventesSel || (state.ventesSel = new Set());
+    const selBar = () => {
+      const b = $("#v-selbar"); if (!b) return;
+      const sel = [...vsel].map(saleByNum).filter(Boolean), tot = sel.reduce((t, s) => t + s.total, 0);
+      b.hidden = !sel.length;
+      b.innerHTML = sel.length ? `<span class="sel-n">☑ <strong>${int(sel.length)}</strong> vente(s) sélectionnée(s) · ${money(tot)}</span>
+        <button class="btn danger solid sel-go" id="v-sel-del" type="button">${ICON.trash} Supprimer la sélection</button>
+        <button class="btn ghost" id="v-sel-clear" type="button">Tout désélectionner</button>` : "";
+      const all = $("#v-sel-all"); if (all) { const vis = apply().slice(0, 500), n = vis.filter(s => vsel.has(s.num)).length; all.checked = !!vis.length && n === vis.length; all.indeterminate = n > 0 && n < vis.length; }
+    };
     const draw = () => {
       const list = apply();
+      for (const n of [...vsel]) if (!saleByNum(n)) vsel.delete(n); // ventes supprimées entre-temps
       const sales = list.filter(s => !s.repair), reps = list.filter(s => s.repair);
       const sum = arr => arr.reduce((t, s) => t + s.total, 0);
       const profit = list.reduce((t, s) => t + (s.profit != null ? s.profit : 0), 0);
@@ -6516,8 +6555,9 @@ self.onmessage = async e => {
         <span><span class="muted">Total :</span> <strong>${money(sum(list))}</strong></span>
         <span><span class="muted">Bénéfice :</span> <strong style="color:var(--success)">${money(profit)}</strong>${unknown ? ` <span class="muted" title="Ventes d'articles dont le prix d'achat est inconnu">(${int(unknown)} sans prix d'achat)</span>` : ""}</span>`;
       $("#v-table").innerHTML = list.length ? `<div class="table-wrap"><table class="table responsive compact">
-        <thead><tr><th>Date</th><th>Type</th><th>Détail</th><th>Client</th><th class="num">Total</th><th class="num">Bénéfice</th><th></th></tr></thead>
+        <thead><tr><th class="sel-col"><input type="checkbox" id="v-sel-all" aria-label="Tout sélectionner" title="Tout sélectionner (ventes affichées)"></th><th>Date</th><th>Type</th><th>Détail</th><th>Client</th><th class="num">Total</th><th class="num">Bénéfice</th><th></th></tr></thead>
         <tbody>${list.slice(0, 500).map(s => `<tr class="clickable ${hiOn(s.num) ? "row-new" : ""}" data-sale="${esc(s.num)}">
+          <td class="sel-col" data-label="Sélection"><input type="checkbox" class="sel-cb" data-vsel="${esc(s.num)}" ${vsel.has(s.num) ? "checked" : ""} aria-label="Sélectionner la vente ${esc(s.num)}"></td>
           <td data-label="Date">${fmtDateTime(s.date)}</td>
           <td data-label="Type">${s.repair ? '<span class="badge info">Réparation</span>' : '<span class="badge">Vente</span>'}</td>
           <td class="primary-cell" data-label="Détail"><span class="ellipsis" style="display:block;max-width:320px">${esc(s.lines.map(l => (l.Quantite > 1 ? l.Quantite + " × " : "") + (l.Article || "")).join(", "))}</span></td>
@@ -6527,6 +6567,7 @@ self.onmessage = async e => {
           <td class="actions"><button class="btn sm row-act" data-print-sale="${esc(s.num)}" title="Imprimer le ticket">${ICON.print}<span>Imprimer</span></button><button class="btn sm row-act danger" data-cancel-sale="${esc(s.num)}" title="${s.repair ? "Annuler la réparation" : "Annuler la vente"}">${ICON.trash}<span>Annuler</span></button></td></tr>`).join("")}
         </tbody></table></div>${list.length > 500 ? `<div class="muted" style="padding:10px 16px">Affichage limité aux 500 opérations les plus récentes — affinez les filtres.</div>` : ""}`
         : `<div class="empty">Aucune vente pour ces critères.</div>`;
+      selBar();
       if (hiCheckRef) hiCheckRef();
     };
     draw();
@@ -6549,8 +6590,34 @@ self.onmessage = async e => {
       if (e.target.id === "v-from") { f.from = e.target.value; draw(); }
       if (e.target.id === "v-to") { f.to = e.target.value; draw(); }
     };
-    el.onclick = e => {
+    el.onclick = async e => {
       if (e.target.closest("#v-sale")) return sellDialog(null);
+      // cases à cocher : sélection (la fiche de la vente ne s'ouvre pas)
+      if (e.target.id === "v-sel-all") {
+        const vis = apply().slice(0, 500), on = e.target.checked;
+        vis.forEach(s => on ? vsel.add(s.num) : vsel.delete(s.num));
+        $$("#v-table [data-vsel]").forEach(cb => { cb.checked = vsel.has(cb.dataset.vsel); });
+        return selBar();
+      }
+      if (e.target.matches("[data-vsel]")) { const n = e.target.dataset.vsel; if (e.target.checked) vsel.add(n); else vsel.delete(n); return selBar(); }
+      if (e.target.closest(".sel-col")) return; // clic à côté de la case : rien
+      if (e.target.closest("#v-sel-clear")) { vsel.clear(); $$("#v-table [data-vsel]").forEach(cb => { cb.checked = false; }); return selBar(); }
+      const bd = e.target.closest("#v-sel-del");
+      if (bd) {
+        const sel = [...vsel].map(saleByNum).filter(Boolean); if (!sel.length) return;
+        const tot = sel.reduce((t, s) => t + s.total, 0), nbArt = sel.reduce((t, s) => t + s.lines.reduce((u, l) => u + (+l.Quantite || 0), 0), 0);
+        if (!(await confirmBox("Supprimer les ventes sélectionnées",
+          `<strong>${int(sel.length)}</strong> vente(s) (${int(nbArt)} article(s), <strong>${money(tot)}</strong>) seront supprimées de SharePoint et ${hasStock() ? "les quantités seront remises en stock" : "le stock ne sera pas modifié"}. Continuer ?`,
+          `Supprimer ${int(sel.length)} vente(s)`, true, "Garder les ventes"))) return;
+        busy(bd, true, "Suppression…");
+        try {
+          const n = await cancelSalesBulk(sel.map(s => s.num));
+          vsel.clear(); beep(true);
+          toast(`${int(n)} vente(s) supprimée(s)${hasStock() ? ", articles remis en stock" : ""}.`, "ok");
+        } catch (err) { toast("Suppression impossible : " + err.message, "bad"); }
+        draw();
+        return;
+      }
       const pb = e.target.closest("[data-print-sale]");
       if (pb) { const s = saleByNum(pb.dataset.printSale); if (s) printSale(s); return; }
       const cb = e.target.closest("[data-cancel-sale]");
