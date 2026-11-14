@@ -1764,7 +1764,8 @@ function locateBars(G, W, H) {
       if (px < x0) x0 = px; if (px > x1) x1 = px; if (py < y0) y0 = py; if (py > y1) y1 = py;
       for (let dy = -1; dy <= 1; dy++) for (let dx = -2; dx <= 2; dx++) { if (!dx && !dy) continue; const qx = px + dx, qy = py + dy; if (qx < 0 || qy < 0 || qx >= cw || qy >= ch) continue; const q = qy * cw + qx; if (on[q] && !seen[q]) { seen[q] = 1; st.push(q); } }
     }
-    if (cnt >= 4 && x1 - x0 + 1 >= 3) out.push({ sc, x: x0 * C * s, y: y0 * C * s, w: (x1 - x0 + 1) * C * s, h: (y1 - y0 + 1) * C * s });
+    // code-barres : plus large que haut (les stores, plis et rayures verticales sont écartés)
+    if (cnt >= 4 && x1 - x0 + 1 >= 3 && x1 - x0 + 1 >= (y1 - y0 + 1) * 1.1) out.push({ sc, x: x0 * C * s, y: y0 * C * s, w: (x1 - x0 + 1) * C * s, h: (y1 - y0 + 1) * C * s });
   }
   return out.sort((a, b) => b.sc - a.sc).slice(0, 2);
 }
@@ -1854,6 +1855,94 @@ async function tryVariants(P, idx, opts, noRaw, isUp) { // idx : indices des niv
   }
   return ok;
 }
+/* ===== Décodeur « par modèle » EAN-13 / UPC-A pour les codes trop petits pour ZXing =====
+   Au lieu de transformer l'image en noir et blanc (ce qui déforme les barres d'un code minuscule), on compare
+   directement le profil flou aux formes théoriques de chaque chiffre, floutées comme par la caméra, et on garde
+   la plus ressemblante. Lecture acceptée seulement si la clé de contrôle est bonne et chaque chiffre net. */
+const EAN_L = ["0001101", "0011001", "0010011", "0111101", "0100011", "0110001", "0101111", "0111011", "0110111", "0001011"];
+const EAN_R = EAN_L.map(p => p.split("").map(c => c === "0" ? 1 : 0));
+const EAN_G = EAN_R.map(p => p.slice().reverse());
+const EAN_Lb = EAN_L.map(p => p.split("").map(Number));
+const EAN_PAR = ["LLLLLL", "LLGLGG", "LLGGLG", "LLGGGL", "LGLLGG", "LGGLLG", "LGGGLG", "LGLGLG", "LGLGGL", "LGGLGL"];
+const GUARD = [[0, [1, 0, 1]], [45, [0, 1, 0, 1, 0]], [92, [1, 0, 1]]];
+function erf(x) { const s = x < 0 ? -1 : 1; x = Math.abs(x); const t = 1 / (1 + .3275911 * x); return s * (1 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - .284496736) * t + .254829592) * t * Math.exp(-x * x)); }
+/* noirceur attendue au point c (pixel de 1 px de large, flou sg) pour des modules bits (95), début x0, largeur m */
+function darkAt(c, bits, x0, m, sg) {
+  const kc = Math.floor((c - x0) / m), R = Math.ceil(3 * sg / m) + 1, q = 1 / (sg * Math.SQRT2);
+  let d = 0;
+  for (let k = kc - R; k <= kc + R; k++) {
+    if (k < 0 || k > 94) continue; const b = bits[k]; if (!b) continue;
+    const a = x0 + k * m - c; d += b * .5 * (erf((a + m) * q) - erf(a * q));
+  }
+  return d;
+}
+function eanCheck(s) { let t = 0; for (let i = 0; i < 12; i++) t += +s[i] * (i % 2 ? 3 : 1); return (10 - t % 10) % 10 === +s[12]; }
+function modelDecode(P, U) {
+  const n = P.length; if (n < 40) return null;
+  const pos = new Float32Array(n); for (let i = 0; i < n; i++) pos[i] = (i + .5) / U;
+  const srt = Array.from(P).sort((a, b) => a - b), lo = srt[Math.floor(n * .04)], hi = srt[Math.floor(n * .96)];
+  if (hi - lo < 12) return null;
+  // bords du code : groupes de zones sombres autour du centre ; on s'arrête aux marges blanches
+  // (une marge fait ≥ 9 modules, un espace interne ≤ 4 modules) → le bord sombre de l'étiquette est exclu
+  const th = hi - (hi - lo) * .3, dk = []; for (let i = 0; i < n; i++) if (P[i] < th) dk.push(i);
+  if (dk.length < 10) return null;
+  let ci = 0; for (let k = 0; k < dk.length; k++) if (Math.abs(dk[k] - n / 2) < Math.abs(dk[ci] - n / 2)) ci = k;
+  let iL = dk[ci], iR = dk[ci];
+  for (let pass = 0; pass < 3; pass++) {
+    const gmax = Math.max(5 * U, .045 * n, .065 * (iR - iL)); // n : fenêtre ≈ 1,3 × la largeur du code
+    let k = dk.indexOf(iL); while (k > 0 && dk[k] - dk[k - 1] <= gmax) k--; iL = dk[k];
+    k = dk.indexOf(iR); while (k < dk.length - 1 && dk[k + 1] - dk[k] <= gmax) k++; iR = dk[k];
+  }
+  if (iR - iL < 20 * U) return null;
+  const xL = pos[iL], m0 = (pos[iR] - pos[iL]) / 95;
+  if (m0 < .7 || m0 > 4) return null;
+  const base = new Float32Array(95).fill(.5);
+  for (const [s, g] of GUARD) g.forEach((b, i) => { base[s + i] = b; });
+  // 1) position, largeur de module et flou : ajustés sur les 3 gardes (motifs connus) + marges blanches
+  const inG = [];
+  for (let i = 0; i < n; i++) { const k = (pos[i] - xL) / m0; if ((k > -5 && k < 4) || (k > 43 && k < 52) || (k > 90 && k < 100)) inG.push(i); }
+  const fitSSE = (idx, bits, x0, m, sg) => { // régression v = a + b·noirceur → erreur résiduelle
+    let sd = 0, sv = 0, sdd = 0, sdv = 0, svv = 0; const N = idx.length;
+    for (const i of idx) { const d = darkAt(pos[i], bits, x0, m, sg), v = P[i]; sd += d; sv += v; sdd += d * d; sdv += d * v; svv += v * v; }
+    const den = N * sdd - sd * sd; if (den <= 1e-9) return { e: Infinity };
+    const b = (N * sdv - sd * sv) / den, a = (sv - b * sd) / N;
+    return { e: Math.max(0, svv - 2 * a * sv - 2 * b * sdv + a * a * N + 2 * a * b * sd + b * b * sdd) / N, a, b };
+  };
+  // recherche grossière puis affinée autour des 8 meilleures pistes (3 fois moins de calculs)
+  const coarse = [], seen = new Set(), hyp = [];
+  const tryH = (list, x0, m, sg) => { const f = fitSSE(inG, base, x0, m, sg); if (f.b < 0 && isFinite(f.e)) list.push({ x0, m, sg, e: f.e, a: f.a, b: f.b }); }; // b < 0 : plus de noir = plus sombre
+  for (const sg of [.45, .7, 1, 1.35]) for (let dm = -.07; dm <= .0701; dm += .01) for (let dx = -2.5; dx <= 2.501; dx += .5) tryH(coarse, xL + dx, m0 * (1 + dm), sg);
+  coarse.sort((p, q) => p.e - q.e);
+  for (const c of coarse.slice(0, 8)) for (let i = -2; i <= 2; i++) for (let j = -2; j <= 2; j++) {
+    const x0 = c.x0 + j * .125, m = c.m * (1 + i * .0025), key = x0.toFixed(3) + "/" + m.toFixed(4) + "/" + c.sg;
+    if (seen.has(key)) continue; seen.add(key); tryH(hyp, x0, m, c.sg);
+  }
+  hyp.sort((p, q) => p.e - q.e);
+  // 2) chiffres : pour les meilleures hypothèses, chaque chiffre est la forme la plus ressemblante (2 passes)
+  let best = null;
+  for (const h of hyp.slice(0, 15).concat(coarse.slice(0, 15))) { // pistes affinées + pistes variées
+    const bits = base.slice(), digs = new Array(12).fill(-1), kinds = new Array(12).fill(""), marg = new Array(12).fill(0);
+    const win = s => { const r = []; for (let i = 0; i < n; i++) { const k = (pos[i] - h.x0) / h.m; if (k >= s - .3 && k < s + 7.3) r.push(i); } return r; };
+    const err = (idx) => { let e = 0; for (const i of idx) { const r = P[i] - (h.a + h.b * darkAt(pos[i], bits, h.x0, h.m, h.sg)); e += r * r; } return e; };
+    for (let pass = 0; pass < 2; pass++) for (let j = 0; j < 12; j++) {
+      const s = j < 6 ? 3 + 7 * j : 50 + 7 * (j - 6), idx = win(s);
+      const cands = j < 6 ? [...EAN_Lb.map((p, d) => [p, d, "L"]), ...EAN_G.map((p, d) => [p, d, "G"])] : EAN_R.map((p, d) => [p, d, "R"]);
+      let b1 = Infinity, b2 = Infinity, bc = null;
+      for (const c of cands) { for (let i = 0; i < 7; i++) bits[s + i] = c[0][i]; const e = err(idx); if (e < b1) { b2 = b1; b1 = e; bc = c; } else if (e < b2) b2 = e; }
+      for (let i = 0; i < 7; i++) bits[s + i] = bc[0][i];
+      digs[j] = bc[1]; kinds[j] = bc[2]; marg[j] = (b2 - b1) / Math.max(1e-6, idx.length);
+    }
+    const par = kinds.slice(0, 6).join(""), d0 = EAN_PAR.indexOf(par);
+    if (d0 < 0) continue;
+    const text = d0 + digs.join("");
+    if (!eanCheck(text)) continue;
+    // netteté : chaque chiffre doit l'emporter nettement sur le 2e choix (par rapport au bruit de l'ajustement)
+    const noise = Math.max(1, h.e), conf = Math.min(...marg) / noise;
+    if (!best || conf > best.conf) best = { text, conf };
+  }
+  return best && best.conf > MODEL_CONF ? { text: best.text, format: "EAN-13", isValid: true, conf: best.conf } : null;
+}
+const MODEL_CONF = 0.5, MODEL_ON = true;
 /* Super-résolution : la main bouge toujours un peu, chaque image voit donc les barres décalées d'une fraction
    de pixel. Les profils des dernières images sont recalés au 1/3 de pixel puis rangés sur une grille 3 fois
    plus fine : on retrouve des détails plus fins que les pixels de la caméra. */
@@ -1905,12 +1994,17 @@ async function readLocated(img, opts) {
     const b = bs[i], P = barProfile(G, W, H, b); if (!P) continue;
     const f1 = locBest[0] >= 0 ? [locBest[0]] : [1, 2], fS = locBest[1] >= 0 ? [locBest[1]] : [1, 2];
     const rest = f => [0, 1, 2, 3, 4].filter(x => !f.includes(x));
-    // 1) l'image seule, réglage habituel (le plus rapide)
-    let out = await tryVariants(P, f1, opts, false);
-    // 2) plusieurs images cumulées (super-résolution) — le code principal seulement
+    // 1) décodeur par modèle (EAN-13 / UPC-A, les codes des produits) sur l'image seule : le plus sûr et le plus
+    //    efficace sur les tout petits codes (~50 ms)
+    let out = [];
+    if (MODEL_ON) { const md = modelDecode(P, 1); if (md) out = [md]; }
+    // 2) ZXing sur l'image seule défloutée, réglage habituel (autres types de codes-barres)
+    if (!out.length) out = await tryVariants(P, f1, opts, false);
     const S = i === 0 ? srAdd(G, W, H, b) : null;
+    // 3) plusieurs images cumulées (super-résolution) — le code principal seulement
     if (!out.length && S) out = await tryVariants(S, fS, opts, false, true);
-    // 3) autres réglages de flou
+    if (!out.length && S && MODEL_ON) { const md = modelDecode(S, SR_U); if (md) out = [md]; }
+    // 4) autres réglages de flou (autres types de codes-barres : Code 128, Code 39…)
     if (!out.length) out = await tryVariants(P, rest(f1), opts, true);
     if (!out.length && S) out = await tryVariants(S, rest(fS), opts, true, true);
     if (out.length) { if (i === 0) sr = null; return { res: out, found: true }; }
