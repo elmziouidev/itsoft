@@ -1773,20 +1773,27 @@ function barProfile(G, W, H, b) {
   const x0 = Math.max(0, Math.round(b.x - b.w * .15)), x1 = Math.min(W - 1, Math.round(b.x + b.w * 1.15)), L = x1 - x0;
   const y0 = Math.max(0, Math.round(b.y + b.h * .08)), y1 = Math.min(H - 1, Math.round(b.y + b.h * .6)), R = y1 - y0;
   if (L < 30 || R < 4) return null;
-  const q = Math.max(2, R >> 2), top = new Float32Array(L), bot = new Float32Array(L);
-  for (let y = y0; y < y0 + q; y++) { const r = y * W + x0; for (let x = 0; x < L; x++) top[x] += G[r + x]; }
-  for (let y = y1 - q; y < y1; y++) { const r = y * W + x0; for (let x = 0; x < L; x++) bot[x] += G[r + x]; }
-  const M = Math.min(Math.round(R * .5), 40), cr = {};
-  const corrAt = d => {
+  // inclinaison : décalage de chaque groupe de 3 lignes par rapport au groupe du milieu (au dixième de pixel),
+  // puis droite des moindres carrés (les groupes sans barres — bord de l'étiquette — sont ignorés)
+  const g = 3, ng = Math.floor(R / g), grp = [];
+  for (let k = 0; k < ng; k++) { const p = new Float32Array(L); for (let y = y0 + k * g; y < y0 + k * g + g; y++) { const r = y * W + x0; for (let x = 0; x < L; x++) p[x] += G[r + x]; } grp.push(p); }
+  const ref = grp[ng >> 1], MX = 6;
+  const corr = (a, c, d) => {
     let sab = 0, sa = 0, sb = 0, saa = 0, sbb = 0, n = 0;
-    for (let x = Math.max(0, -d); x < Math.min(L, L - d); x++) { const a = top[x], c = bot[x + d]; sab += a * c; sa += a; sb += c; saa += a * a; sbb += c * c; n++; }
-    const cov = sab - sa * sb / n, v = Math.sqrt((saa - sa * sa / n) * (sbb - sb * sb / n)); return v ? cov / v : 0;
+    for (let x = Math.max(MX, -d); x < Math.min(L - MX, L - d); x++) { const u = a[x], v = c[x + d]; sab += u * v; sa += u; sb += v; saa += u * u; sbb += v * v; n++; }
+    const cov = sab - sa * sb / n, vv = Math.sqrt((saa - sa * sa / n) * (sbb - sb * sb / n)); return vv > 1e-3 ? cov / vv : 0;
   };
-  let best = 0, bs = -Infinity;
-  for (let d = -M; d <= M; d++) { const r = cr[d] = corrAt(d); if (r > bs) { bs = r; best = d; } }
-  let sub = best;
-  if (cr[best - 1] !== undefined && cr[best + 1] !== undefined) { const a = cr[best - 1], b2 = cr[best], c = cr[best + 1], den = a - 2 * b2 + c; if (den < 0) sub = best + Math.max(-.5, Math.min(.5, (a - c) / (2 * den))); }
-  const slope = sub / Math.max(1, R - q), P = new Float32Array(L), cnt = new Float32Array(L), ymid = (y0 + y1) / 2;
+  let sxy = 0, sxx = 0;
+  for (let k = 0; k < ng; k++) {
+    const dy = (k - (ng >> 1)) * g; if (!dy) continue;
+    const lim = Math.min(MX, Math.ceil(Math.abs(dy) * .2) + 1), cr = {}; let best = 0, bs = -2;
+    for (let d = -lim; d <= lim; d++) { const r = cr[d] = corr(ref, grp[k], d); if (r > bs) { bs = r; best = d; } }
+    if (bs < .5) continue; // pas de barres dans ce groupe
+    let sub = best;
+    if (cr[best - 1] !== undefined && cr[best + 1] !== undefined) { const a = cr[best - 1], c = cr[best + 1], den = a - 2 * bs + c; if (den < 0) sub = best + Math.max(-.5, Math.min(.5, (a - c) / (2 * den))); }
+    sxy += dy * sub; sxx += dy * dy;
+  }
+  const slope = sxx ? sxy / sxx : 0, P = new Float32Array(L), cnt = new Float32Array(L), ymid = y0 + (ng >> 1) * g + (g - 1) / 2;
   for (let y = y0; y < y1; y++) {
     const sh = (y - ymid) * slope, r = y * W;
     for (let x = 0; x < L; x++) {
@@ -1801,7 +1808,7 @@ function barProfile(G, W, H, b) {
 /* image de synthèse : profil agrandi ×U, puis défloutage (Richardson-Lucy) pour plusieurs flous possibles,
    variantes empilées : une seule lecture ZXing les essaie toutes */
 const LOC_SIGS = [0.6, 0.9, 1.2, 1.5, 1.9], LOC_ITER = 100;
-function barSynth(P, U) {
+function barSynth(P, U, sigs, noRaw) {
   const L = P.length, Lu = L * U, up = new Float32Array(Lu);
   for (let i = 0; i < Lu; i++) { const xs = (i + .5) / U - .5, xi = Math.max(0, Math.min(L - 2, Math.floor(xs))), f = Math.max(0, Math.min(1, xs - xi)); up[i] = P[xi] * (1 - f) + P[xi + 1] * f; }
   const conv = (a, k, R, o) => { const n = a.length; for (let i = 0; i < n; i++) { let s = 0; for (let j = -R; j <= R; j++) { const q = i + j; s += a[q < 0 ? 0 : q >= n ? n - 1 : q] * k[j + R]; } o[i] = s; } return o; };
@@ -1814,7 +1821,7 @@ function barSynth(P, U) {
     for (let it = 0; it < LOC_ITER; it++) { conv(e, k, R, t1); for (let i = 0; i < Lu; i++) t1[i] = d[i] / (t1[i] || 1e-6); conv(t1, k, R, t2); for (let i = 0; i < Lu; i++) e[i] *= t2[i]; }
     return e;
   };
-  const variants = [up].concat(LOC_SIGS.map(s => deblur(s * U)));
+  const list = (noRaw ? [] : [0]).concat(sigs), variants = list.map(s => s ? deblur(s * U) : up);
   const PAD = 40, ROWS = 24, GAP = 14, Wd = Lu + PAD * 2, Hd = variants.length * (ROWS + GAP) + GAP;
   const im = new ImageData(Wd, Hd), dd = new Uint32Array(im.data.buffer); dd.fill(0xFFFFFFFF);
   variants.forEach((v, k) => {
@@ -1822,17 +1829,32 @@ function barSynth(P, U) {
     const yb = GAP + k * (ROWS + GAP);
     for (let x = 0; x < Lu; x++) { const gv = Math.max(0, Math.min(255, (v[x] - lo) * sc)) | 0, px = 0xFF000000 | (gv << 16) | (gv << 8) | gv; for (let y = 0; y < ROWS; y++) dd[(yb + y) * Wd + PAD + x] = px; }
   });
-  return im;
+  return { im, list, band: ROWS + GAP, gap: GAP };
+}
+/* le flou d'une même caméra varie peu : le réglage qui a permis la dernière lecture est essayé en premier (rapide),
+   les autres seulement en cas d'échec */
+let locBestSig = -1;
+async function tryVariants(P, sigs, opts, noRaw) {
+  if (!sigs.length && noRaw) return [];
+  const s = barSynth(P, 3, sigs, noRaw);
+  const ok = (await Z.readBarcodes(s.im, opts)).filter(r => r.isValid);
+  if (ok.length) {
+    const y = ok[0].position && ok[0].position.topLeft ? ok[0].position.topLeft.y : 0;
+    const sg = s.list[Math.max(0, Math.min(s.list.length - 1, Math.floor((y - s.gap / 2) / s.band)))];
+    if (sg) locBestSig = LOC_SIGS.indexOf(sg);
+  }
+  return ok;
 }
 async function readLocated(img, opts) {
-  const W = img.width, H = img.height, G = grayOf(img), bs = locateBars(G, W, H), out = [];
+  const W = img.width, H = img.height, G = grayOf(img), bs = locateBars(G, W, H);
   for (const b of bs) {
     const P = barProfile(G, W, H, b); if (!P) continue;
-    const rs = await Z.readBarcodes(barSynth(P, 3), opts);
-    for (const r of rs) if (r.isValid) out.push(r);
-    if (out.length) break;
+    const first = locBestSig >= 0 ? [LOC_SIGS[locBestSig]] : [0.9, 1.2];
+    let out = await tryVariants(P, first, opts, false);
+    if (!out.length) out = await tryVariants(P, LOC_SIGS.filter(x => !first.includes(x)), opts, true);
+    if (out.length) return { res: out, found: true };
   }
-  return { res: out, found: bs.length > 0 };
+  return { res: [], found: bs.length > 0 };
 }
 self.onmessage = async e => {
   const d = e.data;
@@ -1853,7 +1875,7 @@ self.onmessage = async e => {
     const { center, avg, gen, locate, ...opts } = d.opts;
     if (locate) {
       const L = await readLocated(img, opts);
-      self.postMessage({ type: "result", ms: performance.now() - t0, stripes: L.found && !L.res.length, res: L.res.map(r => ({ text: r.text, format: r.format, valid: r.isValid, loc: true })) });
+      self.postMessage({ type: "result", locate: true, ms: performance.now() - t0, stripes: L.found && !L.res.length, res: L.res.map(r => ({ text: r.text, format: r.format, valid: r.isValid, loc: true })) });
       return;
     }
     if (center) img = centerSmooth(img, center, avg, gen);
@@ -3398,7 +3420,7 @@ self.onmessage = async e => {
         const s = (now - stT) / 1000, fps = Math.round(stN / s), nfps = Math.round(stNat / s);
         if (sp) {
           sp.hidden = false;
-          sp.textContent = `⚡ ${Math.max(fps, nfps)} img/s · QR + codes-barres`;
+          sp.textContent = locIsHot() ? "🎯 Code-barres repéré · ne bougez plus" : `⚡ ${Math.max(fps, nfps)} img/s · QR + codes-barres`;
           sp.title = `Caméra ${v.videoWidth}×${v.videoHeight} · décodeurs ZXing : ${pool ? pool.length : 0}${pool && pool[0].worker ? " (en parallèle)" : ""} · ${fps} img/s${stN ? ` · ${Math.round(stMs / stN)} ms par image` : ""}${nat ? ` · détecteur intégré : ${nfps} img/s` : ""} · centre renforcé (cumul des images)${small ? " · MODE PETIT CODE" : ""}`;
         }
         if (small) placeGuide();
@@ -3418,14 +3440,24 @@ self.onmessage = async e => {
       };
       const unreadTs = []; // images récentes où un code est visible mais illisible
       let locPend = { text: "", t: 0 }; // 1re lecture d'un code défloué, en attente de confirmation
+      // code-barres repéré mais pas encore lu : la lecture difficile (défloutage) passe en priorité pendant 1,5 s
+      let locHot = 0;
+      const locIsHot = () => Date.now() - locHot < 1500;
       const onResult = out => {
         if (!alive()) return;
         zxActive = true; frameNo++; stN++; stMs += out.ms || 0;
         let unread = !!out.stripes, read = false; // rayures de code-barres vues au centre, sans lecture
+        if (out.locate && out.stripes) {
+          if (!locIsHot() && sp) { sp.hidden = false; sp.textContent = "🎯 Code-barres repéré · ne bougez plus"; }
+          locHot = Date.now();
+        }
         for (const r of out.res || []) {
-          // code lu après défloutage : accepté seulement s'il est relu à l'identique (sécurité contre une lecture inventée)
-          if (r.valid && r.text && r.loc && !(locPend.text === r.text && Date.now() - locPend.t < 4000)) { locPend = { text: r.text, t: Date.now() }; lastUnread = Date.now(); lastUnreadFrame = frameNo; unread = true; continue; }
-          if (r.valid && r.text) { detect(r.text, r.format); read = true; }
+          // code lu après défloutage : accepté tout de suite s'il correspond à un article connu (code avec clé de contrôle
+          // ET présent dans les articles : aucune erreur possible) ; sinon seulement s'il est relu à l'identique
+          if (r.valid && r.text && r.loc && !(locPend.text === r.text && Date.now() - locPend.t < 4000) && (opts.pick || !articleByCode(r.text))) {
+            locPend = { text: r.text, t: Date.now() }; locHot = Date.now(); lastUnread = Date.now(); lastUnreadFrame = frameNo; unread = true; continue;
+          }
+          if (r.valid && r.text) { detect(r.text, r.format); read = true; if (r.loc) locHot = 0; }
           else { lastUnread = Date.now(); lastUnreadFrame = frameNo; unread = true; } // code visible mais illisible : toujours « présent »
         }
         // suggestion automatique : un code est vu sans pouvoir être lu depuis ~2 s → proposer le mode petit code
@@ -3467,7 +3499,9 @@ self.onmessage = async e => {
         const dec = pool.find(d => !d.busy); if (!dec) return; // tous occupés : cette image est sautée
         dec.busy = true; lastSend = now;
         // avec le détecteur intégré : ZXing alterne lecture approfondie et centre lissé (ce que le détecteur rate)
-        let opts = small ? ZX_CYCLE_SMALL[k++ % ZX_CYCLE_SMALL.length]
+        // code-barres repéré mais illisible : 2 images sur 3 passent par le défloutage (plusieurs décodeurs en parallèle)
+        let opts = locIsHot() && k++ % 3 ? ZX_LOCATE
+          : small ? ZX_CYCLE_SMALL[k++ % ZX_CYCLE_SMALL.length]
           : nat ? [ZX_DEEP, ZX_CENTER, ZX_LOCATE][k++ % 3] : ZX_CYCLE[k++ % ZX_CYCLE.length];
         if (opts.avg) opts = { ...opts, gen: camGen }; // cumul des images remis à zéro après un zoom
         grabFrame(dec)
