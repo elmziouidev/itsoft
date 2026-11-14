@@ -288,10 +288,14 @@
     // point de départ : « à partir de maintenant » pour chaque liste
     async syncInit(quiet = true) {
       const ls = this.syncLists();
-      const rs = await this.batch(ls.map(([, id]) => ({ method: "GET", url: `/sites/${this.siteId}/lists/${id}/items/delta?token=latest` })), quiet);
+      // ventes : le contenu des lignes est demandé directement dans la réponse « delta » ($expand=fields) →
+      // une nouvelle vente arrive en UN aller-retour au lieu de deux. Refusé par SharePoint : méthode habituelle.
+      const url = (k, id, x) => `/sites/${this.siteId}/lists/${id}/items/delta?token=latest${x && k === "ventes" ? "&$expand=fields" : ""}`;
+      const rs = await this.batch(ls.map(([k, id]) => ({ method: "GET", url: url(k, id, true) })), quiet);
       this.deltaLinks = {};
       for (let i = 0; i < ls.length; i++) {
-        const r = rs[i];
+        let r = rs[i];
+        if (ls[i][0] === "ventes" && (!r || r.status >= 300)) { try { r = (await this.batch([{ method: "GET", url: url("ventes", ls[i][1], false) }], quiet))[0]; } catch (_) {} }
         if (r && r.status < 300 && r.body) { try { const d = await this.deltaFollow(r.body, quiet); if (d.link) this.deltaLinks[ls[i][0]] = d.link; } catch (_) {} }
       }
       this.syncMode = Object.keys(this.deltaLinks).length ? "delta" : "stamp";
@@ -313,9 +317,11 @@
         this.stamps = s;
         return changed.length ? { reloadAll: true, changed } : {};
       }
-      // listes très actives (articles, ventes, achats) à chaque fois ; les autres une fois sur trois
+      // ventes à chaque fois (vérification chaque seconde sur la page Ventes) ; articles et achats une fois sur
+      // trois ; les autres listes une fois sur neuf → peu de requêtes malgré la cadence rapide
       this._pollN = (this._pollN || 0) + 1;
-      const ls = this.syncLists().filter(([k, , fast]) => this.deltaLinks[k] && (fast || full || this._pollN % 3 === 0));
+      const every = { ventes: 1, articles: 3, achats: 3 };
+      const ls = this.syncLists().filter(([k]) => this.deltaLinks[k] && (full || this._pollN % (every[k] || 9) === 0));
       if (!ls.length) return {};
       const rs = await this.batch(ls.map(([k]) => ({ method: "GET", url: this.deltaLinks[k] })), quiet);
       const out = {}, toRead = [];
@@ -333,9 +339,18 @@
         }
         const d = await this.deltaFollow(r.body, quiet);
         if (d.link) this.deltaLinks[k] = d.link;
-        const del = [];
-        for (const it of d.items) { if (it.deleted) del.push(String(it.id)); else toRead.push({ k, listId, id: String(it.id) }); }
-        out[k] = { upserts: [], deletes: del };
+        const del = [], ups = [];
+        for (const it of d.items) {
+          if (it.deleted) del.push(String(it.id));
+          // vente reçue avec son contenu (delta avec $expand=fields) : utilisée telle quelle, sans 2e requête
+          // (contenu complet exigé : sinon relu par la méthode habituelle, rien n'est jamais effacé par erreur)
+          else if (k === "ventes" && it.fields && it.fields.Title) {
+            const v = this.convertItem(k, it);
+            if (v && v.Title && v.Article != null && v.Quantite != null && v.Montant != null) ups.push(v); else toRead.push({ k, listId, id: String(it.id) });
+          }
+          else toRead.push({ k, listId, id: String(it.id) });
+        }
+        out[k] = { upserts: ups, deletes: del };
       }
       // valeurs à jour des éléments modifiés, en une seule requête groupée
       const uniq = toRead.filter((x, i) => toRead.findIndex(y => y.k === x.k && y.id === x.id) === i);

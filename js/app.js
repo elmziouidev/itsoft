@@ -690,8 +690,10 @@
 
   const Sync = {
     timer: 0, busy: false, last: 0, err: null, backoff: 0, changes: 0, tick: null, tickGen: 0,
-    // toutes les 2 s (5 s quand la page est en arrière-plan) : une vente faite au téléphone apparaît vite sur le PC
-    interval() { return document.hidden ? 5000 : 2000; },
+    // page Ventes ouverte : chaque seconde (2 s en arrière-plan) → une vente faite au téléphone apparaît presque
+    // aussitôt sur le PC ; autres pages : 2 s (5 s en arrière-plan). Seule la liste des ventes est interrogée à
+    // chaque fois : articles et achats une fois sur trois, les autres listes une fois sur neuf (peu de requêtes).
+    interval() { const v = currentView() === "ventes"; return document.hidden ? (v ? 2000 : 5000) : (v ? 1000 : 2000); },
     start() {
       if (!DS.pollChanges || this.started) return;
       this.started = true;
@@ -753,7 +755,7 @@
       const txt = this.err ? "Synchro en pause" : !this.last ? "Synchro…" : s < 5 ? "À jour" : `À jour · ${s < 60 ? s + " s" : Math.round(s / 60) + " min"}`;
       b.querySelector(".sd-txt").textContent = txt;
       b.title = this.err ? `Synchronisation avec SharePoint en pause : ${this.err}. Nouvel essai automatique.`
-        : `Synchronisation automatique avec SharePoint toutes les ${document.hidden ? 5 : 2} s${this.last ? ` · dernière vérification il y a ${s} s` : ""}. Cliquez pour vérifier maintenant.`;
+        : `Synchronisation automatique avec SharePoint toutes les ${this.interval() / 1000} s${this.last ? ` · dernière vérification il y a ${s} s` : ""}. Cliquez pour vérifier maintenant.`;
     }
   };
 
