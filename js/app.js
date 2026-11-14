@@ -317,9 +317,9 @@
       toast("Photo supprimée.", "ok");
     } catch (err) { toast("Suppression impossible : " + err.message, "bad"); }
   }
-  /* Bouton 📷 : sans photo → appareil photo tout de suite ; avec photo → aperçu (reprendre, supprimer) */
+  /* Bouton 📷 : ouvre toujours l'appareil photo (la nouvelle photo remplace l'ancienne).
+     Voir ou supprimer la photo : clic sur la vignette de l'article. */
   async function photoAction(a) {
-    if (photoUrl(a)) return showPhoto(a);
     const file = await pickImage(true);
     if (file) setArticlePhoto(a, file);
   }
@@ -1597,9 +1597,14 @@
   //    contre 15 sur 20 pour la lecture approfondie (un agrandissement ×2, lui, n'apportait rien).
   //    + cumul des images successives (avg), recalées malgré le tremblement de la main
   const ZX_CENTER = { formats: ZX_FORMATS, tryHarder: true, tryRotate: false, tryInvert: false, tryDownscale: false, maxNumberOfSymbols: 2, returnErrors: true, center: 3, avg: true };
-  const ZX_CYCLE = [ZX_FAST, ZX_FLASH, ZX_DEEP, ZX_CENTER];
-  // mode « Petit code » : lecture concentrée sur le centre (cadre affiché), le reste de l'image de temps en temps
-  const ZX_CYCLE_SMALL = [ZX_CENTER, ZX_CENTER, ZX_CENTER, ZX_FAST, ZX_CENTER, ZX_CENTER];
+  //  - code repéré + défloutage (~100–300 ms) : codes-barres trop fins ou flous pour la webcam (caméra fixe du PC,
+  //    pas de mise au point de près). Le code est repéré n'importe où dans l'image, toutes ses lignes sont
+  //    moyennées (inclinaison corrigée), puis les barres sont « défloutées » avant la lecture.
+  //    Mesuré sur des barres de 1,6 px floues : 8 lectures sur 8, contre 0 sur 8 pour la lecture approfondie.
+  const ZX_LOCATE = { formats: ZX_FORMATS.filter(f => f !== "QRCode"), tryHarder: true, tryRotate: false, tryInvert: false, tryDownscale: false, maxNumberOfSymbols: 3, returnErrors: true, locate: true };
+  const ZX_CYCLE = [ZX_FAST, ZX_FLASH, ZX_DEEP, ZX_CENTER, ZX_LOCATE];
+  // mode « Petit code » : lecture concentrée sur le centre (cadre affiché) et code repéré + défloutage
+  const ZX_CYCLE_SMALL = [ZX_CENTER, ZX_LOCATE, ZX_CENTER, ZX_FAST, ZX_LOCATE, ZX_CENTER];
   const ZX_WORKER_SRC = `
 let Z = null, cv = null, cx = null, buf = null;
 const grays = {}; // images en niveaux de gris réutilisées, par taille (image entière / centre seul)
@@ -1716,6 +1721,119 @@ function centerSmooth(img, r, avg, gen) {
   }
   return cOut;
 }
+/* ===== Codes-barres trop fins ou flous : repérage + moyenne des lignes + défloutage ===== */
+let lgG = null, lgS = null;
+function grayOf(img) { // niveaux de gris (luminance) de toute l'image
+  const n = img.width * img.height, d = img.data;
+  if (!lgG || lgG.length !== n) lgG = new Uint8Array(n);
+  for (let i = 0, p = 0; i < n; i++, p += 4) lgG[i] = (d[p] * 77 + d[p + 1] * 150 + d[p + 2] * 29) >> 8;
+  return lgG;
+}
+/* zones qui ressemblent à un code-barres : cases de 8×8 (image réduite à ~640 px) avec beaucoup d'alternances
+   clair/foncé horizontales et peu de contours horizontaux (texte, textures, stores : rejetés) */
+function locateBars(G, W, H) {
+  const s = Math.max(1, Math.ceil(W / 640)), sw = Math.floor(W / s), sh = Math.floor(H / s), n = sw * sh;
+  if (!lgS || lgS.length !== n) lgS = new Float32Array(n);
+  const g = lgS, k = 1 / (s * s);
+  for (let y = 0; y < sh; y++) for (let x = 0; x < sw; x++) {
+    let a = 0; for (let yy = 0; yy < s; yy++) { const r = (y * s + yy) * W + x * s; for (let xx = 0; xx < s; xx++) a += G[r + xx]; }
+    g[y * sw + x] = a * k;
+  }
+  const C = 8, cw = Math.floor(sw / C), ch = Math.floor(sh / C), N = cw * ch, gx = new Float32Array(N), gy = new Float32Array(N), tr = new Float32Array(N);
+  for (let cy = 0; cy < ch; cy++) for (let cx = 0; cx < cw; cx++) {
+    let a = 0, b = 0, t = 0;
+    for (let yy = cy * C; yy < cy * C + C; yy++) {
+      let prev = 0;
+      for (let xx = cx * C; xx < cx * C + C; xx++) {
+        const p = yy * sw + xx;
+        if (xx + 1 < sw) { const dd = g[p + 1] - g[p], ad = dd < 0 ? -dd : dd; a += ad; if (ad > 5) { const sg = dd > 0 ? 1 : -1; if (prev && sg !== prev) t++; prev = sg; } }
+        if (yy + 1 < sh) { const dv = g[p + sw] - g[p]; b += dv < 0 ? -dv : dv; }
+      }
+    }
+    const i = cy * cw + cx; gx[i] = a; gy[i] = b; tr[i] = t / C;
+  }
+  const ok = i => gx[i] > 1.6 * gy[i] && tr[i] >= 1.5;
+  let mx = 0; for (let i = 0; i < N; i++) if (ok(i) && gx[i] > mx) mx = gx[i];
+  if (!mx) return [];
+  const on = new Uint8Array(N); for (let i = 0; i < N; i++) on[i] = ok(i) && gx[i] > mx * .25 ? 1 : 0;
+  const seen = new Uint8Array(N), out = [];
+  for (let i = 0; i < N; i++) if (on[i] && !seen[i]) {
+    const st = [i]; seen[i] = 1; let cnt = 0, x0 = 1e9, x1 = -1, y0 = 1e9, y1 = -1, sc = 0;
+    while (st.length) {
+      const p = st.pop(), px = p % cw, py = (p / cw) | 0; cnt++; sc += gx[p];
+      if (px < x0) x0 = px; if (px > x1) x1 = px; if (py < y0) y0 = py; if (py > y1) y1 = py;
+      for (let dy = -1; dy <= 1; dy++) for (let dx = -2; dx <= 2; dx++) { if (!dx && !dy) continue; const qx = px + dx, qy = py + dy; if (qx < 0 || qy < 0 || qx >= cw || qy >= ch) continue; const q = qy * cw + qx; if (on[q] && !seen[q]) { seen[q] = 1; st.push(q); } }
+    }
+    if (cnt >= 4 && x1 - x0 + 1 >= 3) out.push({ sc, x: x0 * C * s, y: y0 * C * s, w: (x1 - x0 + 1) * C * s, h: (y1 - y0 + 1) * C * s });
+  }
+  return out.sort((a, b) => b.sc - a.sc).slice(0, 2);
+}
+/* profil des barres : moyenne de toutes les lignes de la zone, recalées selon l'inclinaison (au dixième de pixel) */
+function barProfile(G, W, H, b) {
+  const x0 = Math.max(0, Math.round(b.x - b.w * .15)), x1 = Math.min(W - 1, Math.round(b.x + b.w * 1.15)), L = x1 - x0;
+  const y0 = Math.max(0, Math.round(b.y + b.h * .08)), y1 = Math.min(H - 1, Math.round(b.y + b.h * .6)), R = y1 - y0;
+  if (L < 30 || R < 4) return null;
+  const q = Math.max(2, R >> 2), top = new Float32Array(L), bot = new Float32Array(L);
+  for (let y = y0; y < y0 + q; y++) { const r = y * W + x0; for (let x = 0; x < L; x++) top[x] += G[r + x]; }
+  for (let y = y1 - q; y < y1; y++) { const r = y * W + x0; for (let x = 0; x < L; x++) bot[x] += G[r + x]; }
+  const M = Math.min(Math.round(R * .5), 40), cr = {};
+  const corrAt = d => {
+    let sab = 0, sa = 0, sb = 0, saa = 0, sbb = 0, n = 0;
+    for (let x = Math.max(0, -d); x < Math.min(L, L - d); x++) { const a = top[x], c = bot[x + d]; sab += a * c; sa += a; sb += c; saa += a * a; sbb += c * c; n++; }
+    const cov = sab - sa * sb / n, v = Math.sqrt((saa - sa * sa / n) * (sbb - sb * sb / n)); return v ? cov / v : 0;
+  };
+  let best = 0, bs = -Infinity;
+  for (let d = -M; d <= M; d++) { const r = cr[d] = corrAt(d); if (r > bs) { bs = r; best = d; } }
+  let sub = best;
+  if (cr[best - 1] !== undefined && cr[best + 1] !== undefined) { const a = cr[best - 1], b2 = cr[best], c = cr[best + 1], den = a - 2 * b2 + c; if (den < 0) sub = best + Math.max(-.5, Math.min(.5, (a - c) / (2 * den))); }
+  const slope = sub / Math.max(1, R - q), P = new Float32Array(L), cnt = new Float32Array(L), ymid = (y0 + y1) / 2;
+  for (let y = y0; y < y1; y++) {
+    const sh = (y - ymid) * slope, r = y * W;
+    for (let x = 0; x < L; x++) {
+      const xs = x0 + x + sh, xi = Math.floor(xs), f = xs - xi;
+      if (xi < 0 || xi + 1 >= W) continue;
+      P[x] += G[r + xi] * (1 - f) + G[r + xi + 1] * f; cnt[x]++;
+    }
+  }
+  for (let x = 0; x < L; x++) P[x] = cnt[x] ? P[x] / cnt[x] : 255;
+  return P;
+}
+/* image de synthèse : profil agrandi ×U, puis défloutage (Richardson-Lucy) pour plusieurs flous possibles,
+   variantes empilées : une seule lecture ZXing les essaie toutes */
+const LOC_SIGS = [0.6, 0.9, 1.2, 1.5, 1.9], LOC_ITER = 100;
+function barSynth(P, U) {
+  const L = P.length, Lu = L * U, up = new Float32Array(Lu);
+  for (let i = 0; i < Lu; i++) { const xs = (i + .5) / U - .5, xi = Math.max(0, Math.min(L - 2, Math.floor(xs))), f = Math.max(0, Math.min(1, xs - xi)); up[i] = P[xi] * (1 - f) + P[xi + 1] * f; }
+  const conv = (a, k, R, o) => { const n = a.length; for (let i = 0; i < n; i++) { let s = 0; for (let j = -R; j <= R; j++) { const q = i + j; s += a[q < 0 ? 0 : q >= n ? n - 1 : q] * k[j + R]; } o[i] = s; } return o; };
+  const deblur = sig => {
+    const R = Math.ceil(sig * 3), k = new Float32Array(2 * R + 1); let ks = 0;
+    for (let j = -R; j <= R; j++) ks += k[j + R] = Math.exp(-j * j / (2 * sig * sig));
+    for (let j = 0; j < k.length; j++) k[j] /= ks;
+    const d = new Float32Array(Lu); for (let i = 0; i < Lu; i++) d[i] = up[i] + 1;
+    const e = Float32Array.from(d), t1 = new Float32Array(Lu), t2 = new Float32Array(Lu);
+    for (let it = 0; it < LOC_ITER; it++) { conv(e, k, R, t1); for (let i = 0; i < Lu; i++) t1[i] = d[i] / (t1[i] || 1e-6); conv(t1, k, R, t2); for (let i = 0; i < Lu; i++) e[i] *= t2[i]; }
+    return e;
+  };
+  const variants = [up].concat(LOC_SIGS.map(s => deblur(s * U)));
+  const PAD = 40, ROWS = 24, GAP = 14, Wd = Lu + PAD * 2, Hd = variants.length * (ROWS + GAP) + GAP;
+  const im = new ImageData(Wd, Hd), dd = new Uint32Array(im.data.buffer); dd.fill(0xFFFFFFFF);
+  variants.forEach((v, k) => {
+    const srt = Array.from(v).sort((a, b) => a - b), lo = srt[Math.floor(Lu * .03)], hi = srt[Math.floor(Lu * .97)], sc = 255 / Math.max(1, hi - lo);
+    const yb = GAP + k * (ROWS + GAP);
+    for (let x = 0; x < Lu; x++) { const gv = Math.max(0, Math.min(255, (v[x] - lo) * sc)) | 0, px = 0xFF000000 | (gv << 16) | (gv << 8) | gv; for (let y = 0; y < ROWS; y++) dd[(yb + y) * Wd + PAD + x] = px; }
+  });
+  return im;
+}
+async function readLocated(img, opts) {
+  const W = img.width, H = img.height, G = grayOf(img), bs = locateBars(G, W, H), out = [];
+  for (const b of bs) {
+    const P = barProfile(G, W, H, b); if (!P) continue;
+    const rs = await Z.readBarcodes(barSynth(P, 3), opts);
+    for (const r of rs) if (r.isValid) out.push(r);
+    if (out.length) break;
+  }
+  return { res: out, found: bs.length > 0 };
+}
 self.onmessage = async e => {
   const d = e.data;
   if (d.type === "init") {
@@ -1732,7 +1850,12 @@ self.onmessage = async e => {
       finally { d.vf.close(); }
     }
     else if (d.bitmap) { const b = d.bitmap; try { img = viaCanvas(b, b.width, b.height); } finally { b.close(); } }
-    const { center, avg, gen, ...opts } = d.opts;
+    const { center, avg, gen, locate, ...opts } = d.opts;
+    if (locate) {
+      const L = await readLocated(img, opts);
+      self.postMessage({ type: "result", ms: performance.now() - t0, stripes: L.found && !L.res.length, res: L.res.map(r => ({ text: r.text, format: r.format, valid: r.isValid, loc: true })) });
+      return;
+    }
     if (center) img = centerSmooth(img, center, avg, gen);
     const res = await Z.readBarcodes(img, opts);
     const stripes = center && !res.some(r => r.isValid) ? hasStripes(img) : false;
@@ -1787,7 +1910,7 @@ self.onmessage = async e => {
         const dec = { busy: false, worker: false, canBitmap: false };
         dec.decode = async (frame, opts) => {
           dec.busy = true; const t0 = performance.now();
-          try { const { center, avg, gen, ...o } = opts; const res = await Z.readBarcodes(frame.img, center ? ZX_DEEP : o); return { res: res.map(r => ({ text: r.text, format: r.format, valid: r.isValid })), ms: performance.now() - t0 }; }
+          try { const { center, avg, gen, locate, ...o } = opts; const res = await Z.readBarcodes(frame.img, center || locate ? ZX_DEEP : o); return { res: res.map(r => ({ text: r.text, format: r.format, valid: r.isValid })), ms: performance.now() - t0 }; }
           catch (_) { return { res: [], ms: performance.now() - t0 }; } finally { dec.busy = false; }
         };
         return [dec];
@@ -3294,11 +3417,14 @@ self.onmessage = async e => {
         return { img: cx.getImageData(0, 0, cvs.width, cvs.height) };
       };
       const unreadTs = []; // images récentes où un code est visible mais illisible
+      let locPend = { text: "", t: 0 }; // 1re lecture d'un code défloué, en attente de confirmation
       const onResult = out => {
         if (!alive()) return;
         zxActive = true; frameNo++; stN++; stMs += out.ms || 0;
         let unread = !!out.stripes, read = false; // rayures de code-barres vues au centre, sans lecture
         for (const r of out.res || []) {
+          // code lu après défloutage : accepté seulement s'il est relu à l'identique (sécurité contre une lecture inventée)
+          if (r.valid && r.text && r.loc && !(locPend.text === r.text && Date.now() - locPend.t < 4000)) { locPend = { text: r.text, t: Date.now() }; lastUnread = Date.now(); lastUnreadFrame = frameNo; unread = true; continue; }
           if (r.valid && r.text) { detect(r.text, r.format); read = true; }
           else { lastUnread = Date.now(); lastUnreadFrame = frameNo; unread = true; } // code visible mais illisible : toujours « présent »
         }
@@ -3342,7 +3468,7 @@ self.onmessage = async e => {
         dec.busy = true; lastSend = now;
         // avec le détecteur intégré : ZXing alterne lecture approfondie et centre lissé (ce que le détecteur rate)
         let opts = small ? ZX_CYCLE_SMALL[k++ % ZX_CYCLE_SMALL.length]
-          : nat ? (k++ % 2 ? ZX_CENTER : ZX_DEEP) : ZX_CYCLE[k++ % ZX_CYCLE.length];
+          : nat ? [ZX_DEEP, ZX_CENTER, ZX_LOCATE][k++ % 3] : ZX_CYCLE[k++ % ZX_CYCLE.length];
         if (opts.avg) opts = { ...opts, gen: camGen }; // cumul des images remis à zéro après un zoom
         grabFrame(dec)
           .then(f => dec.decode(f, opts).then(out => { if (out.error && f.vf) vfFail(); return out; })) // échec : autre méthode de copie
@@ -3490,7 +3616,8 @@ self.onmessage = async e => {
 
     // prix d'achat et prix de vente mis en évidence (couleur + fond léger)
     const photoBtn = (a, chip) => {
-      const has = !!photoUrl(a), t = has ? "Voir, reprendre ou supprimer la photo" : "Prendre une photo de l'article";
+      // ✓ seulement pour une photo prise dans l'application (pas pour une ancienne adresse d'image du web)
+      const has = ownPhoto(photoUrl(a)), t = has ? "Reprendre la photo de l'article (cliquer sur la vignette pour la voir ou la supprimer)" : "Prendre une photo de l'article";
       return chip
         ? `<button type="button" class="photo-chip ${has ? "has" : ""}" data-photo="${esc(a.id)}" title="${t}">📷${has ? "<span>✓</span>" : ""}</button>`
         : `<button type="button" class="btn sm icon ghost photo-act ${has ? "has" : ""}" data-photo="${esc(a.id)}" title="${t}" aria-label="${t}">📷</button>`;
