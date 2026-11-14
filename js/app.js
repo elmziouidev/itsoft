@@ -3272,6 +3272,8 @@ self.onmessage = async e => {
         m.dataset.picked = "1"; beep(true); closeModal(); opts.pick(code); return;
       }
       const a = articleByCode(code);
+      // pendant les ventes : code inconnu simplement ignoré (ni bip, ni message, ni proposition d'associer)
+      if (!a && auto) return;
       if (!a) { beep(false); flash(false, "Code non reconnu", 0, code); return askAssociate(code); }
       if (noSalePrice(a)) { // jamais de vente au prix d'achat ni à 0
         beep(false); flash(false, artName(a), 0, "Prix de vente non défini : saisissez-le dans Articles");
@@ -3944,7 +3946,7 @@ self.onmessage = async e => {
             else { const ok = cartAdd(a, true); beep(ok); }
           }
           else if (a) scanDialog({ code });
-          else { beep(false); scanDialog({ code }); }
+          else if (!(scanAutoGet() && state.ventesReady)) { beep(false); scanDialog({ code }); } // en vente : code inconnu ignoré
         }
         buf = ""; return;
       }
