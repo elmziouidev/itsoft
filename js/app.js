@@ -4006,7 +4006,8 @@ self.onmessage = async e => {
       // (sur téléphone, le bouton 📷 Photo s'affiche à côté de « Associer » ; sur ordinateur, il est dans les actions)
       if (c === codesC) return `<td class="codes-td" data-codes="${esc(a.id)}" data-label="Codes-barres" title="Cliquer pour scanner, ajouter ou retirer des codes-barres">${codesCellHTML(a)}${photoBtn(a, true)}</td>`;
       // le nom de l'article ouvre la vente ; les autres cellules se modifient sur place
-      if (c.name === state.map.designation) return `<td class="sellable primary-cell" data-sell="${esc(a.id)}" data-label="${esc(colTitle(c))}" title="Cliquer pour vendre cet article">${cellHTML(a, c)}</td>`;
+      // (sur téléphone : la catégorie s'affiche en petit sous le modèle — .m-cat, masquée sur ordinateur)
+      if (c.name === state.map.designation) { const cat = F(a, "categorie"); return `<td class="sellable primary-cell" data-sell="${esc(a.id)}" data-label="${esc(colTitle(c))}" title="Cliquer pour vendre cet article">${cellHTML(a, c)}${cat ? `<span class="m-cat">${esc(cat)}</span>` : ""}</td>`; }
       // repères pour l'affichage compact sur téléphone (petite étiquette data-short, rang de la cellule)
       const kind = priceCls(c) || (c.name === state.map.categorie ? " col-cat" : c.name === state.map.reference ? " col-ref" : " col-misc");
       const short = { " col-stock": "Stock", " col-achat": "Achat", " col-pv": "Vente", " col-dm": "MAJ", " col-ref": "N°" }[kind] || "";

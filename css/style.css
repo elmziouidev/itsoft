@@ -1206,6 +1206,7 @@ td.editing .dm-today { margin-left: 6px; padding: 3px 8px; font-size: 12px; vert
 .af-more > .form-grid { margin: 0; }
 
 /* ============ Photo de l'article ============ */
+.m-cat { display: none; } /* catégorie sous le modèle : téléphone seulement */
 .photo-chip { display: none; align-items: center; gap: 3px; font: inherit; font-size: 12px; font-weight: 700; cursor: pointer;
   color: #9a3412; background: #fff7ed; border: 1px solid #fdba74; padding: 2px 9px; border-radius: 999px; line-height: 1.3; }
 .photo-chip.has { color: #166534; background: #f0fdf4; border-color: #86efac; }
@@ -1233,6 +1234,15 @@ td.editing .dm-today { margin-left: 6px; padding: 3px 8px; font-size: 12px; vert
   #art-table .table.responsive td.actions .btn.sm.icon { padding: 4px; min-height: 0; height: 28px; width: 28px; }
   #art-table .table.responsive td.primary-cell { padding-bottom: 0; }
   #art-table .table.responsive td.col-misc { white-space: normal; }
+  /* catégorie en petit sous le modèle (alignée sur le nom, après la vignette) ; colonne Catégorie masquée */
+  #art-table .table.responsive td.primary-cell { flex-direction: column; align-items: stretch; justify-content: center; gap: 0; }
+  #art-table .table.responsive td.primary-cell .name-cell { width: 100%; }
+  #art-table .table.responsive td.primary-cell .m-cat { display: block; padding-left: 32px; margin-top: -3px; font-size: 10.5px; font-weight: 600; line-height: 1.2;
+    color: var(--muted); text-transform: uppercase; letter-spacing: .02em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #art-table .table.responsive td.col-cat { display: none; }
+  /* caractéristiques masquées ; bouton 📦 (bon de réception) retiré sur téléphone */
+  #art-table .table.responsive td.col-misc { display: none; }
+  #art-table .table.responsive td.actions .rcv-btn { display: none; }
   /* fin de la ligne 1 : saut de ligne forcé après les boutons (le nom garde toute sa place) */
   #art-table .table.responsive tr:not(.free-row)::after { content: ""; order: 3; flex-basis: 100%; height: 0; }
   /* ligne 2 : chiffres */
@@ -1253,8 +1263,8 @@ td.editing .dm-today { margin-left: 6px; padding: 3px 8px; font-size: 12px; vert
   #art-table .table.responsive td.codes-td .code-chip { font-size: 11px; padding: 0 2px 0 6px; }
   /* « Associer » et « Photo » : vrais boutons, bien visibles */
   #art-table .table.responsive td.codes-td { gap: 4px; }
-  #art-table .table.responsive td.codes-td .code-none { font-size: 11.5px; font-weight: 700; color: var(--primary-ink); background: var(--primary);
-    padding: 2px 9px; border-radius: 999px; box-shadow: 0 2px 6px -2px color-mix(in srgb, var(--primary) 70%, transparent); }
+  #art-table .table.responsive td.codes-td .code-none { font-size: 13px; font-weight: 700; color: var(--primary-ink); background: var(--primary);
+    padding: 5px 16px; border-radius: 999px; line-height: 1.2; box-shadow: 0 2px 6px -2px color-mix(in srgb, var(--primary) 70%, transparent); }
   #art-table .table.responsive td.codes-td .photo-chip { display: inline-flex; font-size: 11.5px; padding: 1px 7px; }  #art-table .table.responsive tr:has(td.codes-td) td.actions .photo-act { display: none; }
   /* cases vides (« — ») : masquées, aucune place perdue */
   #art-table .table.responsive td.col-misc:has(> .muted:only-child), #art-table .table.responsive td.col-ref:has(> .muted:only-child),
