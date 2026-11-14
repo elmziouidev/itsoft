@@ -639,8 +639,11 @@
   let syncSaveT = 0;
   const saveCacheSoon = () => { clearTimeout(syncSaveT); syncSaveT = setTimeout(() => saveCache({ columns: state.columns, articles: state.articles, ventes: state.ventes, categories: state.categories, clients: state.clients, fournisseurs: state.fournisseurs, achats: state.achats, achatsReady: state.achatsReady, credits: state.credits, versements: state.versements, creditsReady: state.creditsReady, ventesReady: state.ventesReady, siteName: state.siteName }), 1500); };
   /* applique les changements reçus ; renvoie le nombre d'éléments réellement modifiés */
+  /* nouvelle ligne dans la page Ventes : fond vert pendant 1 minute (chaque vente garde son propre délai) */
+  const HI_MS = 60000;
+  function markNewSale(num) { if (!num) return; state.hiMany = state.hiMany || {}; state.hiMany[num] = Date.now() + HI_MS; }
   function applyChanges(ch) {
-    let n = 0; const touched = new Set();
+    let n = 0; const touched = new Set(), newSales = [];
     for (const k of SYNC_KEYS) {
       const c = ch[k], arr = state[k];
       if (!c || !Array.isArray(arr)) continue;
@@ -653,9 +656,18 @@
         // article reçu de SharePoint : les colonnes absentes sont vides (SharePoint n'envoie pas les champs vides)
         if (k === "articles") { it = { ...it }; for (const col of state.columns) if (!(col.name in it)) it[col.name] = null; }
         const cur = arr.find(x => String(x.id) === String(it.id));
-        if (!cur) { arr.push(it); n++; touched.add(k); }
+        if (!cur) { arr.push(it); n++; touched.add(k); if (k === "ventes" && state.loaded) newSales.push(it); }
         else if (Object.keys(it).some(f => JSON.stringify(cur[f]) !== JSON.stringify(it[f]))) { Object.assign(cur, it); n++; touched.add(k); }
       }
+    }
+    // ventes faites sur un autre appareil (téléphone, autre caisse) : lignes en vert 8 s + message
+    // (les ventes faites ici sont déjà dans la liste : elles ne passent pas par ici)
+    if (newSales.length) {
+      const nums = [...new Set(newSales.map(v => v.Title).filter(Boolean))];
+      nums.forEach(markNewSale);
+      const tot = newSales.reduce((t, v) => t + (+v.Montant || 0), 0);
+      toast(nums.length === 1 ? `📱 Nouvelle vente reçue : ${newSales.map(v => v.Article).filter(Boolean).join(", ")} · ${money(tot)}`
+        : `📱 ${int(nums.length)} nouvelles ventes reçues · ${money(tot)}`, "ok");
     }
     if (n) { saveCacheSoon(); refreshAfterSync(touched); }
     return n;
@@ -677,11 +689,19 @@
   setInterval(() => { if (syncRedraw && state.loaded && screenIdle()) refreshAfterSync(new Set()); }, 1000);
 
   const Sync = {
-    timer: 0, busy: false, last: 0, err: null, backoff: 0, changes: 0,
-    interval() { return document.hidden ? 30000 : 4000; },
+    timer: 0, busy: false, last: 0, err: null, backoff: 0, changes: 0, tick: null, tickGen: 0,
+    // toutes les 2 s (5 s quand la page est en arrière-plan) : une vente faite au téléphone apparaît vite sur le PC
+    interval() { return document.hidden ? 5000 : 2000; },
     start() {
       if (!DS.pollChanges || this.started) return;
       this.started = true;
+      // minuterie dans un processus séparé : Chrome ne la ralentit pas quand la page est en arrière-plan
+      // (sur la page elle-même, il ne la réveillerait plus qu'une fois par minute au bout de quelques minutes)
+      try {
+        const src = "onmessage = e => setTimeout(() => postMessage(e.data.gen), e.data.ms);";
+        this.tick = new Worker(URL.createObjectURL(new Blob([src], { type: "text/javascript" })));
+        this.tick.onmessage = e => { if (e.data === this.tickGen) this.run(); };
+      } catch (_) { this.tick = null; }
       this.schedule(1500);
       document.addEventListener("visibilitychange", () => { if (!document.hidden) this.now(300); });
       window.addEventListener("online", () => this.now(500));
@@ -698,7 +718,11 @@
       this.badge();
     },
     ping() { try { this.bc && this.bc.postMessage(Date.now()); } catch (_) {} },
-    schedule(ms) { clearTimeout(this.timer); this.timer = setTimeout(() => this.run(), ms); },
+    schedule(ms) {
+      clearTimeout(this.timer); const gen = ++this.tickGen; // seul le dernier rendez-vous compte
+      if (this.tick) { try { this.tick.postMessage({ ms, gen }); return; } catch (_) {} }
+      this.timer = setTimeout(() => { if (gen === this.tickGen) this.run(); }, ms);
+    },
     now(ms = 0) { this.schedule(ms); },
     async run(manual) {
       if (this.busy) return;
@@ -729,7 +753,7 @@
       const txt = this.err ? "Synchro en pause" : !this.last ? "Synchro…" : s < 5 ? "À jour" : `À jour · ${s < 60 ? s + " s" : Math.round(s / 60) + " min"}`;
       b.querySelector(".sd-txt").textContent = txt;
       b.title = this.err ? `Synchronisation avec SharePoint en pause : ${this.err}. Nouvel essai automatique.`
-        : `Synchronisation automatique avec SharePoint toutes les ${document.hidden ? 30 : 4} s${this.last ? ` · dernière vérification il y a ${s} s` : ""}. Cliquez pour vérifier maintenant.`;
+        : `Synchronisation automatique avec SharePoint toutes les ${document.hidden ? 5 : 2} s${this.last ? ` · dernière vérification il y a ${s} s` : ""}. Cliquez pour vérifier maintenant.`;
     }
   };
 
@@ -2850,7 +2874,7 @@ self.onmessage = async e => {
           applySaleResult(r);
           sent.push(p.num);
           toast(`Vente ${p.num} envoyée à SharePoint (gardée pendant la coupure).${p.warn ? " Attention : stock devenu insuffisant entre-temps, vérifiez le stock." : ""}`, p.warn ? "bad" : "ok");
-          state.hiSale = { num: p.num, until: Date.now() + 5000 };
+          markNewSale(p.num);
         } catch (e) {
           if (e.done) p.done = e.done;
           if (e.partial) applySaleResult(e.partial);
@@ -6419,7 +6443,7 @@ self.onmessage = async e => {
 
   /* ============ Vue : historique des ventes ============ */
   let hiCheckRef = null;
-  const hiOn = n => !!state.hiSale && state.hiSale.num === n && Date.now() < state.hiSale.until;
+  const hiOn = n => (!!state.hiSale && state.hiSale.num === n && Date.now() < state.hiSale.until) || (!!state.hiMany && state.hiMany[n] > Date.now());
   function viewVentes(el) {
     const f = state.filters.ventes;
     if (!f.type) f.type = "";
@@ -6470,7 +6494,7 @@ self.onmessage = async e => {
       scanDialog({
         container: dock,
         // vente mise à jour par le scan : sa ligne passe au vert pendant 5 secondes (relancé à chaque article)
-        onChange: num => { if (num) state.hiSale = { num, until: Date.now() + 5000 }; draw(); },
+        onChange: num => { markNewSale(num); draw(); }, // vente enregistrée ici : en vert 1 minute aussi
         onStop: () => { try { localStorage.setItem(DOCK_KEY, "0"); } catch (_) {} state.hiSale = null; draw(); dockIdle(); }
       });
     };
@@ -6510,10 +6534,11 @@ self.onmessage = async e => {
     // retour à la mise en forme normale du tableau après les 5 secondes
     const hiCheck = () => {
       clearTimeout(state.hiT);
-      const h = state.hiSale; if (!h) return;
-      const left = h.until - Date.now();
-      if (left <= 0) { $$("#v-table tr.row-new").forEach(tr => tr.classList.remove("row-new")); return; }
-      state.hiT = setTimeout(hiCheck, left + 30);
+      const now = Date.now(), ends = [];
+      if (state.hiSale && state.hiSale.until > now) ends.push(state.hiSale.until);
+      for (const [num, u] of Object.entries(state.hiMany || {})) { if (u <= now) delete state.hiMany[num]; else ends.push(u); }
+      $$("#v-table tr.row-new").forEach(tr => { if (!hiOn(tr.dataset.sale)) tr.classList.remove("row-new"); });
+      if (ends.length) state.hiT = setTimeout(hiCheck, Math.min(...ends) - now + 30);
     };
     hiCheckRef = hiCheck;
     let autoStart = "1"; try { autoStart = localStorage.getItem(DOCK_KEY) || "0"; } catch (_) {}

@@ -867,6 +867,7 @@ body.has-dock .view { padding-bottom: calc(var(--dock-h, 0px) + 40px); }
 /* nouvelle vente : fond vert pendant 5 s, puis retour en douceur à la mise en forme normale */
 .ventes-split #v-table tbody td { transition: background-color .9s ease, box-shadow .9s ease; }
 .ventes-split #v-table tr.row-new td { background: #bbf7d0; }
+#v-table td { transition: background-color 1.2s ease; } /* fin de la minute en vert : retour en douceur */
 .ventes-split #v-table tr.row-new td:first-child { box-shadow: inset 5px 0 0 #16a34a; }
 :root[data-theme="dark"] .ventes-split #v-table tr.row-new td { background: #14532d; }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .ventes-split #v-table tr.row-new td { background: #14532d; } }
